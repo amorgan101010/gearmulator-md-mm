@@ -151,6 +151,23 @@ namespace juceRmlUi
 		    if (keyCode == 'x' || keyCode == 'X') return Rml::Input::KI_X;
 		    if (keyCode == 'y' || keyCode == 'Y') return Rml::Input::KI_Y;
 		    if (keyCode == 'z' || keyCode == 'Z') return Rml::Input::KI_Z;
+		    // Punctuation, including the shifted character a US layout reports while Shift is held,
+		    // so a key keeps the same identifier for its key-down and key-up.
+		    if (keyCode == '-' || keyCode == '_') return Rml::Input::KI_OEM_MINUS;
+		    if (keyCode == '=' || keyCode == '+') return Rml::Input::KI_OEM_PLUS;
+		    if (keyCode == '[' || keyCode == '{') return Rml::Input::KI_OEM_4;
+		    if (keyCode == ']' || keyCode == '}') return Rml::Input::KI_OEM_6;
+		    if (keyCode == '`' || keyCode == '~') return Rml::Input::KI_OEM_3;
+		    if (keyCode == '!') return Rml::Input::KI_1;
+		    if (keyCode == '@') return Rml::Input::KI_2;
+		    if (keyCode == '#') return Rml::Input::KI_3;
+		    if (keyCode == '$') return Rml::Input::KI_4;
+		    if (keyCode == '%') return Rml::Input::KI_5;
+		    if (keyCode == '^') return Rml::Input::KI_6;
+		    if (keyCode == '&') return Rml::Input::KI_7;
+		    if (keyCode == '*') return Rml::Input::KI_8;
+		    if (keyCode == '(') return Rml::Input::KI_9;
+		    if (keyCode == ')') return Rml::Input::KI_0;
 		    return Rml::Input::KI_UNKNOWN;
 		}
 
