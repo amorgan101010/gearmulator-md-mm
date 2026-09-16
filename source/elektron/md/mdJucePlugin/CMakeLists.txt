@@ -17,12 +17,14 @@ add_compile_definitions(MDMM_DIAGNOSTICS_REVISION="${MDMM_DIAGNOSTICS_REVISION}"
 set(SOURCES
 	mdController.cpp mdController.h
 	mdEditor.cpp mdEditor.h
+	mdGamepad.cpp mdGamepad.h
 	mdFrontPanelPresentation.h
 	mdLcdGesture.h
 	mdLcdInteractionModel.cpp mdLcdInteractionModel.h
 	mdLcdViewport.h
 	mdPixelPerfectPanel.cpp mdPixelPerfectPanel.h
 	mdPanelAffordances.h
+	mdParameterHelp.h
 	mdPluginEditorState.cpp mdPluginEditorState.h
 	mdProductSkinPolicy.h
 	mdProductSkins.h
@@ -81,6 +83,16 @@ foreach(plugin_target mdJucePlugin mmJucePlugin)
 		JUCE_STANDALONE_PLUGIN_AUTO_OPEN_AUDIO_INPUT=0
 		JUCE_VST3_EMULATE_MIDI_PC_WITH_PROGRAMS=1)
 endforeach()
+
+# Optional game controller input for the standalone panel. The editor enables it
+# at runtime only when running as a standalone application.
+find_package(SDL3 CONFIG QUIET COMPONENTS SDL3-shared)
+if(SDL3_FOUND)
+	foreach(plugin_target mdJucePlugin mmJucePlugin)
+		target_link_libraries(${plugin_target} PRIVATE SDL3::SDL3)
+		target_compile_definitions(${plugin_target} PRIVATE MD_GAMEPAD_SDL3=1)
+	endforeach()
+endif()
 
 # JUCE can populate bundle resources after its first ad-hoc signing pass on
 # macOS. Re-sign the completed VST3 and Standalone bundles so hosts and Finder
