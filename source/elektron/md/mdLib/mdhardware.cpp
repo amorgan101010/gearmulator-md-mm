@@ -992,7 +992,9 @@ namespace md
 		// coherent project images are published. Queues remain intact until restore.
 		const bool projectRestorePending =
 			m_pendingFlashRestoreActive.load(std::memory_order_acquire);
-		if(!projectRestorePending)
+		// pumpScheduledMidi() does nothing until an event is due; test that inline so the common
+		// per-instruction case does not pay for the call.
+		if(!projectRestorePending && m_scheduledMidi.ready(m_schedUcCyclesDone))
 			pumpScheduledMidi();
 		if(!projectRestorePending && m_panelIn.hasPending())
 		{
@@ -1335,6 +1337,22 @@ namespace md
 			// callbacks, which catch the target DSP up inline). Guaranteed at least one step; clamped.
 			const uint64_t clampStop = m_schedUcCyclesDone + clampCycles;
 
+			// The loop condition used to evaluate `double(cycles) / ucPerFrame < subTarget` after
+			// every ColdFire instruction, and that division dominated this function's profile. The
+			// quotient never decreases as the cycle count grows, so find the first count at which the
+			// predicate turns false once per slice and compare integers per instruction instead. The
+			// search evaluates the original floating-point predicate, so the stop point is identical.
+			const auto ucBelowTarget = [ucPerFrame, subTarget](const uint64_t _cycles)
+			{
+				return static_cast<double>(_cycles) / ucPerFrame < subTarget;
+			};
+			uint64_t ucTargetStop = static_cast<uint64_t>(std::ceil(subTarget * ucPerFrame));
+			while(ucTargetStop > 0 && !ucBelowTarget(ucTargetStop - 1))
+				--ucTargetStop;
+			while(ucBelowTarget(ucTargetStop))
+				++ucTargetStop;
+			const uint64_t ucStop = std::min(ucTargetStop, clampStop);
+
 			uint32_t probeCount = 0;
 			do
 			{
@@ -1393,8 +1411,7 @@ namespace md
 					}
 				}
 			}
-			while(static_cast<double>(m_schedUcCyclesDone) / ucPerFrame < subTarget
-				&& m_schedUcCyclesDone < clampStop);
+			while(m_schedUcCyclesDone < ucStop);
 #if MD_TRANSPORT_DIAGNOSTICS
 			const auto diagnosticExecuted = m_schedUcCyclesDone - diagnosticStart;
 			score.executedCycles += diagnosticExecuted;
