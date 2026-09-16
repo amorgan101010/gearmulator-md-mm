@@ -247,6 +247,10 @@ set_property(TARGET encoderPressFirmwareTest PROPERTY FOLDER "Elektron/test")
 add_executable(mdmmBench mdmmBench.cpp)
 target_link_libraries(mdmmBench PRIVATE mdLib)
 
+# Local LCD frame capture for studying the firmware's screen layouts (not upstream).
+add_executable(mmLcdCapture mmLcdCapture.cpp)
+target_link_libraries(mmLcdCapture PRIVATE mdLib)
+
 # Shared external regressions for the independent MM workaround removals.
 add_executable(mmAudioFirmwareTest mmAudioFirmwareTest.cpp)
 target_link_libraries(mmAudioFirmwareTest PRIVATE mdLib)

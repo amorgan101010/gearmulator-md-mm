@@ -2,6 +2,8 @@
 
 #include "mdController.h"
 #include "mdPanelAffordances.h"
+#include "mdLcdText.h"
+#include "mdMachineHelp.h"
 #include "mdParameterHelp.h"
 #include "mdPluginProcessor.h"
 #include "mdSettingsAudioInput.h"
@@ -40,6 +42,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <functional>
 #include <iterator>
 #include <limits>
@@ -419,6 +423,8 @@ namespace mdJucePlugin
 		m_lcdInteractionState = enabled && m_frontPanelSnapshotValid
 			? lcdInteraction::classify(m_frontPanelSnapshot, getModel(), m_encoderPress.active())
 			: std::nullopt;
+		if(!m_lcdInteractionState && enabled)
+			m_lcdInteractionState = verifiedFixedPageState();
 		m_lcdInteractionInputChanged = false;
 		const auto identityChanged = oldState.has_value() != m_lcdInteractionState.has_value()
 			|| (oldState && m_lcdInteractionState
@@ -438,6 +444,16 @@ namespace mdJucePlugin
 	std::optional<unsigned> Editor::lcdTargetAt(const Rml::Event& _event) const
 	{
 		if(!m_lcdCanvas || !m_lcdInteractionState)
+			return std::nullopt;
+		const auto point = lcdNativePointAt(_event);
+		if(!point)
+			return std::nullopt;
+		return lcdInteraction::hitTest(*m_lcdInteractionState, point->first, point->second);
+	}
+
+	std::optional<std::pair<int, int>> Editor::lcdNativePointAt(const Rml::Event& _event) const
+	{
+		if(!m_lcdCanvas)
 			return std::nullopt;
 		const auto mouse = juceRmlUi::helper::getMousePos(_event);
 		auto offset = m_lcdCanvas->GetAbsoluteOffset(Rml::BoxArea::Content);
@@ -462,14 +478,40 @@ namespace mdJucePlugin
 		const auto point = viewport.displayToNative(mouse.x - offset.x, mouse.y - offset.y);
 		if(!point)
 			return std::nullopt;
-		return lcdInteraction::hitTest(*m_lcdInteractionState,
-			static_cast<int>(std::floor(point->x)), static_cast<int>(std::floor(point->y)));
+		return std::pair<int, int>{ static_cast<int>(std::floor(point->x)), static_cast<int>(std::floor(point->y)) };
 	}
 
 	void Editor::updateLcdHover(const Rml::Event& _event)
 	{
 		const auto target = lcdTargetAt(_event);
-		m_tooltipLcdEncoder = target;
+		const auto point = lcdNativePointAt(_event);
+
+		// Tooltip field: a field the fork's classifier recognises (on the Monomachine only
+		// SYNTHESIS), or on AMP..LFO 3 a grid field whose label reads what that page should show.
+		m_tooltipLcdEncoder.reset();
+		if(target && m_lcdInteractionState
+			&& (m_lcdInteractionState->surface == lcdInteraction::SurfaceKind::Lfo
+				|| m_lcdInteractionState->surface == lcdInteraction::SurfaceKind::Synthesis))
+		{
+			m_tooltipLcdEncoder = target;
+		}
+		else if(point)
+		{
+			const auto page = currentMonomachineDataPage();
+			for(unsigned encoder = 0; page && encoder < 8; ++encoder)
+			{
+				if(lcdInteraction::encoderRect(lcdInteraction::LayoutKind::Standard, encoder).contains(point->first, point->second))
+				{
+					if(lcdFieldShowsFixedLabel(*page, encoder))
+						m_tooltipLcdEncoder = encoder;
+					break;
+				}
+			}
+		}
+		const auto& name = lcdText::g_machineName;
+		m_tooltipLcdMachineName = point
+			&& point->first >= static_cast<int>(name.x) && point->first < static_cast<int>(name.x + name.width)
+			&& point->second >= static_cast<int>(name.y) - 1 && point->second <= static_cast<int>(name.y + name.height);
 		if(target == m_lcdHoverEncoder)
 			return;
 		m_lcdHoverEncoder = target;
@@ -487,6 +529,7 @@ namespace mdJucePlugin
 	void Editor::clearLcdHover()
 	{
 		m_tooltipLcdEncoder.reset();
+		m_tooltipLcdMachineName = false;
 		if(!m_lcdHoverEncoder && !m_lcdWheelEncoder)
 			return;
 		m_lcdHoverEncoder.reset();
@@ -2103,6 +2146,7 @@ namespace mdJucePlugin
 		constexpr double g_gamepadRepeatDelayMilliseconds = 350.0;
 		constexpr double g_gamepadRepeatIntervalMilliseconds = 110.0;
 		constexpr double g_gamepadEncoderClickMilliseconds = 300.0;
+		constexpr double g_gamepadHighlightTimeoutMilliseconds = 120000.0;	// hide focus after 2 minutes idle
 		constexpr float g_gamepadTriggerThreshold = 0.5f;
 		constexpr float g_gamepadStickDeadzone = 0.2f;
 		constexpr float g_gamepadStickNavigateThreshold = 0.6f;
@@ -2357,15 +2401,32 @@ namespace mdJucePlugin
 				cancelPanelInputGestures();
 				if(m_gamepadFocusRing)
 					m_gamepadFocusRing->SetProperty(Rml::PropertyId::Display, Rml::Style::Display::None);
+				m_gamepadHighlightVisible = false;
+				m_gamepadLastActivityMilliseconds = 0.0;
 				if(auto* const rml = getRmlComponent())
 					rml->enqueueUpdateOnce();
 			}
 			return;
 		}
-		if(!previous.connected && m_gamepadFocusRing)
+
+		// Show the focus highlight only while the controller is in use.
+		const auto active = state.buttons != previous.buttons || state.touching
+			|| std::abs(state.leftX) > g_gamepadStickDeadzone || std::abs(state.leftY) > g_gamepadStickDeadzone
+			|| std::abs(state.rightX) > g_gamepadStickDeadzone || std::abs(state.rightY) > g_gamepadStickDeadzone
+			|| state.leftTrigger > g_gamepadTriggerThreshold || state.rightTrigger > g_gamepadTriggerThreshold;
+		if(active)
+			m_gamepadLastActivityMilliseconds = _nowMilliseconds;
+		const auto highlight = m_gamepadLastActivityMilliseconds > 0.0
+			&& _nowMilliseconds - m_gamepadLastActivityMilliseconds < g_gamepadHighlightTimeoutMilliseconds;
+		if(highlight != m_gamepadHighlightVisible && m_gamepadFocusRing)
 		{
-			m_gamepadFocusRing->SetProperty(Rml::PropertyId::Display, Rml::Style::Display::Block);
-			setGamepadFocus(m_gamepadFocus);
+			m_gamepadHighlightVisible = highlight;
+			m_gamepadFocusRing->SetProperty(Rml::PropertyId::Display,
+				highlight ? Rml::Style::Display::Block : Rml::Style::Display::None);
+			if(highlight)
+				setGamepadFocus(m_gamepadFocus);
+			else if(auto* const rml = getRmlComponent())
+				rml->enqueueUpdateOnce();
 		}
 
 		const auto pressedNow = [&](const Button _b) { return state.pressed(_b) && !previous.pressed(_b); };
@@ -2873,32 +2934,122 @@ namespace mdJucePlugin
 		}
 	}
 
+	bool Editor::lcdFieldShowsFixedLabel(const int _page, const unsigned _encoder) const
+	{
+		if(_page < 1 || _page > 6 || !m_frontPanelSnapshotValid)
+			return false;
+		const auto* const entry = parameterHelp::monomachineEntry(_page, _encoder);
+		const auto* const label = machineHelp::labelForHash(lcdText::hash(m_frontPanelSnapshot, lcdText::fieldLabel(_encoder)));
+		return entry && label && std::strcmp(entry->abbreviation, label) == 0;
+	}
+
+	std::optional<lcdInteraction::State> Editor::verifiedFixedPageState() const
+	{
+		// The fork's classifier only qualifies the Monomachine SYNTHESIS page. On AMP..LFO 3 the
+		// fields sit on the same standard grid; enable exactly the fields whose label reads what
+		// that page should show, so a menu or overlay never becomes a drag target.
+		if(getModel() != md::MachineModel::Monomachine || !m_frontPanelSnapshotValid || m_encoderPress.active())
+			return std::nullopt;
+		const auto page = currentMonomachineDataPage();
+		if(!page || *page < 1 || *page > 6)
+			return std::nullopt;
+
+		uint8_t mask = 0;
+		for(unsigned encoder = 0; encoder < 8; ++encoder)
+			if(lcdFieldShowsFixedLabel(*page, encoder))
+				mask |= static_cast<uint8_t>(1u << encoder);
+		if(mask == 0)
+			return std::nullopt;
+
+		// Identity covers the page and which fields are live, not values, so a drag survives the
+		// value redraws it causes.
+		uint64_t identity = 1469598103934665603ull;
+		for(const auto byte : { static_cast<uint8_t>(0xa6), static_cast<uint8_t>(*page), mask })
+		{
+			identity ^= byte;
+			identity *= 1099511628211ull;
+		}
+
+		lcdInteraction::State state;
+		state.surface = lcdInteraction::SurfaceKind::Synthesis;	// no dedicated kind exists; only layout and mask are used
+		state.layout = lcdInteraction::LayoutKind::Standard;
+		state.activeEncoderMask = mask;
+		state.identityToken = identity;
+		return state;
+	}
+
+	std::string Editor::lfoTargetDescription(const unsigned _encoder) const
+	{
+		if(!m_frontPanelSnapshotValid)
+			return {};
+		const auto* const target = machineHelp::lfoPageForHash(lcdText::hash(m_frontPanelSnapshot, lcdText::lfoValue(0)));
+		if(!target)
+			return {};
+		if(_encoder == 0)
+			return std::string(" Now: ") + target->text + " (" + target->name + ").";
+
+		// DEST: describe the parameter the LFO is aimed at on the selected page.
+		const auto destinationHash = lcdText::hash(m_frontPanelSnapshot, lcdText::lfoValue(1));
+		const parameterHelp::Entry* destination = machineHelp::lfoSpecialDestinationForHash(destinationHash);
+		if(!destination)
+		{
+			if(const auto* const label = machineHelp::labelForHash(destinationHash))
+			{
+				if(target->dataPage == 0)
+				{
+					if(const auto* const machine = machineHelp::machineForHash(
+						lcdText::hash(m_frontPanelSnapshot, lcdText::g_machineName)))
+						destination = machineHelp::parameter(machine->id, label);
+				}
+				else if(target->dataPage > 0)
+				{
+					destination = machineHelp::fixedPageEntry(target->dataPage, label);
+				}
+			}
+		}
+		if(!destination)
+			return std::string(" Now on the ") + target->name + " page.";
+		return std::string(" Now: ") + destination->abbreviation + " (" + destination->name + ") on the "
+			+ target->name + " page. " + destination->description;
+	}
+
 	void Editor::updateParameterTooltip()
 	{
 		if(!m_parameterTooltip)
 			return;
 
-		// What to describe, in priority order: mouse over a knob, mouse over a recognised
-		// LCD field, a held keyboard knob key, then the gamepad's focused knob.
+		// What to describe, in priority order: mouse over a knob, mouse over the LCD (the machine
+		// name or a recognised field), a held keyboard knob key, then the gamepad's focused knob.
 		std::optional<unsigned> encoder;
+		bool machineName = false;
 		Rml::Element* anchor = nullptr;
 		if(m_tooltipHoverKnob && m_encoders[*m_tooltipHoverKnob])
 		{
 			encoder = m_tooltipHoverKnob;
 			anchor = m_encoders[*encoder];
 		}
-		else if(m_tooltipLcdEncoder && m_lcdArea && m_lcdInteractionState
-			&& m_lcdInteractionState->surface == lcdInteraction::SurfaceKind::Lfo)
+		else if(m_tooltipLcdMachineName && m_lcdArea)
 		{
-			encoder = m_tooltipLcdEncoder;
+			machineName = true;
 			anchor = m_lcdArea;
+		}
+		else if(m_tooltipLcdEncoder && m_lcdArea)
+		{
+			// Re-check fixed-page fields each update: the screen may have changed under the mouse.
+			const auto currentPage = currentMonomachineDataPage();
+			const auto fixedGrid = currentPage && *currentPage >= 1 && *currentPage <= 6;
+			if(!fixedGrid || lcdFieldShowsFixedLabel(*currentPage, *m_tooltipLcdEncoder))
+			{
+				encoder = m_tooltipLcdEncoder;
+				anchor = m_lcdArea;
+			}
 		}
 		else if(m_keyboardEncoder && *m_keyboardEncoder < m_encoders.size() && m_encoders[*m_keyboardEncoder])
 		{
 			encoder = static_cast<unsigned>(*m_keyboardEncoder);
 			anchor = m_encoders[*encoder];
 		}
-		else if(m_gamepad && m_gamepadPrevious.connected && m_gamepadFocus < m_gamepadTargets.size()
+		else if(m_gamepadHighlightVisible && m_gamepadFocus < m_gamepadTargets.size()
 			&& m_gamepadTargets[m_gamepadFocus].knob)
 		{
 			const auto index = static_cast<unsigned>(m_gamepadTargets[m_gamepadFocus].encoder);
@@ -2909,9 +3060,52 @@ namespace mdJucePlugin
 			}
 		}
 
+		std::string abbreviation, name, description, footer;
 		const auto page = currentMonomachineDataPage();
-		const auto* const entry = encoder && page ? parameterHelp::monomachineEntry(*page, *encoder) : nullptr;
-		if(!entry || !anchor)
+		if(machineName && m_frontPanelSnapshotValid)
+		{
+			if(const auto* const machine = machineHelp::machineForHash(
+				lcdText::hash(m_frontPanelSnapshot, lcdText::g_machineName)))
+			{
+				abbreviation = machine->lcdName;
+				name = machine->name;
+				description = machine->description;
+				footer = "Machine on the active track";
+			}
+		}
+		else if(encoder && page)
+		{
+			const auto knob = std::string(1, static_cast<char>('A' + *encoder));
+			if(*page == 0)
+			{
+				// SYNTHESIS depends on the machine: read both the field label and the machine
+				// name off the LCD. Anything unrecognised (a menu, an overlay) shows nothing.
+				const auto* const label = m_frontPanelSnapshotValid ? machineHelp::labelForHash(
+					lcdText::hash(m_frontPanelSnapshot, lcdText::fieldLabel(*encoder))) : nullptr;
+				const auto* const machine = m_frontPanelSnapshotValid ? machineHelp::machineForHash(
+					lcdText::hash(m_frontPanelSnapshot, lcdText::g_machineName)) : nullptr;
+				if(const auto* const entry = label && machine ? machineHelp::parameter(machine->id, label) : nullptr)
+				{
+					abbreviation = entry->abbreviation;
+					name = entry->name;
+					description = entry->description;
+					footer = std::string(machine->name) + " synthesis, knob " + knob;
+				}
+			}
+			else if(const auto* const entry = parameterHelp::monomachineEntry(*page, *encoder))
+			{
+				abbreviation = entry->abbreviation;
+				name = entry->name;
+				description = entry->description;
+				footer = std::string(parameterHelp::g_monomachinePageNames[*page]) + " page, knob " + knob;
+
+				// On an LFO page, say what PAGE and DEST are currently set to, read off the LCD.
+				if(*page >= 4 && *page <= 6 && *encoder <= 1)
+					description += lfoTargetDescription(*encoder);
+			}
+		}
+
+		if(abbreviation.empty() || !anchor)
 		{
 			if(!m_parameterTooltipContent.empty())
 			{
@@ -2923,10 +3117,24 @@ namespace mdJucePlugin
 			return;
 		}
 
-		const auto content = std::string("<span style=\"color: #ffc83a;\">") + entry->abbreviation + "</span>  "
-			+ entry->name + "<br/><span style=\"color: #b3bdb0;\">" + entry->description + "</span><br/>"
-			+ "<span style=\"color: #7f8a82; font-size: 9dp;\">" + parameterHelp::g_monomachinePageNames[*page]
-			+ " page, knob " + std::string(1, static_cast<char>('A' + *encoder)) + "</span>";
+		const auto escape = [](const std::string& _text)
+		{
+			std::string result;
+			for(const auto c : _text)
+			{
+				switch(c)
+				{
+				case '&': result += "&amp;"; break;
+				case '<': result += "&lt;"; break;
+				case '>': result += "&gt;"; break;
+				default: result += c; break;
+				}
+			}
+			return result;
+		};
+		const auto content = "<span style=\"color: #ffc83a;\">" + escape(abbreviation) + "</span>  "
+			+ escape(name) + "<br/><span style=\"color: #b3bdb0;\">" + escape(description) + "</span><br/>"
+			+ "<span style=\"color: #7f8a82; font-size: 9dp;\">" + escape(footer) + "</span>";
 		const auto key = content + '@' + std::to_string(reinterpret_cast<uintptr_t>(anchor));
 		if(key == m_parameterTooltipContent)
 			return;

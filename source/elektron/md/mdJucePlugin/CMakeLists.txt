@@ -25,6 +25,8 @@ set(SOURCES
 	mdPixelPerfectPanel.cpp mdPixelPerfectPanel.h
 	mdPanelAffordances.h
 	mdParameterHelp.h
+	mdMachineHelp.h
+	mdLcdText.h
 	mdPluginEditorState.cpp mdPluginEditorState.h
 	mdProductSkinPolicy.h
 	mdProductSkins.h

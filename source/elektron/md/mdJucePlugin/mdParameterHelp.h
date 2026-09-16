@@ -57,7 +57,7 @@ namespace mdJucePlugin::parameterHelp
 	inline constexpr Page g_monomachineLfo
 	{{
 		{ "PAGE", "Target page",  "Which DATA page this LFO modulates." },
-		{ "DEST", "Destination",  "Which parameter on the target page is modulated. PTCH gives pitch destinations." },
+		{ "DEST", "Destination",  "Which parameter on the page chosen by PAGE is modulated." },
 		{ "TRIG", "Trig mode",    "How note trigs restart, hold or gate the LFO." },
 		{ "WAVE", "Waveform",     "The LFO shape, from eleven waveforms." },
 		{ "MULT", "Multiplier",   "Multiplies SPD. Each step up halves the cycle time." },

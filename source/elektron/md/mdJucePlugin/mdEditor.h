@@ -102,6 +102,8 @@ namespace mdJucePlugin
 		void createLcd();
 		void updateLcdInteractionState();
 		std::optional<unsigned> lcdTargetAt(const Rml::Event& _event) const;
+		// Mouse position in native LCD pixels, or nothing outside the drawn display.
+		std::optional<std::pair<int, int>> lcdNativePointAt(const Rml::Event& _event) const;
 		void updateLcdHover(const Rml::Event& _event);
 		void clearLcdHover();
 		void cancelLcdGesture();
@@ -173,6 +175,12 @@ namespace mdJucePlugin
 		// Hover help for parameter abbreviations.
 		void createParameterTooltip();
 		void updateParameterTooltip();
+		// True when LCD field _encoder on AMP..LFO 3 shows the label that page should show.
+		bool lcdFieldShowsFixedLabel(int _page, unsigned _encoder) const;
+		// LCD drag/hover state for Monomachine AMP..LFO 3, built from verified field labels.
+		std::optional<lcdInteraction::State> verifiedFixedPageState() const;
+		// On an LFO page: " Now: ..." text for PAGE (encoder 0) or DEST (encoder 1), read off the LCD.
+		std::string lfoTargetDescription(unsigned _encoder) const;
 
 		void createLeds();
 		bool updateLeds();
@@ -333,6 +341,10 @@ namespace mdJucePlugin
 		Rml::Element* m_lcdArea = nullptr;
 		std::optional<unsigned> m_tooltipHoverKnob;		// mouse over encoder A-H
 		std::optional<unsigned> m_tooltipLcdEncoder;	// mouse over a recognised LCD field
+		bool m_tooltipLcdMachineName = false;			// mouse over the machine name on the LCD
+		// The gamepad focus highlight shows only after controller input and hides after a quiet spell.
+		double m_gamepadLastActivityMilliseconds = 0.0;
+		bool m_gamepadHighlightVisible = false;
 		std::string m_parameterTooltipContent;
 	};
 }
