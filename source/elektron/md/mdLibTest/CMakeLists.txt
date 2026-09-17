@@ -263,6 +263,9 @@ add_executable(mdmmBench mdmmBench.cpp)
 target_link_libraries(mdmmBench PRIVATE mdLib)
 
 # Local tool (not a test): captures LCD screens and verifies the tooltip tables against them.
+# Local tool (not a test): records one note so its pitch can be tracked over time.
+add_executable(mmPitchProbe mmPitchProbe.cpp)
+target_link_libraries(mmPitchProbe PRIVATE mdLib)
 add_executable(mdmmLcdCapture mdmmLcdCapture.cpp ../mdJucePlugin/mdLcdInteractionModel.cpp)
 target_link_libraries(mdmmLcdCapture PRIVATE mdLib)
 

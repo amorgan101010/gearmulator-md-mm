@@ -79,13 +79,18 @@ int main(int argc, char** argv)
 	// "sine": assign GND-SIN (machine 01, init=1) to all six tracks, as
 	// mmAudioFirmwareTest --sine-midi does, and retrigger notes during the run so
 	// the output fingerprint covers real audio rather than silence.
-	const bool sine = mm && argc >= 5 && std::string_view(argv[4]) == "sine";
+	// "machine:<id>" does the same with any machine, which measures what poly mode costs:
+	// six engines playing one sound. Chords play a note per track, as poly mode does.
+	const std::string_view mode = argc >= 5 ? std::string_view(argv[4]) : std::string_view();
+	const bool sine = mm && (mode == "sine" || mode.rfind("machine:", 0) == 0);
+	const auto machine = static_cast<uint8_t>(mode.rfind("machine:", 0) == 0
+		? std::atoi(std::string(mode.substr(8)).c_str()) : 1);
 	if(sine)
 	{
 		for(uint8_t track = 0; track < 6; ++track)
 		{
 			synthLib::SMidiEvent assign(synthLib::MidiEventSource::Host);
-			assign.sysex = {0xf0, 0, 0x20, 0x3c, 3, 0, 0x5b, track, 1, 1, 0xf7};
+			assign.sysex = {0xf0, 0, 0x20, 0x3c, 3, 0, 0x5b, track, machine, 1, 0xf7};
 			hardware->sendMidi(assign);
 			advance(*hardware, md::g_samplerate);
 		}
