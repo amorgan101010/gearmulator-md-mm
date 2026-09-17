@@ -3622,6 +3622,10 @@ namespace mdJucePlugin
 					name = entry->name;
 					description = entry->description;
 					footer = std::string(machine->name) + " synthesis, knob " + knob;
+					// Settings print their value under the knob; say what it is set to.
+					if(const auto* const value = machineHelp::machineValueForHash(machine->id, label,
+						lcdText::hash(m_frontPanelSnapshot, lcdText::lfoValue(*encoder))))
+						description += std::string(" Now: ") + value->text + ". " + value->meaning;
 				}
 			}
 			else if(const auto* const entry = parameterHelp::monomachineEntry(*page, *encoder))
@@ -3631,9 +3635,15 @@ namespace mdJucePlugin
 				description = entry->description;
 				footer = std::string(parameterHelp::g_monomachinePageNames[*page]) + " page, knob " + knob;
 
-				// On an LFO page, say what PAGE and DEST are currently set to, read off the LCD.
+				// On an LFO page, say what the knob is currently set to, read off the LCD.
 				if(*page >= 4 && *page <= 6 && *encoder <= 1)
 					description += lfoTargetDescription(*encoder);
+				else if(*page >= 4 && *page <= 6 && m_frontPanelSnapshotValid)
+				{
+					if(const auto* const value = machineHelp::lfoValueForHash(*encoder,
+						lcdText::hash(m_frontPanelSnapshot, lcdText::lfoValue(*encoder))))
+						description += std::string(" Now: ") + value->text + ". " + value->meaning;
+				}
 			}
 		}
 

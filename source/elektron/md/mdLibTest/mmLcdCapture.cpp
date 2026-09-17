@@ -93,6 +93,73 @@ namespace
 		return 0;
 	}
 
+	// "enums <model>": for every machine, sweep each SYNTHESIS knob whose value line shows text
+	// (numeric parameters leave it blank) and record every distinct reading, for transcription.
+	int runEnumSweep(md::Hardware& _hardware, const md::MachineModel _model, const std::string& _out)
+	{
+		const auto assign = [&](const int _id, const bool _userWave)
+		{
+			synthLib::SMidiEvent e(synthLib::MidiEventSource::Host);
+			if(_model == md::MachineModel::Monomachine)
+				e.sysex = { 0xf0, 0x00, 0x20, 0x3c, 0x03, 0x00, 0x5b, 0x00,
+					static_cast<uint8_t>(_id), 0x01, 0xf7 };
+			else
+				e.sysex = { 0xf0, 0x00, 0x20, 0x3c, 0x02, 0x00, 0x5b, 0x00,
+					static_cast<uint8_t>(_id), static_cast<uint8_t>(_userWave ? 1 : 0), 0x02, 0xf7 };
+			_hardware.sendMidi(e);
+			advance(_hardware, md::g_samplerate);
+		};
+		const auto turn = [&](const unsigned _encoder, const int _steps)
+		{
+			const auto command = md::panelEncoderCommand(_model, static_cast<md::PanelEncoder>(_encoder));
+			for(int i = 0; i < std::abs(_steps); ++i)
+			{
+				_hardware.trySendPanelEvent(*command, _steps > 0 ? 0x01 : 0xff);
+				advance(_hardware, 1024);
+			}
+			advance(_hardware, md::g_samplerate / 16);
+		};
+		// Monomachine: every machine. Machinedrum: one machine per family, since the help tables
+		// are per family (plus CTR-AL/8P and the master FX control machines, which differ).
+		std::vector<int> keys;
+		if(_model == md::MachineModel::Monomachine)
+			keys = { 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,32,33 };
+		else
+			keys = { 1,3,16,17,19,22,24,25,28,32,36,38,48,49,56,57,63,64,68,72,80,82,84,96,112,113,120,121,122,123,0x100,0x120 };
+		for(const auto key : keys)
+		{
+			assign(key & 0xff, (key & 0x100) != 0);
+			for(unsigned encoder = 0; encoder < 8; ++encoder)
+			{
+				const auto valueRegion = mdJucePlugin::lcdText::lfoValue(encoder);
+				if(mdJucePlugin::lcdText::blank(_hardware.getFrontPanelSnapshot(), valueRegion))
+					continue;	// numeric parameter: the value line stays empty
+				const auto read = [&]
+				{
+					return mdJucePlugin::lcdText::hash(_hardware.getFrontPanelSnapshot(), valueRegion);
+				};
+				// A value can span ~32 detents, so scan the whole range in coarse steps instead of
+				// waiting for a change after each one.
+				turn(encoder, -160);
+				std::vector<uint64_t> seen;
+				for(int scan = 0; scan <= 40 && seen.size() < 40; ++scan)
+				{
+					const auto now = read();
+					if(std::find(seen.begin(), seen.end(), now) == seen.end())
+					{
+						std::printf("machine 0x%03x knob %u value %zu 0x%016llx\n", key, encoder,
+							seen.size(), static_cast<unsigned long long>(now));
+						capture(_hardware, _out + "/enum-" + std::to_string(key) + "-" + std::to_string(encoder)
+							+ "-" + std::to_string(seen.size()) + ".pbm");
+						seen.push_back(now);
+					}
+					turn(encoder, 4);
+				}
+				std::fprintf(stderr, "machine 0x%03x knob %u: %zu values\n", key, encoder, seen.size());
+			}
+		}
+		return 0;
+	}
 	// Machinedrum OS 1.63 (UW): capture boot, the three data pages and every machine.
 	int runMachinedrum(const std::string& _out, int argc, char** argv)
 	{
@@ -109,6 +176,8 @@ namespace
 		advance(*hardware, md::g_samplerate * 20);
 		if(argc >= 4 && std::string(argv[3]) == "ccout")
 			return runCcOut(*hardware, md::MachineModel::Machinedrum);
+		if(argc >= 4 && std::string(argv[3]) == "enums")
+			return runEnumSweep(*hardware, md::MachineModel::Machinedrum, _out);
 
 		capture(*hardware, _out + "/boot.pbm");
 		for(int page = 1; page <= 2; ++page)
@@ -500,6 +569,8 @@ int main(int argc, char** argv)
 	advance(*hardware, md::g_samplerate * 20);
 	if(argc >= 3 && std::string(argv[2]) == "ccout")
 		return runCcOut(*hardware, md::MachineModel::Monomachine);
+	if(argc >= 3 && std::string(argv[2]) == "enums")
+		return runEnumSweep(*hardware, md::MachineModel::Monomachine, out);
 
 	// "turncheck" mode: on AMP and LFO 1, turn each knob and read every field label right
 	// after each detent, to see whether turning ever hides labels (which would end an LCD drag).
@@ -543,6 +614,52 @@ int main(int argc, char** argv)
 		return 0;
 	}
 
+	// "values" mode: on MM LFO 1, sweep one knob at a time through its whole range and record every
+	// distinct value-line reading, so enum values (TRIG, WAVE, ...) can be transcribed and hashed.
+	if(argc >= 3 && std::string(argv[2]) == "values")
+	{
+		const auto turn = [&](const md::PanelEncoder _encoder, const int _steps)
+		{
+			const auto command = md::panelEncoderCommand(md::MachineModel::Monomachine, _encoder);
+			for(int i = 0; i < std::abs(_steps); ++i)
+			{
+				hardware->trySendPanelEvent(*command, _steps > 0 ? 0x01 : 0xff);
+				advance(*hardware, 1024);
+			}
+			advance(*hardware, md::g_samplerate / 8);
+		};
+		for(int page = 0; page < 4; ++page)
+			tap(*hardware, md::PanelControl::DataPageForward);	// LFO 1
+		for(const unsigned encoder : {2u, 3u, 4u, 6u})		// TRIG, WAVE, MULT, INTL
+		{
+			const auto knob = static_cast<md::PanelEncoder>(encoder);
+			const auto value = [&]
+			{
+				return mdJucePlugin::lcdText::hash(hardware->getFrontPanelSnapshot(),
+					mdJucePlugin::lcdText::lfoValue(encoder));
+			};
+			turn(knob, -140);
+			std::vector<uint64_t> seen;
+			for(int attempt = 0, unchanged = 0; attempt < 160 && unchanged < 4; ++attempt)
+			{
+				const auto now = value();
+				if(!seen.empty() && now == seen.back())
+				{
+					++unchanged;
+					turn(knob, 1);
+					continue;
+				}
+				unchanged = 0;
+				std::printf("knob %u value %zu 0x%016llx\n", encoder, seen.size(),
+					static_cast<unsigned long long>(now));
+				capture(*hardware, out + "/val-k" + std::to_string(encoder) + "-"
+					+ std::to_string(seen.size()) + ".pbm");
+				seen.push_back(now);
+				turn(knob, 1);
+			}
+		}
+		return 0;
+	}
 	// "lfo" mode: on LFO 1, step PAGE (knob A) through every value and, for each, DEST (knob B)
 	// through every value, saving screens and value-line hashes for transcription.
 	if(argc >= 3 && std::string(argv[2]) == "lfo")
