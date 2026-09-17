@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <iterator>
 
 #include "mdParameterHelp.h"
 
@@ -358,6 +359,113 @@ namespace mdJucePlugin::machineHelp
 		{ 33, "TUNE", { "TUNE", "Tune", "Sets the tuning of the oscillators." } },
 	};
 
+	// Values an LFO page shows as text under the knob. Captured with mmLcdCapture (mode "values")
+	// and checked against the owner's manual.
+	struct ValueHash
+	{
+		uint64_t hash;
+		const char* text;
+		const char* meaning;
+	};
+	inline constexpr ValueHash g_lfoTrigValues[] =
+	{
+		{ 0xfe136a0581c038a7ull, "FREE", "Runs continuously. Trigs never restart it." },
+		{ 0x01dc17f9cdc8c639ull, "TRIG", "Restarts on every trig, then keeps running." },
+		{ 0xa68751bc2df4b213ull, "HOLD", "Runs in the background; each trig freezes its level until the next trig." },
+		{ 0x5159b2ac95069d5cull, "ONE",  "Restarts on each trig, runs one cycle, then holds the last level." },
+		{ 0x889fd32c3ec0e9e8ull, "HALF", "Restarts on each trig, runs half a cycle, then holds the last level." },
+	};
+	inline constexpr ValueHash g_lfoWaveValues[] =
+	{
+		{ 0x057e3ce758b77cf8ull, "TRI",  "Triangle." },
+		{ 0xccd380486250ca79ull, "ITRI", "Triangle, mirrored." },
+		{ 0x8d8acaad854fec9dull, "SAW",  "Sawtooth." },
+		{ 0x29a9e2070dd730a0ull, "ISAW", "Sawtooth, mirrored." },
+		{ 0x062a4abc716c6c76ull, "SQR",  "Square." },
+		{ 0x58018fc0f16b7c5full, "ISQR", "Square, mirrored." },
+		{ 0x33f579c5356634b9ull, "EXP",  "Exponential decay." },
+		{ 0x7ee94dc9a0e27f48ull, "IEXP", "Exponential decay, mirrored." },
+		{ 0xaf5b35bc85033d29ull, "RMP",  "Ramp." },
+		{ 0x52ef14b1eb1d096cull, "IRMP", "Ramp, mirrored." },
+		{ 0x8504d268d03033eeull, "RND",  "Random: a new level each cycle." },
+	};
+	inline constexpr ValueHash g_lfoMultValues[] =
+	{
+		{ 0x1e4beb60aec1b5fcull, "1X",  "SPD as set." },
+		{ 0x5d912bbe93b2d5ebull, "2X",  "Twice as fast as SPD alone." },
+		{ 0x1e800b059d3d5c21ull, "4X",  "Four times as fast as SPD alone." },
+		{ 0x5c1b25c03da1d01bull, "8X",  "Eight times as fast as SPD alone." },
+		{ 0x405a9579637aadd4ull, "16X", "Sixteen times as fast as SPD alone." },
+		{ 0x93edd2a112eafe8eull, "32X", "Thirty-two times as fast as SPD alone." },
+		{ 0x952ed238cc7f31a5ull, "64X", "Sixty-four times as fast as SPD alone." },
+	};
+	// The value shown by LFO knob _encoder (2 TRIG, 3 WAVE, 4 MULT), or nullptr.
+	inline const ValueHash* lfoValueForHash(const unsigned _encoder, const uint64_t _hash)
+	{
+		const ValueHash* table = nullptr;
+		size_t count = 0;
+		switch(_encoder)
+		{
+		case 2: table = g_lfoTrigValues; count = std::size(g_lfoTrigValues); break;
+		case 3: table = g_lfoWaveValues; count = std::size(g_lfoWaveValues); break;
+		case 4: table = g_lfoMultValues; count = std::size(g_lfoMultValues); break;
+		default: return nullptr;
+		}
+		for(size_t i = 0; i < count; ++i)
+			if(table[i].hash == _hash)
+				return &table[i];
+		return nullptr;
+	}
+	// Values a machine shows as text under a SYNTHESIS knob (numeric parameters leave that line
+	// blank). Captured with mmLcdCapture (mode "enums") and checked against the owner's manual.
+	struct MachineValue
+	{
+		uint8_t machine;
+		const char* label;
+		ValueHash value;
+	};
+	inline constexpr MachineValue g_machineValues[] =
+	{
+		// GND-NOIS
+		{ 2, "STON", { 0x672b72eb6a3265afull, "OFF", "ST changes the character of the noise." } },
+		{ 2, "STON", { 0x5616c314c6c999b5ull,  "ON",  "ST spreads the noise across the stereo field instead." } },
+		// SID-6581
+		{ 3, "PWRS", { 0x672b72eb6a3265afull, "OFF", "The pulse sweep runs free." } },
+		{ 3, "PWRS", { 0x5616c314c6c999b5ull,  "ON",  "Each note restarts the pulse sweep from PW." } },
+		{ 3, "WAVE", { 0x057e3ce758b77cf8ull, "TRI",  "Triangle: soft and hollow." } },
+		{ 3, "WAVE", { 0x8d8acaad854fec9dull, "SAW",  "Sawtooth: bright and buzzy." } },
+		{ 3, "WAVE", { 0x2abd929416ea79fcull, "PULS", "Pulse, shaped by PW." } },
+		{ 3, "WAVE", { 0x73f723acbd98505cull, "MIX",  "The SID chip's own mixed waveform." } },
+		{ 3, "WAVE", { 0xc75acb8f0f865d31ull, "NOIS", "Noise." } },
+		{ 3, "MOD",  { 0x672b72eb6a3265afull, "OFF",  "No modulation." } },
+		{ 3, "MOD",  { 0xaeadebb42b82a65eull, "RING", "Ring modulation against the second frequency." } },
+		{ 3, "MOD",  { 0x35b0eeb7f110332eull, "SYNC", "Hard sync to the second frequency." } },
+		{ 3, "MOD",  { 0x10b7b153d8af5ae0ull, "R+S",  "Ring modulation and hard sync together." } },
+		{ 3, "MSRC", { 0x6be3e7ddf7b4731bull, "MFRQ", "The second frequency comes from the MFRQ knob." } },
+		{ 3, "MSRC", { 0xd8d34a886d80ba0cull, "PRCH", "The second frequency follows the note playing on the previous track, so two tracks shape this sound." } },
+		// SWAVE-PULS
+		{ 5, "PWRS", { 0x672b72eb6a3265afull, "OFF", "The pulse sweep runs free." } },
+		{ 5, "PWRS", { 0x5616c314c6c999b5ull,  "ON",  "Each note restarts the pulse sweep from PW." } },
+		// DPRO-WAVE
+		{ 6, "WPRS", { 0x672b72eb6a3265afull, "OFF", "The wave phase sweep runs free." } },
+		{ 6, "WPRS", { 0x5616c314c6c999b5ull,  "ON",  "Each note restarts the wave phase sweep from WP." } },
+		{ 6, "SYNC", { 0x672b72eb6a3265afull, "OFF",  "No hard sync." } },
+		{ 6, "SYNC", { 0xb4119762f03e5b61ull, "SFRQ", "Hard sync to the frequency set by SFRQ." } },
+		{ 6, "SYNC", { 0xd8d34a886d80ba0cull, "PRCH", "Hard sync to the note playing on the previous track." } },
+		// VO-6
+		{ 11, "V-SW", { 0x672b72eb6a3265afull, "OFF", "The vowel is silent, for words ending on a consonant." } },
+		{ 11, "V-SW", { 0x5616c314c6c999b5ull,  "ON",  "The vowel sounds after the consonant." } },
+	};
+	// The value the machine currently shows under knob _label, or nullptr.
+	inline const ValueHash* machineValueForHash(const uint8_t _machine, const char* _label, const uint64_t _hash)
+	{
+		if(!_label)
+			return nullptr;
+		for(const auto& entry : g_machineValues)
+			if(entry.machine == _machine && entry.value.hash == _hash && std::strcmp(entry.label, _label) == 0)
+				return &entry.value;
+		return nullptr;
+	}
 	inline const char* labelForHash(const uint64_t _hash)
 	{
 		for(const auto& entry : g_labelHashes)
