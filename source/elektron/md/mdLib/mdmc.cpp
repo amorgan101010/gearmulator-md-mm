@@ -467,6 +467,8 @@ namespace md
 			|| m_externalIrq4Pending || readImm16(cpu.pc) != 0x60fe)
 			return 0;
 
+		// Deferred SIM cycles must be applied before its deadlines are meaningful.
+		m_sim.flushPendingCycles();
 		// Stop strictly before a timer interrupt or panel-UART character completion.
 		// The normal single-instruction path crosses that event and materializes it.
 		for(const auto deadline : {m_sim.cyclesUntilNextTimerInterrupt(),

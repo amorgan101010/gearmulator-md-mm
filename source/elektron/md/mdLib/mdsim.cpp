@@ -1,5 +1,6 @@
 #include "mdsim.h"
 
+#include <algorithm>
 #include <utility>
 
 // md::Sim - MCF5206e SIM peripheral model. See mdsim.h for the register map and
@@ -60,6 +61,7 @@ namespace md
 
 	uint8_t Sim::read8(const uint32_t _offset)
 	{
+		flushPendingCycles();
 		if(_offset >= g_windowSize)
 			return 0;
 
@@ -95,16 +97,20 @@ namespace md
 
 	uint16_t Sim::read16(const uint32_t _offset)
 	{
+		flushPendingCycles();
 		return static_cast<uint16_t>((static_cast<uint16_t>(read8(_offset)) << 8) | read8(_offset + 1));
 	}
 
 	uint32_t Sim::read32(const uint32_t _offset)
 	{
+		flushPendingCycles();
 		return (static_cast<uint32_t>(read16(_offset)) << 16) | read16(_offset + 2);
 	}
 
 	void Sim::write8(const uint32_t _offset, const uint8_t _value)
 	{
+		flushPendingCycles();
+		m_batchBudget = 0;	// a register write can retune the timers or the UART
 		if(_offset >= g_windowSize)
 			return;
 
@@ -187,12 +193,16 @@ namespace md
 
 	void Sim::write16(const uint32_t _offset, const uint16_t _value)
 	{
+		flushPendingCycles();
+		m_batchBudget = 0;	// a register write can retune the timers or the UART
 		write8(_offset,     static_cast<uint8_t>(_value >> 8));
 		write8(_offset + 1, static_cast<uint8_t>(_value & 0xff));
 	}
 
 	void Sim::write32(const uint32_t _offset, const uint32_t _value)
 	{
+		flushPendingCycles();
+		m_batchBudget = 0;	// a register write can retune the timers or the UART
 		write16(_offset,     static_cast<uint16_t>(_value >> 16));
 		write16(_offset + 2, static_cast<uint16_t>(_value & 0xffff));
 	}
@@ -520,9 +530,62 @@ namespace md
 
 	void Sim::exec(const uint32_t _cycles)
 	{
-		stepTimer(0, g_timer1Base, _cycles);
-		stepTimer(1, g_timer2Base, _cycles);
-		stepPanelTransmitter(_cycles);
+		// The timers and the panel transmitter are linear in cycles until their next event, so
+		// running them after every CPU instruction is wasted work. Accumulate instead, and apply
+		// as soon as the accumulated cycles reach the first event. Register access flushes too,
+		// so no observer can see a stale timer or a character that should already have left.
+		m_pendingCycles += _cycles;
+		if(m_pendingCycles < m_batchBudget)
+			return;
+		applyPendingCycles();
+	}
+	void Sim::applyPendingCycles()
+	{
+		const auto cycles = m_pendingCycles;
+		m_pendingCycles = 0;
+		if(cycles)
+		{
+			stepTimer(0, g_timer1Base, cycles);
+			stepTimer(1, g_timer2Base, cycles);
+			stepPanelTransmitter(cycles);
+		}
+		m_batchBudget = computeBatchBudget();
+	}
+	// Cycles until this timer's next reference match, ignoring interrupt enables: the TER REF
+	// latch happens regardless of ORI/IMR, and firmware polls it.
+	uint32_t Sim::cyclesUntilTimerEvent(const unsigned _index) const
+	{
+		const auto& timer = m_timer[_index];
+		if(!timer.running || timer.div == 0)
+			return g_noTimerInterruptDeadline;
+		uint32_t ticks;
+		if(!timer.freeRunning)
+		{
+			if(timer.period == 0)
+				return g_noTimerInterruptDeadline;
+			ticks = timer.counter < timer.period ? timer.period - timer.counter : 1;
+		}
+		else
+		{
+			const uint32_t distance = (static_cast<uint32_t>(timer.reference)
+				- static_cast<uint32_t>(timer.counter)) & 0xffff;
+			ticks = distance == 0 ? 0x10000 : distance;
+		}
+		const uint64_t needed = static_cast<uint64_t>(ticks) * timer.div;
+		if(needed <= timer.frac)
+			return 0;
+		const uint64_t remaining = needed - timer.frac;
+		return remaining >= g_noTimerInterruptDeadline
+			? g_noTimerInterruptDeadline : static_cast<uint32_t>(remaining);
+	}
+	uint32_t Sim::computeBatchBudget() const
+	{
+		auto budget = cyclesUntilTimerEvent(0);
+		budget = std::min(budget, cyclesUntilTimerEvent(1));
+		const auto& uart = m_uart[g_uartPanel];
+		if(uart.txShiftBusy)
+			budget = std::min(budget, uart.txCyclesRemaining);
+		return budget;
 	}
 
 	uint32_t Sim::cyclesUntilNextUartTransmit() const
@@ -643,6 +706,7 @@ namespace md
 
 	bool Sim::takeNextInterrupt(uint8_t& _level, uint8_t& _vector)
 	{
+		flushPendingCycles();
 		if(!m_interruptCheckNeeded)
 			return false;
 

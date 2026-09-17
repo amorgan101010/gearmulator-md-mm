@@ -85,9 +85,11 @@ int main(int argc, char** argv)
 	const bool sine = mm && (mode == "sine" || mode.rfind("machine:", 0) == 0);
 	const auto machine = static_cast<uint8_t>(mode.rfind("machine:", 0) == 0
 		? std::atoi(std::string(mode.substr(8)).c_str()) : 1);
+	// Optional voice count: how many tracks get the machine and a note. Poly mode uses six.
+	const auto voices = static_cast<uint8_t>(argc >= 6 ? std::max(1, std::min(6, std::atoi(argv[5]))) : 6);
 	if(sine)
 	{
-		for(uint8_t track = 0; track < 6; ++track)
+		for(uint8_t track = 0; track < voices; ++track)
 		{
 			synthLib::SMidiEvent assign(synthLib::MidiEventSource::Host);
 			assign.sysex = {0xf0, 0, 0x20, 0x3c, 3, 0, 0x5b, track, machine, 1, 0xf7};
@@ -118,7 +120,7 @@ int main(int argc, char** argv)
 		if(sine && i % retriggerBlocks == 0)
 		{
 			const uint8_t note = static_cast<uint8_t>(48 + (i / retriggerBlocks) % 24);
-			for(uint8_t ch = 0; ch < 6; ++ch)
+			for(uint8_t ch = 0; ch < voices; ++ch)
 				hardware->sendMidi({synthLib::MidiEventSource::Host, static_cast<uint8_t>(0x90 | ch), note, 100});
 		}
 		const auto t0 = clock::now();
@@ -143,6 +145,21 @@ int main(int argc, char** argv)
 	}
 	const double wallNs = std::chrono::duration<double, std::nano>(clock::now() - start).count();
 
+	// Worst blocks with their position in the run: a spike at a fixed time is warm-up or JIT
+	// compilation, spikes spread through the run are something recurring.
+	{
+		std::vector<std::pair<double, uint32_t>> worst;
+		worst.reserve(load.size());
+		for(uint32_t i = 0; i < load.size(); ++i)
+			worst.emplace_back(load[i], i);
+		std::partial_sort(worst.begin(), worst.begin() + std::min<size_t>(6, worst.size()), worst.end(),
+			[](const auto& _a, const auto& _b) { return _a.first > _b.first; });
+		std::cout << "worst blocks:";
+		for(size_t i = 0; i < std::min<size_t>(6, worst.size()); ++i)
+			std::cout << " " << std::fixed << std::setprecision(2) << worst[i].first
+				<< "@" << std::setprecision(2) << (double(worst[i].second) * block / md::g_samplerate) << "s";
+		std::cout << '\n';
+	}
 	std::sort(load.begin(), load.end());
 	const auto pct = [&](double _q) { return load[static_cast<size_t>(_q * (load.size() - 1))]; };
 	const auto over = std::count_if(load.begin(), load.end(), [](double _l) { return _l > 1.0; });

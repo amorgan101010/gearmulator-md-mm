@@ -200,6 +200,13 @@ namespace md
 		// and the source unmasked in IMR this asserts the timer interrupt (level/vector
 		// from the timer's ICR - the MD's tick is Timer 1: autovectored, level 1).
 		void exec(uint32_t _cycles);
+		// exec() defers the timer/UART work until something can observe it. Anything that reads
+		// SIM state outside this class goes through the register entry points, which flush first.
+		void flushPendingCycles()
+		{
+			if(m_pendingCycles)
+				applyPendingCycles();
+		}
 		bool needsInterruptCheck() const { return m_interruptCheckNeeded; }
 		bool externalIrq4Asserted() const { return m_extIrq4Level; }
 
@@ -327,6 +334,11 @@ namespace md
 			bool freeRunning = false;
 		};
 
+		void     applyPendingCycles();
+		// Cycles that may be accumulated before a timer reference match or the end of a UART
+		// character, i.e. before deferring would change what the firmware can see.
+		uint32_t computeBatchBudget() const;
+		uint32_t cyclesUntilTimerEvent(unsigned _index) const;
 		void     stepTimer(unsigned _index, uint32_t _base, uint32_t _cycles);
 		void     refreshTimerConfiguration(unsigned _index, uint32_t _base);
 		uint32_t cyclesUntilTimerInterrupt(
@@ -360,6 +372,8 @@ namespace md
 		// a complete priority scan finds no injectable source.  It therefore removes the
 		// settled per-instruction UART/timer scan without changing interrupt boundaries.
 		bool m_interruptCheckNeeded = false;
+		uint32_t m_pendingCycles = 0;	// accumulated by exec(), applied by applyPendingCycles()
+		uint32_t m_batchBudget = 0;		// how far ahead exec() may accumulate
 
 		// External IRQ4 (DSP2 HI08 HREQ). Pure level line; the CPU's own pending-interrupt queue
 		// (mdmc) provides the "don't re-offer while already pending" gate, so no edge latch here.
