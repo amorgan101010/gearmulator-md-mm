@@ -176,6 +176,47 @@ namespace
 		advance(*hardware, md::g_samplerate * 20);
 		if(argc >= 4 && std::string(argv[3]) == "ccout")
 			return runCcOut(*hardware, md::MachineModel::Machinedrum);
+		// "mdlfo": open the LFO window (FUNCTION + SYNTHESIS/EFFECTS/ROUTING) and sweep UPDTE.
+		if(argc >= 4 && std::string(argv[3]) == "mdlfo")
+		{
+			const auto packet = md::panelPacket(g_model, md::PanelControl::Function);
+			hardware->trySendPanelEvent(packet->row, packet->mask);
+			advance(*hardware, 4096);
+			tap(*hardware, md::PanelControl::SynthesisEffectsRouting);
+			hardware->trySendPanelEvent(packet->row, 0);
+			advance(*hardware, md::g_samplerate / 2);
+			capture(*hardware, _out + "/mdlfo.pbm");
+			const auto command = md::panelEncoderCommand(md::MachineModel::Machinedrum, md::PanelEncoder::DataEntryE);
+			const auto read = [&]
+			{
+				return mdJucePlugin::lcdText::hash(hardware->getFrontPanelSnapshot(),
+					mdJucePlugin::lcdText::mdLfoValue(4));
+			};
+			for(int i = 0; i < 40; ++i)
+			{
+				hardware->trySendPanelEvent(*command, 0xff);
+				advance(*hardware, 1024);
+			}
+			advance(*hardware, md::g_samplerate / 8);
+			std::vector<uint64_t> seen;
+			for(int scan = 0; scan <= 40 && seen.size() < 12; ++scan)
+			{
+				const auto now = read();
+				if(std::find(seen.begin(), seen.end(), now) == seen.end())
+				{
+					std::printf("updte value %zu 0x%016llx\n", seen.size(), static_cast<unsigned long long>(now));
+					capture(*hardware, _out + "/updte-" + std::to_string(seen.size()) + ".pbm");
+					seen.push_back(now);
+				}
+				for(int i = 0; i < 2; ++i)
+				{
+					hardware->trySendPanelEvent(*command, 0x01);
+					advance(*hardware, 1024);
+				}
+				advance(*hardware, md::g_samplerate / 32);
+			}
+			return 0;
+		}
 		if(argc >= 4 && std::string(argv[3]) == "enums")
 			return runEnumSweep(*hardware, md::MachineModel::Machinedrum, _out);
 

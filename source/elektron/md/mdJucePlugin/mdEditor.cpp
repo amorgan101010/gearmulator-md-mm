@@ -2206,7 +2206,31 @@ namespace mdJucePlugin
 			using lcdInteraction::SurfaceKind;
 			const auto surface = m_lcdInteractionState->surface;
 			if(m_lcdInteractionState->layout == lcdInteraction::LayoutKind::Lfo && surface == SurfaceKind::Lfo)
-				return set(machinedrumHelp::g_lfo[_encoder], "LFO window");
+			{
+				set(machinedrumHelp::g_lfo[_encoder], "LFO window");
+				// UPDTE and PARAM print their value; say what the LFO is currently doing and aimed at.
+				if(_encoder == 4)
+				{
+					if(const auto* const value = machinedrumHelp::lfoUpdateForHash(
+						lcdText::hash(m_frontPanelSnapshot, lcdText::mdLfoValue(4))))
+						_description += std::string(" Now: ") + value->text + ". " + value->meaning;
+				}
+				else if(_encoder == 1)
+				{
+					if(const auto* const label = machinedrumHelp::labelForHash(
+						lcdText::inkHash(m_frontPanelSnapshot, lcdText::mdLfoValue(1))))
+					{
+						_description += std::string(" Now: ") + label + ".";
+						bool allTracks = false;
+						const auto* entry = machinedrumHelp::entry(1, nullptr, label, allTracks);
+						if(!entry)
+							entry = machinedrumHelp::entry(2, nullptr, label, allTracks);
+						if(entry)
+							_description += std::string(" ") + entry->name + ": " + entry->description;
+					}
+				}
+				return true;
+			}
 			if(m_lcdInteractionState->layout == lcdInteraction::LayoutKind::MasterFx)
 			{
 				const auto index = static_cast<size_t>(surface) - static_cast<size_t>(SurfaceKind::MasterFxEcho);

@@ -55,6 +55,12 @@ namespace mdJucePlugin::lcdText
 		return region;
 	}
 
+	// The value line of a cell in the Machinedrum's LFO window (LayoutKind::Lfo), which prints
+	// the target track, the target parameter and the update mode as text.
+	inline constexpr Region mdLfoValue(const unsigned _encoder)
+	{
+		return { 10u + 24u * (_encoder % 4), _encoder < 4 ? 23u : 45u, 22u, 7u };
+	}
 	// The active track's machine name, bottom left (e.g. SWAVE>SAW).
 	inline constexpr Region g_machineName{ 0u, 56u, 48u, 7u };
 
