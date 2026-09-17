@@ -14,6 +14,14 @@ add_dependencies(mdLibTest mmBootFirmwareTest)
 add_test(NAME mdLibTests COMMAND mdLibTest)
 set_tests_properties(mdLibTests PROPERTIES LABELS "UnitTest")
 
+add_executable(mdRamPackingTest mdRamPackingTest.cpp)
+target_link_libraries(mdRamPackingTest PRIVATE mdLib)
+add_test(NAME mdRamPackingTest COMMAND mdRamPackingTest)
+set_tests_properties(mdRamPackingTest PROPERTIES
+	LABELS "UnitTest;RAM" FIXTURES_SETUP MdRamPacking)
+set_property(TARGET mdRamPackingTest PROPERTY FOLDER "Elektron/test")
+add_dependencies(mdLibTest mdRamPackingTest)
+
 set_property(TARGET mdLibTest PROPERTY FOLDER "Elektron")
 
 add_executable(mdUartRegisterTest uartRegisterTest.cpp)
@@ -107,7 +115,7 @@ if(BUILD_TESTING)
 	set_tests_properties(mdHostRxTimingTest PROPERTIES FIXTURES_SETUP MdTimedHostRx)
 	set_tests_properties(mdIdleSelfBranchTest PROPERTIES FIXTURES_SETUP MdIdleSelfBranch)
 	set_tests_properties(mdUartRegisterTest mdUartCpuInterruptTest PROPERTIES FIXTURES_SETUP MdUart)
-	set_tests_properties(mdLibTests PROPERTIES FIXTURES_REQUIRED "Mc68kCore;MdTimedHostRx;MdIdleSelfBranch;MdUart;MdMidiTiming")
+	set_tests_properties(mdLibTests PROPERTIES FIXTURES_REQUIRED "Mc68kCore;MdTimedHostRx;MdIdleSelfBranch;MdUart;MdMidiTiming;MdRamPacking")
 endif()
 
 add_executable(mmSysexWorkflowTest mmSysexWorkflowTest.cpp)
@@ -118,6 +126,13 @@ else()
 	target_compile_options(mmSysexWorkflowTest PRIVATE -fno-fast-math)
 endif()
 set_property(TARGET mmSysexWorkflowTest PROPERTY FOLDER "Elektron/test")
+
+# Manual, firmware-backed check for machine-originated MM user-data dumps.
+# The ROM and initialized patch RAM are caller supplied and never enter CI.
+add_executable(mmSysexExportFirmwareTest mmSysexExportFirmwareTest.cpp)
+target_link_libraries(mmSysexExportFirmwareTest PRIVATE mdLib)
+set_property(TARGET mmSysexExportFirmwareTest PROPERTY FOLDER "Elektron/test")
+
 add_test(NAME mmDigiProImportAudioOracleTest COMMAND mmSysexWorkflowTest --audio-oracle)
 set_tests_properties(mmDigiProImportAudioOracleTest PROPERTIES LABELS "UnitTest;AudioIo" TIMEOUT 15)
 foreach(profile 32 1024 irregular)

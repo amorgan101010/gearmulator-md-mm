@@ -262,3 +262,9 @@ html, body {
 	background: #16181ce8; border: 1px solid var(--accent); color: #f2f4f7; font: 700 15px Roboto, "Helvetica Neue", Helvetica, Arial, sans-serif;
 	letter-spacing: 1px; box-shadow: 0 0 20px var(--accent), 0 10px 30px #000000a0; transition: opacity 0.25s; }
 .rackToast.hidden { opacity: 0; pointer-events: none; }
+
+/* ---- view buttons (screen space, not part of the scaled faceplate) ---- */
+	top: calc(env(safe-area-inset-top, 0px) + 8px); display: flex; gap: 6px; z-index: 40; }
+	letter-spacing: 2px; color: #c9ccd2; background: #1b1e2288; border: 1px solid #ffffff22; border-radius: 6px;
+	padding: 7px 9px; opacity: 0.45; }
+body.rackHidden .rack { display: none; }

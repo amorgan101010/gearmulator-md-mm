@@ -455,8 +455,6 @@ namespace mdJucePlugin
 		m_lcdInteractionState = enabled && m_frontPanelSnapshotValid
 			? lcdInteraction::classify(m_frontPanelSnapshot, getModel(), m_encoderPress.active())
 			: std::nullopt;
-		if(!m_lcdInteractionState && enabled)
-			m_lcdInteractionState = verifiedFixedPageState();
 		m_lcdInteractionInputChanged = false;
 		const auto identityChanged = oldState.has_value() != m_lcdInteractionState.has_value()
 			|| (oldState && m_lcdInteractionState
@@ -524,18 +522,6 @@ namespace mdJucePlugin
 		if(target && m_lcdInteractionState)
 		{
 			m_tooltipLcdEncoder = target;
-		}
-		else if(point)
-		{
-			for(unsigned encoder = 0; encoder < 8; ++encoder)
-			{
-				if(lcdInteraction::encoderRect(lcdInteraction::LayoutKind::Standard, encoder).contains(point->first, point->second))
-				{
-					if(lcdFieldVerified(encoder))
-						m_tooltipLcdEncoder = encoder;
-					break;
-				}
-			}
 		}
 		const auto& name = getModel() == md::MachineModel::Machinedrum ? lcdText::g_mdMachineName : lcdText::g_machineName;
 		m_tooltipLcdMachineName = point
@@ -3414,76 +3400,6 @@ namespace mdJucePlugin
 		}
 	}
 
-	bool Editor::lcdFieldShowsFixedLabel(const int _page, const unsigned _encoder) const
-	{
-		if(_page < 1 || _page > 6 || !m_frontPanelSnapshotValid)
-			return false;
-		const auto* const entry = parameterHelp::monomachineEntry(_page, _encoder);
-		const auto* const label = machineHelp::labelForHash(lcdText::hash(m_frontPanelSnapshot, lcdText::fieldLabel(_encoder)));
-		return entry && label && std::strcmp(entry->abbreviation, label) == 0;
-	}
-
-	bool Editor::lcdFieldVerified(const unsigned _encoder) const
-	{
-		if(!m_frontPanelSnapshotValid || _encoder >= 8)
-			return false;
-		if(getModel() == md::MachineModel::Monomachine)
-		{
-			const auto page = currentMonomachineDataPage();
-			return page && lcdFieldShowsFixedLabel(*page, _encoder);
-		}
-		const auto page = currentMachinedrumDataPage();
-		if(!page || *page < 1)
-			return false;
-		uint16_t key = 0;
-		const auto* const machine = machinedrumHelp::machineForHash(
-			lcdText::hash(m_frontPanelSnapshot, lcdText::g_mdMachineName), key);
-		bool allTracks = false;
-		return machinedrumHelp::entry(*page, machine, machinedrumHelp::labelForHash(
-			lcdText::inkHash(m_frontPanelSnapshot, lcdText::fieldLabel(_encoder))), allTracks) != nullptr;
-	}
-
-	std::optional<lcdInteraction::State> Editor::verifiedFixedPageState() const
-	{
-		// The fork's classifier qualifies only the SYNTHESIS page (plus, on the Machinedrum, the LFO
-		// and master FX windows). The other data pages use the same standard grid; enable exactly
-		// the fields whose label reads what that page should show, so a menu or overlay never
-		// becomes a drag target.
-		// A popup such as the KIT menu breaks the dotted field frame even where it leaves a label visible.
-		if(!m_frontPanelSnapshotValid || m_encoderPress.active() || !lcdInteraction::hasStandardFrame(m_frontPanelSnapshot))
-			return std::nullopt;
-		const auto isMonomachine = getModel() == md::MachineModel::Monomachine;
-		const auto page = isMonomachine ? currentMonomachineDataPage() : currentMachinedrumDataPage();
-		if(!page || *page < 1)
-			return std::nullopt;
-
-		uint8_t mask = 0;
-		for(unsigned encoder = 0; encoder < 8; ++encoder)
-			if(lcdFieldVerified(encoder))
-				mask |= static_cast<uint8_t>(1u << encoder);
-		if(mask == 0)
-			return std::nullopt;
-
-		// Identity covers the page, which fields are live and (on the Machinedrum, where MIDI and CTR
-		// machines relabel these pages) the machine, not values, so a drag survives the value
-		// redraws it causes.
-		uint64_t identity = 1469598103934665603ull;
-		const auto machine = isMonomachine ? 0 : lcdText::hash(m_frontPanelSnapshot, lcdText::g_mdMachineName);
-		for(const auto byte : { static_cast<uint8_t>(isMonomachine ? 0xa6 : 0xa7), static_cast<uint8_t>(*page), mask })
-		{
-			identity ^= byte;
-			identity *= 1099511628211ull;
-		}
-		identity ^= machine;
-
-		lcdInteraction::State state;
-		state.surface = lcdInteraction::SurfaceKind::Synthesis;	// no dedicated kind exists; only layout and mask are used
-		state.layout = lcdInteraction::LayoutKind::Standard;
-		state.activeEncoderMask = mask;
-		state.identityToken = identity;
-		return state;
-	}
-
 	bool Editor::describeMachinedrumEncoder(const unsigned _encoder, std::string& _abbreviation, std::string& _name,
 		std::string& _description, std::string& _footer) const
 	{
@@ -3601,15 +3517,8 @@ namespace mdJucePlugin
 		}
 		else if(m_tooltipLcdEncoder && m_lcdArea)
 		{
-			// Re-check fixed-page fields each update: the screen may have changed under the mouse.
-			// (Machinedrum help is looked up from the LCD below, which re-checks it anyway.)
-			const auto currentPage = currentMonomachineDataPage();
-			const auto fixedGrid = currentPage && *currentPage >= 1 && *currentPage <= 6;
-			if(!fixedGrid || lcdFieldShowsFixedLabel(*currentPage, *m_tooltipLcdEncoder))
-			{
-				encoder = m_tooltipLcdEncoder;
-				anchor = m_lcdArea;
-			}
+			encoder = m_tooltipLcdEncoder;
+			anchor = m_lcdArea;
 		}
 		else if(m_keyboardEncoder && *m_keyboardEncoder < m_encoders.size() && m_encoders[*m_keyboardEncoder])
 		{
@@ -3693,6 +3602,25 @@ namespace mdJucePlugin
 				// On an LFO page, say what PAGE and DEST are currently set to, read off the LCD.
 				if(*page >= 4 && *page <= 6 && *encoder <= 1)
 					description += lfoTargetDescription(*encoder);
+			}
+		}
+
+		// The knob's current value on a data page, from the controller's copy of the kit (not the
+		// Machinedrum LFO or master FX windows, whose knobs aren't track parameters).
+		if(encoder && !machineName && !abbreviation.empty())
+		{
+			std::optional<int> dataPage;
+			if(getModel() == md::MachineModel::Monomachine)
+				dataPage = page;
+			else if(!m_lcdInteractionState || m_lcdInteractionState->layout == lcdInteraction::LayoutKind::Standard)
+				dataPage = currentMachinedrumDataPage();
+			const auto track = m_controller.getCurrentTrack();
+			if(dataPage && track >= 0)
+			{
+				const auto value = m_controller.getTrackParameterValue(static_cast<uint8_t>(track),
+					static_cast<uint8_t>(*dataPage), static_cast<uint8_t>(*encoder));
+				if(value >= 0)
+					footer += ", value " + std::to_string(value);
 			}
 		}
 

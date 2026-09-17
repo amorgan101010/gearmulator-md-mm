@@ -194,13 +194,6 @@ namespace mdJucePlugin
 		// Hover help for parameter abbreviations.
 		void createParameterTooltip();
 		void updateParameterTooltip();
-		// True when LCD field _encoder on AMP..LFO 3 shows the label that page should show.
-		bool lcdFieldShowsFixedLabel(int _page, unsigned _encoder) const;
-		// True when LCD field _encoder is on a page the fork's classifier does not cover (MM AMP..LFO 3,
-		// MD EFFECTS/ROUTING) and shows a label known for that page and machine.
-		bool lcdFieldVerified(unsigned _encoder) const;
-		// LCD drag/hover state for those pages, built from verified field labels.
-		std::optional<lcdInteraction::State> verifiedFixedPageState() const;
 		// Machinedrum help for knob _encoder on the current screen. False if nothing is recognised.
 		bool describeMachinedrumEncoder(unsigned _encoder, std::string& _abbreviation, std::string& _name,
 			std::string& _description, std::string& _footer) const;

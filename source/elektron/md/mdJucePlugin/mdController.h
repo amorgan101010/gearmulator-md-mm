@@ -76,6 +76,15 @@ namespace mdJucePlugin
 
 		// Current track of the machine (polled via status request 0x22), -1 while unknown.
 		int getCurrentTrack() const { return m_currentTrack.load(std::memory_order_acquire); }
+		// Last known value (0-127) of a track parameter, kept current from Kit dumps and the CCs the
+		// firmware sends when a knob turns. -1 before the first Kit dump or for an unknown address.
+		int getTrackParameterValue(const uint8_t _track, const uint8_t _page, const uint8_t _index) const
+		{
+			if(!hasAutomationKitSnapshot())
+				return -1;
+			const auto& parameters = findSynthParam(_track, _page, _index);
+			return parameters.empty() ? -1 : parameters.front()->getUnnormalizedValue();
+		}
 		// Re-reads the kit, e.g. after a machine was assigned to a track.
 		void refreshKit() { requestKitState(); }
 		std::vector<uint8_t> createAutomationSnapshot() const;

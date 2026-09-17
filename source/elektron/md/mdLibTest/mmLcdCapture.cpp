@@ -63,6 +63,36 @@ namespace
 		std::fclose(file);
 	}
 
+
+	// "ccout": turn DATA ENTRY A and B on the boot kit and print the MIDI the firmware sends.
+	int runCcOut(md::Hardware& _hardware, const md::MachineModel _model)
+	{
+		std::vector<synthLib::SMidiEvent> out;
+		_hardware.readMidiOut(out);
+		out.clear();
+		for(unsigned encoder = 0; encoder < 2; ++encoder)
+		{
+			const auto command = md::panelEncoderCommand(_model, static_cast<md::PanelEncoder>(encoder));
+			for(int step = 0; step < 3; ++step)
+			{
+				_hardware.trySendPanelEvent(*command, 0x01);
+				advance(_hardware, 4096);
+			}
+		}
+		advance(_hardware, md::g_samplerate / 2);
+		_hardware.readMidiOut(out);
+		int shown = 0;
+		for(const auto& e : out)
+		{
+			if(e.sysex.empty() && e.a == 0xf8)
+				continue;	// clock
+			if(shown++ < 20)
+				std::printf("midi out: %02x %02x %02x%s\n", e.a, e.b, e.c, e.sysex.empty() ? "" : " (sysex)");
+		}
+		std::printf("ccout: %zu events, %d non-clock\n", out.size(), shown);
+		return 0;
+	}
+
 	// Machinedrum OS 1.63 (UW): capture boot, the three data pages and every machine.
 	int runMachinedrum(const std::string& _out, int argc, char** argv)
 	{
@@ -77,6 +107,8 @@ namespace
 		g_model = md::MachineModel::Machinedrum;
 		auto hardware = std::make_unique<md::Hardware>(rom, path, md::MachineModel::Machinedrum);
 		advance(*hardware, md::g_samplerate * 20);
+		if(argc >= 4 && std::string(argv[3]) == "ccout")
+			return runCcOut(*hardware, md::MachineModel::Machinedrum);
 
 		capture(*hardware, _out + "/boot.pbm");
 		for(int page = 1; page <= 2; ++page)
@@ -156,9 +188,14 @@ namespace
 				std::cerr << _context << ": machine name does not resolve to its key\n";
 				++errors;
 			}
-			if(_page > 0 && !mdJucePlugin::lcdInteraction::hasStandardFrame(_panel))
+			// A page whose fields are all blank (CTR-RE/GB/EQ/DX EFFECTS) has nothing to edit.
+			bool anyLabel = false;
+			for(unsigned field = 0; field < 8; ++field)
+				anyLabel = anyLabel || !mdJucePlugin::lcdText::blank(_panel, mdJucePlugin::lcdText::fieldLabel(field));
+			if(_page > 0 && anyLabel
+				&& !mdJucePlugin::lcdInteraction::classify(_panel, md::MachineModel::Machinedrum, false))
 			{
-				std::cerr << _context << ": no standard field frame\n";
+				std::cerr << _context << ": not recognised as an editable screen\n";
 				++errors;
 			}
 			for(unsigned field = 0; field < 8; ++field)
@@ -190,9 +227,9 @@ namespace
 		}
 		// A popup over a data page must break the field frame, so no field stays draggable under it.
 		tap(*hardware, md::PanelControl::Kit);
-		if(mdJucePlugin::lcdInteraction::hasStandardFrame(hardware->getFrontPanelSnapshot()))
+		if(mdJucePlugin::lcdInteraction::classify(hardware->getFrontPanelSnapshot(), md::MachineModel::Machinedrum, false))
 		{
-			std::cerr << "KIT menu over ROUTING still shows the standard frame\n";
+			std::cerr << "KIT menu over ROUTING is still treated as editable\n";
 			++errors;
 		}
 		tap(*hardware, md::PanelControl::Exit);
@@ -461,6 +498,8 @@ int main(int argc, char** argv)
 
 	auto hardware = std::make_unique<md::Hardware>(rom, path, md::MachineModel::Monomachine);
 	advance(*hardware, md::g_samplerate * 20);
+	if(argc >= 3 && std::string(argv[2]) == "ccout")
+		return runCcOut(*hardware, md::MachineModel::Monomachine);
 
 	// "turncheck" mode: on AMP and LFO 1, turn each knob and read every field label right
 	// after each detent, to see whether turning ever hides labels (which would end an LCD drag).
@@ -662,9 +701,9 @@ int main(int argc, char** argv)
 	for(size_t page = 0; page < pagePanels.size(); ++page)
 	{
 		verifyLabels(pagePanels[page], pageLabels[page], "page " + std::to_string(page + 1));
-		if(!mdJucePlugin::lcdInteraction::hasStandardFrame(pagePanels[page]))
+		if(!mdJucePlugin::lcdInteraction::classify(pagePanels[page], md::MachineModel::Monomachine, false))
 		{
-			std::cerr << "page " << page + 1 << ": no standard field frame\n";
+			std::cerr << "page " << page + 1 << ": not recognised as an editable screen\n";
 			++errors;
 		}
 	}

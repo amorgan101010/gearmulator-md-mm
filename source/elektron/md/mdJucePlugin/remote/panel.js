@@ -96,10 +96,55 @@
 	function layout() {
 		const stage = document.getElementById('stage');
 		const w = window.innerWidth, h = window.innerHeight;
-		const stageHeight = document.getElementById('rack') ? 766 : 570;
+		const rack = document.getElementById('rack');
+		const stageHeight = rack && !document.body.classList.contains('rackHidden') ? 766 : 570;
 		stageScale = Math.min(w / 1100, h / stageHeight);
 		const x = Math.floor((w - 1100 * stageScale) / 2), y = Math.floor((h - stageHeight * stageScale) / 2);
 		stage.style.transform = 'translate(' + x + 'px,' + y + 'px) scale(' + stageScale + ')';
+	}
+	window.remotePanelLayout = layout;
+	// ---- view buttons: hide the machine rack (more room for the faceplate), go full screen ----
+	function setupViewButtons() {
+		const rackButton = document.getElementById('btnRack');
+		const fullButton = document.getElementById('btnFull');
+		const rack = document.getElementById('rack');
+		if (rackButton && rack) {
+			let hidden = false;
+			try { hidden = localStorage.getItem('rackHidden') === '1'; } catch (e) { /* private mode */ }
+			const apply = function () {
+				document.body.classList.toggle('rackHidden', hidden);
+				rackButton.classList.toggle('on', !hidden);
+				layout();
+			};
+			apply();
+			rackButton.addEventListener('click', function () {
+				hidden = !hidden;
+				try { localStorage.setItem('rackHidden', hidden ? '1' : '0'); } catch (e) { /* private mode */ }
+				apply();
+			});
+		} else if (rackButton) {
+			rackButton.style.display = 'none';
+		}
+		if (fullButton) {
+			const root = document.documentElement;
+			const request = root.requestFullscreen || root.webkitRequestFullscreen;
+			if (!request) {
+				fullButton.style.display = 'none';		// iOS Firefox/Chrome have no full-screen API
+				return;
+			}
+			fullButton.addEventListener('click', function () {
+				const exit = document.exitFullscreen || document.webkitExitFullscreen;
+				const active = document.fullscreenElement || document.webkitFullscreenElement;
+				if (active && exit) exit.call(document);
+				else request.call(root);
+			});
+			const changed = function () {
+				fullButton.classList.toggle('on', !!(document.fullscreenElement || document.webkitFullscreenElement));
+				layout();
+			};
+			document.addEventListener('fullscreenchange', changed);
+			document.addEventListener('webkitfullscreenchange', changed);
+		}
 	}
 
 	// ---- connection ----
@@ -530,6 +575,7 @@
 	bindEncoders();
 	bindXy();
 	bindSwitch();
+	setupViewButtons();
 	layout();
 	window.addEventListener('resize', layout);
 	window.addEventListener('orientationchange', function () { setTimeout(layout, 100); });
