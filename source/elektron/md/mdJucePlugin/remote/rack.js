@@ -65,6 +65,7 @@
 			lastAssigned = pending.machine.id;
 			showToast(pending.machine.name + ' loaded on ' + trackLabel(), pending.family.color);
 			renderTiles();
+			if (window.remotePanelRackDone) window.remotePanelRackDone();		// close the overlay
 		}
 		closeModal();
 	});
