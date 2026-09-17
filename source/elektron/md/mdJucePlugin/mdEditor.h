@@ -100,8 +100,22 @@ namespace mdJucePlugin
 		void createLcd();
 		void updateLcdInteractionState();
 		std::optional<unsigned> lcdTargetAt(const Rml::Event& _event) const;
+		// Mouse position in native LCD pixels, or nothing outside the drawn display.
+		std::optional<std::pair<int, int>> lcdNativePointAt(const Rml::Event& _event) const;
 		void updateLcdHover(const Rml::Event& _event);
 		void clearLcdHover();
+		// DATA PAGE currently lit on the Monomachine: 0 SYNTHESIS .. 6 LFO 3.
+		std::optional<int> currentMonomachineDataPage() const;
+		// Page currently lit on the Machinedrum: 0 SYNTHESIS, 1 EFFECTS, 2 ROUTING.
+		std::optional<int> currentMachinedrumDataPage() const;
+		// Hover help for the cryptic parameter abbreviations, read off the LCD.
+		void createParameterTooltip();
+		void updateParameterTooltip();
+		// Machinedrum help for knob _encoder on the current screen. False if nothing is recognised.
+		bool describeMachinedrumEncoder(unsigned _encoder, std::string& _abbreviation, std::string& _name,
+			std::string& _description, std::string& _footer) const;
+		// On a Monomachine LFO page: " Now: ..." text for PAGE (encoder 0) or DEST (encoder 1).
+		std::string lfoTargetDescription(unsigned _encoder) const;
 		void cancelLcdGesture();
 		void emitEncoderSteps(md::PanelEncoder _encoder, int _steps) const;
 		void createButtons();
@@ -176,6 +190,12 @@ namespace mdJucePlugin
 		bool m_lcdInteractionInputChanged = true;
 		std::optional<lcdInteraction::State> m_lcdInteractionState;
 		std::optional<unsigned> m_lcdHoverEncoder;
+		Rml::Element* m_lcdArea = nullptr;				// tooltip anchor for the LCD
+		Rml::Element* m_parameterTooltip = nullptr;
+		std::string m_parameterTooltipContent;			// last rendered content, to skip redundant updates
+		std::optional<unsigned> m_tooltipHoverKnob;		// mouse over a panel knob
+		std::optional<unsigned> m_tooltipLcdEncoder;	// mouse over a recognised LCD field
+		bool m_tooltipLcdMachineName = false;			// mouse over the machine name on the LCD
 		std::optional<unsigned> m_lcdWheelEncoder;
 		lcdInteraction::DragGesture m_lcdDragGesture;
 		lcdInteraction::DetentAccumulator m_lcdWheelAccumulator;

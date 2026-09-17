@@ -21,6 +21,10 @@ set(SOURCES
 	mdLcdGesture.h
 	mdLcdInteractionModel.cpp mdLcdInteractionModel.h
 	mdLcdViewport.h
+	mdLcdText.h
+	mdParameterHelp.h
+	mdMachineHelp.h
+	mdMachinedrumHelp.h
 	mdPixelPerfectPanel.cpp mdPixelPerfectPanel.h
 	mdPanelAffordances.h
 	mdPluginEditorState.cpp mdPluginEditorState.h

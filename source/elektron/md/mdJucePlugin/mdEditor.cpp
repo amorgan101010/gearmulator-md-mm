@@ -6,6 +6,10 @@
 #include "mdSettingsAudioInput.h"
 #include "mdSettingsPanelFeel.h"
 #include "mdPixelPerfectPanel.h"
+#include "mdLcdText.h"
+#include "mdMachineHelp.h"
+#include "mdMachinedrumHelp.h"
+#include "mdParameterHelp.h"
 #include "mdLcdViewport.h"
 
 #include "jucePluginEditorLib/pluginProcessor.h"
@@ -33,6 +37,7 @@
 #include "juceRmlUi/rmlHelper.h"
 #include "juceRmlUi/juceRmlComponent.h"
 
+#include "RmlUi/Core/ComputedValues.h"
 #include "RmlUi/Core/Element.h"
 #include "RmlUi/Core/ElementDocument.h"
 
@@ -286,6 +291,7 @@ namespace mdJucePlugin
 		createLeds();
 		createPanelAffordances();
 		applyPixelPerfectPanel();
+		createParameterTooltip();
 
 		// A transfer belongs to the emulated machine, not the lifetime of one
 		// editor window. Reattach progress monitoring after a reopen, or reclaim a
@@ -431,6 +437,15 @@ namespace mdJucePlugin
 	{
 		if(!m_lcdCanvas || !m_lcdInteractionState)
 			return std::nullopt;
+		const auto point = lcdNativePointAt(_event);
+		if(!point)
+			return std::nullopt;
+		return lcdInteraction::hitTest(*m_lcdInteractionState, point->first, point->second);
+	}
+	std::optional<std::pair<int, int>> Editor::lcdNativePointAt(const Rml::Event& _event) const
+	{
+		if(!m_lcdCanvas)
+			return std::nullopt;
 		const auto mouse = juceRmlUi::helper::getMousePos(_event);
 		auto offset = m_lcdCanvas->GetAbsoluteOffset(Rml::BoxArea::Content);
 		auto display = m_lcdCanvas->GetBox().GetSize(Rml::BoxArea::Content);
@@ -454,13 +469,21 @@ namespace mdJucePlugin
 		const auto point = viewport.displayToNative(mouse.x - offset.x, mouse.y - offset.y);
 		if(!point)
 			return std::nullopt;
-		return lcdInteraction::hitTest(*m_lcdInteractionState,
-			static_cast<int>(std::floor(point->x)), static_cast<int>(std::floor(point->y)));
+		return std::pair<int, int>{ static_cast<int>(std::floor(point->x)), static_cast<int>(std::floor(point->y)) };
 	}
 
 	void Editor::updateLcdHover(const Rml::Event& _event)
 	{
 		const auto target = lcdTargetAt(_event);
+		const auto point = lcdNativePointAt(_event);
+		// Tooltip sources: a field of a screen the classifier recognises, or the machine name.
+		m_tooltipLcdEncoder.reset();
+		if(target && m_lcdInteractionState)
+			m_tooltipLcdEncoder = target;
+		const auto& name = getModel() == md::MachineModel::Machinedrum ? lcdText::g_mdMachineName : lcdText::g_machineName;
+		m_tooltipLcdMachineName = point
+			&& point->first >= static_cast<int>(name.x) && point->first < static_cast<int>(name.x + name.width)
+			&& point->second >= static_cast<int>(name.y) - 1 && point->second <= static_cast<int>(name.y + name.height);
 		if(target == m_lcdHoverEncoder)
 			return;
 		m_lcdHoverEncoder = target;
@@ -477,6 +500,8 @@ namespace mdJucePlugin
 
 	void Editor::clearLcdHover()
 	{
+		m_tooltipLcdEncoder.reset();
+		m_tooltipLcdMachineName = false;
 		if(!m_lcdHoverEncoder && !m_lcdWheelEncoder)
 			return;
 		m_lcdHoverEncoder.reset();
@@ -2072,6 +2097,8 @@ namespace mdJucePlugin
 		serviceUserSysexProgress();
 		if(m_lcdInteractionInputChanged)
 			updateLcdInteractionState();
+		// Follows page and machine changes; cached, so unchanged content is cheap.
+		updateParameterTooltip();
 
 		if(m_lcdCanvas && m_lcdChanged)
 			m_lcdCanvas->repaint();
@@ -2086,6 +2113,316 @@ namespace mdJucePlugin
 				rml->enqueueUpdateOnce();
 	}
 
+	std::optional<int> Editor::currentMonomachineDataPage() const
+	{
+		if(getModel() != md::MachineModel::Monomachine || !m_frontPanelSnapshotValid)
+			return std::nullopt;
+		// The DATA PAGE LEDs are active-low bits in panel LED banks 0x25 and 0x26.
+		constexpr uint8_t banks[] = { 0x25, 0x25, 0x25, 0x25, 0x26, 0x26, 0x26 };
+		constexpr uint8_t bits[] = { 4, 5, 6, 7, 0, 1, 2 };
+		std::array<bool, panelAffordances::g_monomachineDataPages.size()> active{};
+		for(size_t page = 0; page < active.size(); ++page)
+		{
+			const auto raw = m_frontPanelSnapshot.getLedBankRaw(banks[page]);
+			active[page] = (raw & static_cast<uint8_t>(1u << bits[page])) == 0;
+		}
+		return panelAffordances::singleActiveIndex(active);
+	}
+
+	std::optional<int> Editor::currentMachinedrumDataPage() const
+	{
+		if(getModel() != md::MachineModel::Machinedrum || !m_frontPanelSnapshotValid)
+			return std::nullopt;
+		constexpr md::FrontPanel::StatusLed pages[] =
+		{
+			md::FrontPanel::StatusLed::Synthesis,
+			md::FrontPanel::StatusLed::Effects,
+			md::FrontPanel::StatusLed::Routing,
+		};
+		std::array<bool, panelAffordances::g_machinedrumDataPages.size()> active{};
+		for(size_t page = 0; page < active.size(); ++page)
+			active[page] = m_frontPanelSnapshot.getStatusLed(pages[page]);
+		return panelAffordances::singleActiveIndex(active);
+	}
+
+	void Editor::createParameterTooltip()
+	{
+		auto* const document = getDocument();
+		if(!document)
+			return;
+
+		m_lcdArea = findChild("lcdArea", false);
+
+		// One tooltip, reparented under whatever it describes so it follows panel scaling.
+		auto tooltip = document->CreateElement("div");
+		tooltip->SetAttribute("style",
+			"position: absolute; top: 100%; left: 50%; width: 250dp; margin-left: -125dp; margin-top: 6dp;"
+			" padding: 6dp 8dp; background-color: #1b221dee; border: 1dp #56635a; color: #e6ebe2;"
+			" font-size: 11dp; line-height: 14dp; text-align: left; white-space: normal;"
+			" pointer-events: none; z-index: 2000; display: none;");
+		m_parameterTooltip = tooltip.get();
+		if(m_encoders[0])
+			m_encoders[0]->AppendChild(std::move(tooltip));
+		else
+			document->AppendChild(std::move(tooltip));
+
+		for(unsigned i = 0; i < m_encoders.size(); ++i)
+		{
+			if(!m_encoders[i])
+				continue;
+			juceRmlUi::EventListener::Add(m_encoders[i], Rml::EventId::Mouseover, [this, i](Rml::Event&)
+			{
+				m_tooltipHoverKnob = i;
+				updateParameterTooltip();
+			});
+			juceRmlUi::EventListener::Add(m_encoders[i], Rml::EventId::Mouseout, [this, i](Rml::Event&)
+			{
+				if(m_tooltipHoverKnob != i)
+					return;
+				m_tooltipHoverKnob.reset();
+				updateParameterTooltip();
+			});
+		}
+	}
+
+	bool Editor::describeMachinedrumEncoder(const unsigned _encoder, std::string& _abbreviation, std::string& _name,
+		std::string& _description, std::string& _footer) const
+	{
+		if(getModel() != md::MachineModel::Machinedrum || !m_frontPanelSnapshotValid || _encoder >= 8)
+			return false;
+		const auto knob = std::string(1, static_cast<char>('A' + _encoder));
+		const auto set = [&](const parameterHelp::Entry& _entry, const std::string& _footerText)
+		{
+			_abbreviation = _entry.abbreviation;
+			_name = _entry.name;
+			_description = _entry.description;
+			_footer = _footerText + ", knob " + knob;
+			return true;
+		};
+
+		// LFO and master FX windows are recognised by the fork's classifier.
+		if(m_lcdInteractionState)
+		{
+			using lcdInteraction::SurfaceKind;
+			const auto surface = m_lcdInteractionState->surface;
+			if(m_lcdInteractionState->layout == lcdInteraction::LayoutKind::Lfo && surface == SurfaceKind::Lfo)
+				return set(machinedrumHelp::g_lfo[_encoder], "LFO window");
+			if(m_lcdInteractionState->layout == lcdInteraction::LayoutKind::MasterFx)
+			{
+				const auto index = static_cast<size_t>(surface) - static_cast<size_t>(SurfaceKind::MasterFxEcho);
+				if(index < 4)
+				{
+					if(const auto* const e = machinedrumHelp::parameter(machinedrumHelp::g_masterFxFamilies[index],
+						machinedrumHelp::g_masterFxLabels[index][_encoder]))
+						return set(*e, std::string("Master FX, ") + machinedrumHelp::g_masterFxNames[index]);
+				}
+				return false;
+			}
+		}
+
+		// Data pages: read the field label and the machine name off the LCD.
+		const auto page = currentMachinedrumDataPage();
+		if(!page)
+			return false;
+		uint16_t key = 0;
+		const auto* const machine = machinedrumHelp::machineForHash(
+			lcdText::hash(m_frontPanelSnapshot, lcdText::g_mdMachineName), key);
+		bool allTracks = false;
+		const auto* const e = machinedrumHelp::entry(*page, machine, machinedrumHelp::labelForHash(
+			lcdText::inkHash(m_frontPanelSnapshot, lcdText::fieldLabel(_encoder))), allTracks);
+		if(!e)
+			return false;
+		constexpr const char* pageNames[] = { "synthesis", "Effects page", "Routing page" };
+		std::string footer = pageNames[*page];
+		if(*page == 0)
+			footer = std::string(machine->name) + " synthesis";
+		set(*e, footer);
+		if(allTracks)
+		{
+			_name += ", all tracks";
+			_description += " CTR-AL applies it to all 16 tracks.";
+		}
+		return true;
+	}
+
+	std::string Editor::lfoTargetDescription(const unsigned _encoder) const
+	{
+		if(!m_frontPanelSnapshotValid)
+			return {};
+		const auto* const target = machineHelp::lfoPageForHash(lcdText::hash(m_frontPanelSnapshot, lcdText::lfoValue(0)));
+		if(!target)
+			return {};
+		if(_encoder == 0)
+			return std::string(" Now: ") + target->text + " (" + target->name + ").";
+
+		// DEST: describe the parameter the LFO is aimed at on the selected page.
+		const auto destinationHash = lcdText::hash(m_frontPanelSnapshot, lcdText::lfoValue(1));
+		const parameterHelp::Entry* destination = machineHelp::lfoSpecialDestinationForHash(destinationHash);
+		if(!destination)
+		{
+			if(const auto* const label = machineHelp::labelForHash(destinationHash))
+			{
+				if(target->dataPage == 0)
+				{
+					if(const auto* const machine = machineHelp::machineForHash(
+						lcdText::hash(m_frontPanelSnapshot, lcdText::g_machineName)))
+						destination = machineHelp::parameter(machine->id, label);
+				}
+				else if(target->dataPage > 0)
+				{
+					destination = machineHelp::fixedPageEntry(target->dataPage, label);
+				}
+			}
+		}
+		if(!destination)
+			return std::string(" Now on the ") + target->name + " page.";
+		return std::string(" Now: ") + destination->abbreviation + " (" + destination->name + ") on the "
+			+ target->name + " page. " + destination->description;
+	}
+
+	void Editor::updateParameterTooltip()
+	{
+		if(!m_parameterTooltip)
+			return;
+
+		// What to describe, in priority order: the mouse over a knob, or over the LCD (the machine
+		// name or a field of a recognised screen).
+		std::optional<unsigned> encoder;
+		bool machineName = false;
+		Rml::Element* anchor = nullptr;
+		if(m_tooltipHoverKnob && m_encoders[*m_tooltipHoverKnob])
+		{
+			encoder = m_tooltipHoverKnob;
+			anchor = m_encoders[*encoder];
+		}
+		else if(m_tooltipLcdMachineName && m_lcdArea)
+		{
+			machineName = true;
+			anchor = m_lcdArea;
+		}
+		else if(m_tooltipLcdEncoder && m_lcdArea)
+		{
+			encoder = m_tooltipLcdEncoder;
+			anchor = m_lcdArea;
+		}
+
+		std::string abbreviation, name, description, footer;
+		const auto page = currentMonomachineDataPage();
+		if(getModel() == md::MachineModel::Machinedrum)
+		{
+			if(machineName && m_frontPanelSnapshotValid)
+			{
+				uint16_t key = 0;
+				if(const auto* const machine = machinedrumHelp::machineForHash(
+					lcdText::hash(m_frontPanelSnapshot, lcdText::g_mdMachineName), key))
+				{
+					abbreviation = machine->lcdName;
+					if(machine->number)
+					{
+						const auto number = machine->number + (key - machine->first);
+						abbreviation += std::string(1, static_cast<char>('0' + number / 10)) + static_cast<char>('0' + number % 10);
+					}
+					name = machine->name;
+					description = machine->description;
+					footer = "Machine on the active track";
+				}
+			}
+			else if(encoder)
+			{
+				describeMachinedrumEncoder(*encoder, abbreviation, name, description, footer);
+			}
+		}
+		else if(machineName && m_frontPanelSnapshotValid)
+		{
+			if(const auto* const machine = machineHelp::machineForHash(
+				lcdText::hash(m_frontPanelSnapshot, lcdText::g_machineName)))
+			{
+				abbreviation = machine->lcdName;
+				name = machine->name;
+				description = machine->description;
+				footer = "Machine on the active track";
+			}
+		}
+		else if(encoder && page)
+		{
+			const auto knob = std::string(1, static_cast<char>('A' + *encoder));
+			if(*page == 0)
+			{
+				// SYNTHESIS depends on the machine: read both the field label and the machine
+				// name off the LCD. Anything unrecognised (a menu, an overlay) shows nothing.
+				const auto* const label = m_frontPanelSnapshotValid ? machineHelp::labelForHash(
+					lcdText::hash(m_frontPanelSnapshot, lcdText::fieldLabel(*encoder))) : nullptr;
+				const auto* const machine = m_frontPanelSnapshotValid ? machineHelp::machineForHash(
+					lcdText::hash(m_frontPanelSnapshot, lcdText::g_machineName)) : nullptr;
+				if(const auto* const entry = label && machine ? machineHelp::parameter(machine->id, label) : nullptr)
+				{
+					abbreviation = entry->abbreviation;
+					name = entry->name;
+					description = entry->description;
+					footer = std::string(machine->name) + " synthesis, knob " + knob;
+				}
+			}
+			else if(const auto* const entry = parameterHelp::monomachineEntry(*page, *encoder))
+			{
+				abbreviation = entry->abbreviation;
+				name = entry->name;
+				description = entry->description;
+				footer = std::string(parameterHelp::g_monomachinePageNames[*page]) + " page, knob " + knob;
+
+				// On an LFO page, say what PAGE and DEST are currently set to, read off the LCD.
+				if(*page >= 4 && *page <= 6 && *encoder <= 1)
+					description += lfoTargetDescription(*encoder);
+			}
+		}
+
+		if(abbreviation.empty() || !anchor)
+		{
+			if(!m_parameterTooltipContent.empty())
+			{
+				m_parameterTooltip->SetProperty(Rml::PropertyId::Display, Rml::Style::Display::None);
+				m_parameterTooltipContent.clear();
+				if(auto* const rml = getRmlComponent())
+					rml->enqueueUpdateOnce();
+			}
+			return;
+		}
+
+		const auto escape = [](const std::string& _text)
+		{
+			std::string result;
+			for(const auto c : _text)
+			{
+				switch(c)
+				{
+				case '&': result += "&amp;"; break;
+				case '<': result += "&lt;"; break;
+				case '>': result += "&gt;"; break;
+				default: result += c; break;
+				}
+			}
+			return result;
+		};
+		const auto content = "<span style=\"color: #ffc83a;\">" + escape(abbreviation) + "</span>  "
+			+ escape(name) + "<br/><span style=\"color: #b3bdb0;\">" + escape(description) + "</span><br/>"
+			+ "<span style=\"color: #7f8a82; font-size: 9dp;\">" + escape(footer) + "</span>";
+		const auto key = content + '@' + std::to_string(reinterpret_cast<uintptr_t>(anchor));
+		if(key == m_parameterTooltipContent)
+			return;
+		m_parameterTooltipContent = key;
+
+		if(m_parameterTooltip->GetParentNode() != anchor)
+		{
+			if(anchor->GetComputedValues().position() == Rml::Style::Position::Static)
+				anchor->SetProperty(Rml::PropertyId::Position, Rml::Style::Position::Relative);
+			if(auto* const parent = m_parameterTooltip->GetParentNode())
+				if(auto owned = parent->RemoveChild(m_parameterTooltip))
+					anchor->AppendChild(std::move(owned));
+		}
+		m_parameterTooltip->SetInnerRML(content);
+		m_parameterTooltip->SetProperty(Rml::PropertyId::Display, Rml::Style::Display::Block);
+		if(auto* const rml = getRmlComponent())
+			rml->enqueueUpdateOnce();
+	}
 	std::pair<std::string, std::string> Editor::getDemoRestrictionText() const
 	{
 		return {};
