@@ -176,7 +176,7 @@ namespace mdJucePlugin::machineHelp
 		inline constexpr const char* tune = "Sets the tuning of the oscillator.";
 		inline constexpr const char* input = "Amplifies the incoming audio signal.";
 		inline constexpr const char* mix = "Balance between the original (dry) signal and the processed (wet) signal.";
-		inline constexpr const char* pitchOffset = "Adds a chord note this many semitones above the played note, or OFF. PCH2=4, PCH3=7 gives a major triad.";
+		inline constexpr const char* pitchOffset = "Adds a chord note this many semitones above the played note, or OFF. PCH2=4, PCH3=7 gives a major triad. The ratios 6/5, 5/4, 4/3 and 3/2 give just-intonation thirds, fourths and fifths: purer, beatless chords.";
 	}
 
 	inline constexpr Parameter g_parameters[] =
@@ -235,7 +235,7 @@ namespace mdJucePlugin::machineHelp
 		// FM+STAT
 		{ 8, "1FRQ", { "1FRQ", "Modulator 1 frequency", "Coarse frequency of modulator 1, from a list of FM-friendly ratios." } },
 		{ 8, "1FIN", { "1FIN", "Modulator 1 fine tune", "Fine adjustment of modulator 1's frequency." } },
-		{ 8, "1ENV", { "1ENV", "Modulator 1 level & envelope", "Output level of the first FM block, shaped by the FM+ envelope." } },
+		{ 8, "1ENV", { "1ENV", "Modulator 1 level & envelope", "Output level of the first FM block, as a combined level and envelope: 0 to 64 is a steady level (64 = full). Above 64 it starts at full and decays on every note, faster towards 127." } },
 		{ 8, "1FB", { "1FB", "Modulator 1 feedback", "Feedback of modulator 1." } },
 		{ 8, "2FRQ", { "2FRQ", "Modulator 2 frequency", "Frequency of modulator 2, from the listed ratios." } },
 		{ 8, "2VOL", { "2VOL", "Modulator 2 level & feedback", "Output level of the second FM block. High values add feedback for a stronger effect." } },
@@ -244,11 +244,11 @@ namespace mdJucePlugin::machineHelp
 
 		// FM+PAR
 		{ 9, "1FRQ", { "1FRQ", "Modulator 1 frequency", "Frequency of modulator 1, from the listed ratios." } },
-		{ 9, "1ENV", { "1ENV", "Modulator 1 level & envelope", "Output level of FM block 1, shaped by the FM+ envelope." } },
+		{ 9, "1ENV", { "1ENV", "Modulator 1 level & envelope", "Output level of FM block 1, as a combined level and envelope: 0 to 64 is a steady level (64 = full). Above 64 it starts at full and decays on every note, faster towards 127." } },
 		{ 9, "2FRQ", { "2FRQ", "Modulator 2 frequency", "Frequency of modulator 2, from the listed ratios." } },
-		{ 9, "2ENV", { "2ENV", "Modulator 2 level & envelope", "Output level of FM block 2, shaped by the FM+ envelope." } },
+		{ 9, "2ENV", { "2ENV", "Modulator 2 level & envelope", "Output level of FM block 2, as a combined level and envelope: 0 to 64 is a steady level (64 = full). Above 64 it starts at full and decays on every note, faster towards 127." } },
 		{ 9, "3FRQ", { "3FRQ", "Modulator 3 frequency", "Frequency of modulator 3, from the listed ratios." } },
-		{ 9, "3ENV", { "3ENV", "Modulator 3 level & envelope", "Output level of FM block 3, shaped by the FM+ envelope." } },
+		{ 9, "3ENV", { "3ENV", "Modulator 3 level & envelope", "Output level of FM block 3, as a combined level and envelope: 0 to 64 is a steady level (64 = full). Above 64 it starts at full and decays on every note, faster towards 127." } },
 		{ 9, "TONE", { "TONE", "Tone", "Overall brightness of the FM sound. Higher adds more high harmonics." } },
 		{ 9, "TUNE", { "TUNE", "Tune", "Sets the tuning of the output." } },
 
@@ -258,7 +258,7 @@ namespace mdJucePlugin::machineHelp
 		{ 10, "1VOL", { "1VOL", "Modulator 1 level & feedback", "Output level of the first FM block. High values add feedback." } },
 		{ 10, "1VEN", { "1VEN", "Modulator 1 level envelope", "Speed and depth of an envelope added to modulator 1's level on every note." } },
 		{ 10, "2FRQ", { "2FRQ", "Modulator 2 frequency", "Continuous (exponential) frequency of modulator 2." } },
-		{ 10, "2ENV", { "2ENV", "Modulator 2 level & envelope", "Output level of the second FM block, shaped by the FM+ envelope." } },
+		{ 10, "2ENV", { "2ENV", "Modulator 2 level & envelope", "Output level of the second FM block, as a combined level and envelope: 0 to 64 is a steady level (64 = full). Above 64 it starts at full and decays on every note, faster towards 127." } },
 		{ 10, "2FB", { "2FB", "Modulator 2 feedback", "Feedback of modulator 2." } },
 		{ 10, "TUNE", { "TUNE", "Tune", "Sets the tuning of the output." } },
 
