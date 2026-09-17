@@ -260,9 +260,9 @@ set_property(TARGET encoderPressFirmwareTest PROPERTY FOLDER "Elektron/test")
 
 # Shared external regressions for the independent MM workaround removals.
 # Local tool (not a test): captures LCD screens and verifies the tooltip tables against them.
-add_executable(mmLcdCapture mmLcdCapture.cpp ../mdJucePlugin/mdLcdInteractionModel.cpp)
-target_link_libraries(mmLcdCapture PRIVATE mdLib)
-set_property(TARGET mmLcdCapture PROPERTY FOLDER "Elektron/test")
+add_executable(mdmmLcdCapture mdmmLcdCapture.cpp ../mdJucePlugin/mdLcdInteractionModel.cpp)
+target_link_libraries(mdmmLcdCapture PRIVATE mdLib)
+set_property(TARGET mdmmLcdCapture PROPERTY FOLDER "Elektron/test")
 add_executable(mmAudioFirmwareTest mmAudioFirmwareTest.cpp)
 target_link_libraries(mmAudioFirmwareTest PRIVATE mdLib)
 if(MSVC)
