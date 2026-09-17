@@ -2523,6 +2523,7 @@ namespace mdJucePlugin
 
 		const auto nowMilliseconds = juce::Time::getMillisecondCounterHiRes();
 		serviceGamepad(nowMilliseconds);
+		serviceKeyboardReleases(nowMilliseconds);
 		const auto modifiers = juce::ModifierKeys::getCurrentModifiersRealtime();
 		if(m_encoderPress.active() && (!modifiers.isAltDown() || !modifiers.isLeftButtonDown()))
 			releaseEncoderPress();
@@ -2568,6 +2569,7 @@ namespace mdJucePlugin
 		constexpr double g_gamepadRepeatIntervalMilliseconds = 110.0;
 		constexpr double g_gamepadEncoderClickMilliseconds = 300.0;
 		constexpr double g_gamepadHighlightTimeoutMilliseconds = 120000.0;	// hide focus after 2 minutes idle
+		constexpr double g_keyReleaseGraceMilliseconds = 50.0;	// see Editor::onPanelKey
 		constexpr float g_gamepadTriggerThreshold = 0.5f;
 		constexpr float g_gamepadStickDeadzone = 0.2f;
 		constexpr float g_gamepadStickNavigateThreshold = 0.6f;
@@ -3139,6 +3141,7 @@ namespace mdJucePlugin
 			if(std::find(m_keyboardHeldKeys.begin(), m_keyboardHeldKeys.end(), button.key) != m_keyboardHeldKeys.end())
 				releaseHeldControl(button.control);
 		m_keyboardHeldKeys.clear();
+		m_keyboardPendingReleases.clear();
 		m_keyboardFunctionHeld = false;
 		m_keyboardEncoder.reset();
 		m_keyboardEncoderTurned = false;
@@ -3167,6 +3170,51 @@ namespace mdJucePlugin
 		if(key == Key::KI_UNKNOWN)
 			return;
 
+		// X11 auto-repeat sends a release/press pair while a key is held. JUCE drops the pair only
+		// when the press is already queued, which isn't guaranteed while the emulator keeps the
+		// message thread busy. A leaked pair would tap a held trig (clearing it), so a release only
+		// counts once no press of the same key follows within a short grace period.
+		const auto pending = std::find_if(m_keyboardPendingReleases.begin(), m_keyboardPendingReleases.end(),
+			[&](const auto& _p) { return _p.first == key; });
+		if(!_down)
+		{
+			const bool pressTurn = key == Key::KI_OEM_4 || key == Key::KI_OEM_6;
+			if(pressTurn || std::find(m_keyboardHeldKeys.begin(), m_keyboardHeldKeys.end(), key) != m_keyboardHeldKeys.end())
+			{
+				if(pending == m_keyboardPendingReleases.end())
+					m_keyboardPendingReleases.emplace_back(key, juce::Time::getMillisecondCounterHiRes() + g_keyReleaseGraceMilliseconds);
+				_event.StopPropagation();
+				return;
+			}
+		}
+		else if(pending != m_keyboardPendingReleases.end())
+		{
+			m_keyboardPendingReleases.erase(pending);	// the release was auto-repeat; the key never went up
+		}
+		if(handlePanelKey(key, _down, shift))
+			_event.StopPropagation();
+	}
+	void Editor::serviceKeyboardReleases(const double _nowMilliseconds)
+	{
+		for(auto it = m_keyboardPendingReleases.begin(); it != m_keyboardPendingReleases.end();)
+		{
+			if(it->second > _nowMilliseconds)
+			{
+				++it;
+				continue;
+			}
+			const auto key = it->first;
+			it = m_keyboardPendingReleases.erase(it);
+			handlePanelKey(key, false, false);
+			it = m_keyboardPendingReleases.begin();	// handlePanelKey may reset the list
+		}
+	}
+	bool Editor::handlePanelKey(const int _key, const bool _down, const bool _shift)
+	{
+		using Key = Rml::Input::KeyIdentifier;
+		const auto key = static_cast<Key>(_key);
+		const bool shift = _shift;
+
 		// Delete lets go of every held or latched panel key. (Escape does this too, but only
 		// when something is held; otherwise it opens the standalone's menu.)
 		if(key == Key::KI_DELETE)
@@ -3177,8 +3225,7 @@ namespace mdJucePlugin
 				cancelPanelInputGestures();
 				m_gamepadHeldControls.clear();
 			}
-			_event.StopPropagation();
-			return;
+			return true;
 		}
 
 		const auto encoderKnob = [this](const size_t _index) -> std::pair<juceRmlUi::ElemKnob*, md::PanelEncoder>
@@ -3219,8 +3266,7 @@ namespace mdJucePlugin
 			{
 				releaseKeyboardEncoderPress();
 			}
-			_event.StopPropagation();
-			return;
+			return true;
 		}
 
 		const auto held = std::find(m_keyboardHeldKeys.begin(), m_keyboardHeldKeys.end(), key);
@@ -3228,14 +3274,13 @@ namespace mdJucePlugin
 		{
 			if(held != m_keyboardHeldKeys.end())
 			{
-				_event.StopPropagation();	// operating-system auto-repeat of a held key
-				return;
+				return true;	// operating-system auto-repeat of a held key
 			}
 		}
 		else
 		{
 			if(held == m_keyboardHeldKeys.end())
-				return;
+				return false;
 			m_keyboardHeldKeys.erase(held);
 		}
 
@@ -3262,8 +3307,7 @@ namespace mdJucePlugin
 				releaseKeyboardEncoderPress();
 				m_keyboardEncoder.reset();
 			}
-			_event.StopPropagation();
-			return;
+			return true;
 		}
 
 		// The Machinedrum has no page keys; step its data pages directly, as the gamepad does.
@@ -3276,8 +3320,7 @@ namespace mdJucePlugin
 				m_gamepadPage = (m_gamepadPage + (key == Key::KI_NEXT ? 1 : pages - 1)) % pages;
 				selectMachinedrumDataPage(m_gamepadPage);
 			}
-			_event.StopPropagation();
-			return;
+			return true;
 		}
 
 		for(const auto& button : g_keyboardButtons)
@@ -3294,9 +3337,9 @@ namespace mdJucePlugin
 			{
 				releaseHeldControl(button.control);
 			}
-			_event.StopPropagation();
-			return;
+			return true;
 		}
+		return false;
 	}
 
 	std::optional<int> Editor::currentMonomachineDataPage() const

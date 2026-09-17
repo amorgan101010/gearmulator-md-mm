@@ -180,6 +180,9 @@ namespace mdJucePlugin
 		// Standalone computer-keyboard control of the panel.
 		void createKeyboardControl();
 		void onPanelKey(Rml::Event& _event, bool _down);
+		// Acts on a key after auto-repeat filtering; true if the key belongs to panel control.
+		bool handlePanelKey(int _key, bool _down, bool _shift);
+		void serviceKeyboardReleases(double _nowMilliseconds);
 		void resetKeyboardControl();
 		void releaseKeyboardEncoderPress();
 
@@ -372,6 +375,7 @@ namespace mdJucePlugin
 		std::optional<md::PanelControl> m_gamepadTouchTrig;
 
 		bool m_keyboardControl = false;
+		std::vector<std::pair<int, double>> m_keyboardPendingReleases;	// key, deadline: releases waiting out auto-repeat
 		std::vector<int> m_keyboardHeldKeys;			// Rml key identifiers currently down, to ignore auto-repeat
 		bool m_keyboardFunctionHeld = false;			// Ctrl
 		std::optional<size_t> m_keyboardEncoder;		// index into g_keyboardEncoders while its key is held
