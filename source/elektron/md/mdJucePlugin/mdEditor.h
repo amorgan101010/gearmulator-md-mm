@@ -150,6 +150,7 @@ namespace mdJucePlugin
 		void releasePatternBankLatch();
 		void createEncoders();
 		void createMasterVolume();
+		void syncMasterVolume();
 		void configureEncoder(juceRmlUi::ElemKnob* _knob, md::PanelEncoder _encoder,
 			float& _last, float& _accum);
 		void onEncoderChanged(juceRmlUi::ElemKnob* _knob, md::PanelEncoder _encoder,
@@ -297,6 +298,7 @@ namespace mdJucePlugin
 		float m_soundLast = 0.0f;
 		float m_soundAccum = 0.0f;
 		juceRmlUi::ElemKnob* m_masterVolume = nullptr;
+		float m_masterVolumeGain = 1.0f;	// last gain this knob published, to detect settings-page edits
 
 		std::array<Rml::Element*, 16> m_stepLeds{};
 		std::array<Rml::Element*, 16> m_drumLeds{};

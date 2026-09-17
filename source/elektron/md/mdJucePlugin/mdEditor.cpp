@@ -2189,26 +2189,57 @@ namespace mdJucePlugin
 		}
 	}
 
+	namespace
+	{
+		// The master knob spans the same range as the gain slider on the settings page, so the
+		// extra headroom is reachable without opening a menu. Fully down is silence; unity sits
+		// where the firmware's own output level lands, and the rest of the travel is boost.
+		constexpr float g_masterVolumeMinDb = -40.0f;
+		constexpr float g_masterVolumeMaxDb = 24.0f;
+		float masterVolumePositionToGain(const float _position)
+		{
+			if(_position <= 0.0f)
+				return 0.0f;
+			const auto db = g_masterVolumeMinDb + _position * (g_masterVolumeMaxDb - g_masterVolumeMinDb);
+			return std::pow(10.0f, db / 20.0f);
+		}
+		float masterVolumeGainToPosition(const float _gain)
+		{
+			if(_gain <= 0.0f)
+				return 0.0f;
+			const auto db = 20.0f * std::log10(_gain);
+			return std::clamp((db - g_masterVolumeMinDb) / (g_masterVolumeMaxDb - g_masterVolumeMinDb), 0.0f, 1.0f);
+		}
+	}
 	void Editor::createMasterVolume()
 	{
 		m_masterVolume = findChild<juceRmlUi::ElemKnob>("encMaster", false);
 		if(!m_masterVolume)
 			return;
-
 		m_masterVolume->setMinValue(0.0f);
 		m_masterVolume->setMaxValue(1.0f);
 		m_masterVolume->setEndless(false);
-		m_masterVolume->setValue(
-			std::clamp(getProcessor().getOutputGain(), 0.0f, 1.0f), false);
-
+		m_masterVolumeGain = getProcessor().getOutputGain();
+		m_masterVolume->setValue(masterVolumeGainToPosition(m_masterVolumeGain), false);
 		juceRmlUi::EventListener::Add(m_masterVolume, Rml::EventId::Change,
 			[this](Rml::Event&)
 			{
-				getProcessor().setOutputGain(std::clamp(
+				m_masterVolumeGain = masterVolumePositionToGain(std::clamp(
 					juceRmlUi::ElemValue::getValue(m_masterVolume), 0.0f, 1.0f));
+				getProcessor().setOutputGain(m_masterVolumeGain);
 			});
 	}
-
+	void Editor::syncMasterVolume()
+	{
+		// The settings page writes the same gain; follow it so both controls agree.
+		if(!m_masterVolume)
+			return;
+		const auto gain = getProcessor().getOutputGain();
+		if(gain == m_masterVolumeGain)
+			return;
+		m_masterVolumeGain = gain;
+		m_masterVolume->setValue(masterVolumeGainToPosition(gain), false);
+	}
 	void Editor::configureEncoder(juceRmlUi::ElemKnob* const _knob,
 		const md::PanelEncoder _encoder, float& _last, float& _accum)
 	{
@@ -2535,6 +2566,7 @@ namespace mdJucePlugin
 			updateLcdInteractionState();
 		// Follows page changes and keyboard/gamepad focus; cached, so unchanged content is cheap.
 		updateParameterTooltip();
+		syncMasterVolume();
 
 		if(m_lcdCanvas && m_lcdChanged)
 			m_lcdCanvas->repaint();
