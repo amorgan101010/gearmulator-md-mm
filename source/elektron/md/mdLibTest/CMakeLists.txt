@@ -296,3 +296,34 @@ if(BUILD_TESTING)
 	set_tests_properties(mdTurboMidiUnitTest mdSdsTransferTest PROPERTIES FIXTURES_SETUP MdSysexTransport)
 	set_property(TEST mdLibTests mdAudioQueueTest APPEND PROPERTY FIXTURES_REQUIRED MdSysexTransport)
 endif()
+
+# Diagnostic tool, not a test: records the producer->mixer link words while a pattern plays.
+add_executable(mdLinkTapTest mdLinkTapTest.cpp)
+target_link_libraries(mdLinkTapTest PRIVATE mdLib)
+set_property(TARGET mdLinkTapTest PROPERTY FOLDER "Elektron")
+
+# Diagnostic tool, not a test: renders a pattern on a given firmware image for A/B comparisons.
+add_executable(mdAudioCaptureTool mdAudioCaptureTool.cpp)
+target_link_libraries(mdAudioCaptureTool PRIVATE mdLib)
+set_property(TARGET mdAudioCaptureTool PROPERTY FOLDER "Elektron")
+
+add_executable(mdSdsEncodeTest sdsEncodeTest.cpp)
+target_link_libraries(mdSdsEncodeTest PRIVATE mdLib)
+add_test(NAME mdSdsEncodeTest COMMAND mdSdsEncodeTest)
+set_tests_properties(mdSdsEncodeTest PROPERTIES LABELS "UnitTest;Midi" TIMEOUT 15)
+set_property(TARGET mdSdsEncodeTest PROPERTY FOLDER "Elektron/test")
+
+# Diagnostic tool, not a test: checks which SDS sample rates the Machinedrum plays back at true pitch.
+add_executable(mdSampleRateProbe mdSampleRateProbe.cpp)
+target_link_libraries(mdSampleRateProbe PRIVATE mdLib)
+set_property(TARGET mdSampleRateProbe PROPERTY FOLDER "Elektron")
+
+# Diagnostic tool, not a test: locates the UW sample slot directory in flash.
+add_executable(mdSampleDirProbe mdSampleDirProbe.cpp)
+target_link_libraries(mdSampleDirProbe PRIVATE mdLib)
+set_property(TARGET mdSampleDirProbe PROPERTY FOLDER "Elektron")
+
+# Diagnostic tool, not a test: checks current track status and ASSIGN MACHINE against the firmware.
+add_executable(mdMachineAssignProbe mdMachineAssignProbe.cpp)
+target_link_libraries(mdMachineAssignProbe PRIVATE mdLib)
+set_property(TARGET mdMachineAssignProbe PROPERTY FOLDER "Elektron")

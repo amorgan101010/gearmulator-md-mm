@@ -1,6 +1,8 @@
 #pragma once
 
 #include "jucePluginEditorLib/pluginProcessor.h"
+#include "mdLib/mdremotepanel.h"
+#include "mdLib/mdsampledirectory.h"
 #include "mdLib/mdtypes.h"
 #include "synthLib/performanceReport.h"
 
@@ -48,6 +50,29 @@ namespace mdJucePlugin
 		juce::File performanceDiagnosticsFolder() const;
 		juce::File performanceDiagnosticsFile() const { return m_performanceReportFile; }
 
+		// Firmware image for this instance. Empty = the stock OS discovered next to the
+		// plugin or in the roms folder. A chosen image is remembered as the default for
+		// new instances (config) and travels with the project (state chunk "FWIM").
+		static constexpr const char* g_firmwareImageConfigKey = "firmwareImagePath";
+		const std::string& getFirmwareImagePath() const { return m_firmwareImagePath; }
+		std::string getFirmwareDescription() const;
+		// Restarts the machine on another OS image, from a fresh factory state.
+		bool setFirmwareImage(const std::string& _path, std::string& _error);
+
+		// Machine selector: assigns a machine (firmware model id, see mdLib/mdmachines.h)
+		// to the machine's current track. Returns false while the current track is unknown.
+		bool assignMachineToCurrentTrack(uint16_t _machineId);
+		int getCurrentTrack();
+		// true when the running OS is not the stock image (community X.xx builds add machines)
+		bool isExtendedOs() const;
+		// Machinedrum UW sample slots as stored in the emulated machine
+		std::optional<md::sampleDirectory::Directory> readSampleDirectory();
+
+		// Browser front panel for tablets on the local network, see mdLib/mdremotepanel.h
+		void startRemotePanel();
+		std::string getRemotePanelUrl() const;
+		bool isRemotePanelRunning() const { return m_remotePanel && m_remotePanel->isRunning(); }
+
 	    jucePluginEditorLib::PluginEditorState* createEditorState() override;
 	    synthLib::Device* createDevice() override;
 		void getRemoteDeviceParams(synthLib::DeviceCreateParams& _params) const override;
@@ -63,6 +88,10 @@ namespace mdJucePlugin
 			std::vector<uint8_t> _initialPatchRam, bool _allowMcpServer,
 			bool _ephemeralConfig,
 			std::optional<std::string> _deviceHomePath = std::nullopt);
+		static std::string initialFirmwareImagePath(juce::PropertiesFile& _config, md::MachineModel _model);
+		bool readFirmwareImage(const std::string& _path, std::vector<uint8_t>& _data, std::string& _error) const;
+		std::string findFirmwareByFingerprint(uint64_t _fingerprint, const std::string& _hint) const;
+		void applyProjectFirmware(const std::string& _path, uint64_t _fingerprint);
 		bool serviceDeferredStateRestore();
 		bool serviceStateRestoreFailure();
 		void recordStandaloneStartupDiagnostics();
@@ -70,11 +99,18 @@ namespace mdJucePlugin
 		void timerCallback() override;
 
 		std::unique_ptr<synthLib::PerformanceReport> m_performanceReport;
+		std::unique_ptr<md::RemotePanelServer> m_remotePanel;
+		std::mutex m_remoteSlotNamesMutex;
+		std::vector<std::string> m_remoteSlotNames;
+		uint32_t m_remoteSlotNamesTime = 0;
 		juce::File m_performanceReportFile;
 		bool m_performanceFolderError = false;
 		const md::MachineModel m_model;
 		const std::vector<uint8_t> m_initialPatchRam;
 		const std::optional<std::string> m_deviceHomePath;
+		const bool m_ephemeralConfig;
+		std::string m_firmwareImagePath;
+		uint64_t m_firmwareFingerprint = 0;
 		std::mutex m_storageLoadMutex;
 		uint64_t m_reportedRestoreFailureGeneration = 0;
 		juce::File m_startupDiagnosticsFile;

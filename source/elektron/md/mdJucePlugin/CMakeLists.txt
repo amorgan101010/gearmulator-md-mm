@@ -45,6 +45,9 @@ set(SOURCES
 	skins/mmSfx60/mmKnobs.rcss
 	skins/mmSfx60/mmSfx60.rcss
 	mdSettingsPanelFeel.cpp mdSettingsPanelFeel.h
+	mdSampleImport.cpp mdSampleImport.h
+	mdSampleDropTarget.cpp mdSampleDropTarget.h
+	mdMachineRack.cpp mdMachineRack.h
 	mdSettingsAudioInput.cpp mdSettingsAudioInput.h
 )
 
@@ -66,12 +69,14 @@ file(GLOB MM_SKIN_ASSETS CONFIGURE_DEPENDS
 	"skins/mmSfx60/*.png" "skins/mmSfx60/*.rml" "skins/mmSfx60/*.rcss"
 	"skins/mmSfx60/*.ttf" "skins/mmSfx60/*.lua")
 
+file(GLOB REMOTE_PANEL_ASSETS CONFIGURE_DEPENDS "remote/*")
+
 juce_add_binary_data(mdJucePlugin_BinaryData SOURCES
 	${COMMON_ASSETS} "tus_settings_gui_Machinedrum.rml"
-	"tus_settings_dspaudio_Machinedrum.rml" ${MD_SKIN_ASSETS})
+	"tus_settings_dspaudio_Machinedrum.rml" ${MD_SKIN_ASSETS} ${REMOTE_PANEL_ASSETS})
 juce_add_binary_data(mmJucePlugin_BinaryData SOURCES
 	${COMMON_ASSETS} "tus_settings_gui_Monomachine.rml"
-	"tus_settings_dspaudio_Monomachine.rml" ${MM_SKIN_ASSETS})
+	"tus_settings_dspaudio_Monomachine.rml" ${MM_SKIN_ASSETS} ${REMOTE_PANEL_ASSETS})
 
 createJucePlugin(mdJucePlugin "Gearmulator MD" TRUE "Tmdr" mdJucePlugin_BinaryData mdLib)
 createJucePlugin(mmJucePlugin "Gearmulator MM" TRUE "Tmno" mmJucePlugin_BinaryData mdLib)
@@ -335,6 +340,30 @@ if(BUILD_TESTING)
 			LABELS "Integration;FirmwareTest;Soak"
 			SKIP_RETURN_CODE 77 TIMEOUT 900)
 	endif()
+
+	# Diagnostic tool, not a test: renders the real editor with the software renderer to PNG.
+	add_executable(mdSkinSnapshotTool mdSkinSnapshotTool.cpp mdSkinSnapshotLoop.mm)
+	target_link_libraries(mdSkinSnapshotTool PRIVATE
+		mdJucePlugin jucePluginEditorLib mdLib juce_plugin_modules
+		juce::juce_opengl)
+	target_include_directories(mdSkinSnapshotTool PRIVATE
+		${CMAKE_CURRENT_SOURCE_DIR}/../../..)
+	target_compile_definitions(mdSkinSnapshotTool PRIVATE
+		JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1)
+	set_property(TARGET mdSkinSnapshotTool PROPERTY FOLDER "Elektron/test")
+
+	add_executable(mdSampleImportTest mdSampleImportTest.cpp)
+	target_link_libraries(mdSampleImportTest PRIVATE
+		mdJucePlugin jucePluginEditorLib mdLib juce_plugin_modules
+		juce::juce_opengl)
+	target_include_directories(mdSampleImportTest PRIVATE
+		${CMAKE_CURRENT_SOURCE_DIR}/../../..)
+	target_compile_definitions(mdSampleImportTest PRIVATE
+		JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1)
+	add_test(NAME mdSampleImportTest COMMAND mdSampleImportTest)
+	set_tests_properties(mdSampleImportTest PROPERTIES
+		LABELS "Integration;FirmwareTest" TIMEOUT 900)
+	set_property(TARGET mdSampleImportTest PROPERTY FOLDER "Elektron/test")
 
 	add_executable(mdProjectStateRestoreTest mdProjectStateRestoreTest.cpp)
 	target_link_libraries(mdProjectStateRestoreTest PRIVATE

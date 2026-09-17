@@ -1,5 +1,6 @@
 #pragma once
 
+#include "mdSampleImport.h"
 #include <array>
 #include <deque>
 #include <initializer_list>
@@ -50,6 +51,9 @@ namespace mdJucePlugin
 	class PixelPerfectPanel;
 	struct EditorIdentityTestAccess;
 
+	class SampleDropTarget;
+	class MachineRack;
+
 	class Editor final : public jucePluginEditorLib::Editor, juce::MultiTimer,
 		private juce::FocusChangeListener
 	{
@@ -79,7 +83,17 @@ namespace mdJucePlugin
 		void chooseStorageImage();
 		void restorePreviousStorage();
 		bool hasStorageRecoveryImage() const;
+
+		// Firmware image (stock OS or a community OS such as X.13 / EMS) for this instance
+		void bindSettingsButton();
+		void chooseFirmwareImage();
+		void useStockFirmware();
+		std::string getFirmwareDescription() const;
 		void chooseUserSysexFile();
+		// Machinedrum UW: decode audio files, pick RAM slots, send them as SDS
+		void chooseSampleFiles();
+		// files dropped on the panel: one .syx file, or audio files (Machinedrum)
+		void importDroppedFiles(const std::vector<std::string>& _files);
 		void cancelUserSysexTransfer();
 		bool canResumeUserSysexTransfer() const;
 		void resumeUserSysexTransfer();
@@ -207,6 +221,13 @@ namespace mdJucePlugin
 		void showStorageOperationResult(bool _success, const juce::String& _message);
 		std::optional<md::SysexImportProgress> getUserSysexProgress() const;
 		void sendUserSysexFile(const juce::File& _file, const md::SysexImportTicket& _ticket);
+		void sendUserSysexBytes(std::vector<uint8_t>&& _bytes, const juce::File& _source, const md::SysexImportTicket& _ticket);
+		std::optional<md::SysexImportTicket> beginUserSysexTicket();
+		void importSampleFiles(const std::vector<juce::File>& _files, const md::SysexImportTicket& _ticket);
+		void openSampleSlotMenu(const std::shared_ptr<std::vector<sampleImport::DecodedSample>>& _samples, const md::SysexImportTicket& _ticket);
+		void confirmSampleSlots(const std::shared_ptr<std::vector<sampleImport::DecodedSample>>& _samples, uint32_t _firstSlot, const md::SysexImportTicket& _ticket);
+		void sendSamples(const std::shared_ptr<std::vector<sampleImport::DecodedSample>>& _samples, uint32_t _firstSlot, const md::SysexImportTicket& _ticket);
+		void showSampleError(const juce::String& _message);
 		void startUserSysexTransfer(const std::shared_ptr<md::PreparedMidiSysexTransfer>& _prepared,
 			const juce::File& _file, const md::SysexImportTicket& _ticket, bool _receiveModeConfirmed);
 		void launchUserSysexFileChooser(const md::SysexImportTicket& _ticket);
@@ -301,8 +322,21 @@ namespace mdJucePlugin
 		std::array<RawLedElem, 4> m_mdPageLeds{};
 		std::array<RawLedElem, 20> m_mmPanelLeds{};
 		std::unique_ptr<juce::FileChooser> m_storageFileChooser;
+		std::unique_ptr<juce::FileChooser> m_firmwareFileChooser;
+		bool m_firmwareDialogOpen = false;
+		void confirmFirmwareImage(const std::string& _path);
 		StorageImageFlow m_storageImageFlow = StorageImageFlow::None;
 		std::unique_ptr<juce::FileChooser> m_sysexFileChooser;
+		std::unique_ptr<juce::FileChooser> m_sampleFileChooser;
+		std::unique_ptr<SampleDropTarget> m_sampleDropTarget;
+		std::unique_ptr<MachineRack> m_machineRack;
+		// what goes into which slot once the running transfer completes
+		struct PendingSampleSlots
+		{
+			md::SysexImportTicket ticket;
+			sampleImport::SlotLedger slots;
+		};
+		std::optional<PendingSampleSlots> m_pendingSampleSlots;
 		bool m_sysexChooserOpen = false;
 		bool m_sysexTransferWasActive = false;
 		md::SysexImportTicket m_sysexMonitoredTicket;

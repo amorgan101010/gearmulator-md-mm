@@ -10,16 +10,19 @@
 
 #include "mdLib/mddevice.h"
 #include "mdLib/mdromloader.h"
+#include "mdLib/mdmachines.h"
 #include "mdLib/mdstate.h"
 #include "mdLib/mdpanel.h"
 
 #include "synthLib/deviceException.h"
 
 #include "baseLib/binarystream.h"
+#include "baseLib/filesystem.h"
 
 #include "juce_audio_utils/juce_audio_utils.h"
 #include "juce_audio_plugin_client/Standalone/juce_StandaloneFilterWindow.h"
 
+#include <cstdlib>
 #include <memory>
 #include <utility>
 
@@ -108,6 +111,13 @@ namespace mdJucePlugin
 {
 	void AudioPluginAudioProcessor::saveChunkData(baseLib::BinaryStream& _stream)
 	{
+		// Written before the device state so that a project loads its firmware first
+		// and the machine state then lands on the matching OS.
+		{
+			baseLib::ChunkWriter chunk(_stream, "FWIM", 1);
+			_stream.write(m_firmwareImagePath);
+			_stream.write<uint64_t>(m_firmwareFingerprint);
+		}
 		jucePluginEditorLib::Processor::saveChunkData(_stream);
 		const auto& controller = dynamic_cast<const Controller&>(getController());
 		const auto snapshot = controller.createAutomationSnapshot();
@@ -121,6 +131,12 @@ namespace mdJucePlugin
 	void AudioPluginAudioProcessor::loadChunkData(baseLib::ChunkReader& _reader)
 	{
 		jucePluginEditorLib::Processor::loadChunkData(_reader);
+		_reader.add("FWIM", 1, [this](baseLib::BinaryStream& _stream, uint32_t)
+		{
+			const auto path = _stream.readString();
+			const auto fingerprint = _stream.read<uint64_t>();
+			applyProjectFirmware(path, fingerprint);
+		});
 		_reader.add("AUTO", 1, [this](baseLib::BinaryStream& _stream, uint32_t)
 		{
 			std::vector<uint8_t> snapshot;
@@ -343,6 +359,8 @@ namespace mdJucePlugin
 		, m_model(_model)
 		, m_initialPatchRam(std::move(_initialPatchRam))
 		, m_deviceHomePath(std::move(_deviceHomePath))
+		, m_ephemeralConfig(_ephemeralConfig)
+		, m_firmwareImagePath(_ephemeralConfig ? std::string{} : initialFirmwareImagePath(getConfig(), _model))
 	{
 		// The hardware-width skins need more than the generic 100% default. Keep
 		// the migration within a laptop desktop; the editor window restores this
@@ -363,6 +381,8 @@ namespace mdJucePlugin
 		getController();
 		const auto latencyBlocks = getConfig().getIntValue("latencyBlocks", static_cast<int>(getPlugin().getLatencyBlocks()));
 		Processor::setLatencyBlocks(latencyBlocks);
+		if(_allowMcpServer && !_ephemeralConfig)
+			startRemotePanel();
 		m_startupDiagnosticsEnabled = !_ephemeralConfig
 			&& juce::JUCEApplicationBase::isStandaloneApp();
 		if(m_startupDiagnosticsEnabled)
@@ -407,8 +427,129 @@ namespace mdJucePlugin
 	AudioPluginAudioProcessor::~AudioPluginAudioProcessor()
 	{
 		stopTimer();
+		m_remotePanel.reset();
 		m_performanceReport.reset();
 		destroyEditorState();
+	}
+
+	void AudioPluginAudioProcessor::startRemotePanel()
+	{
+		if(m_remotePanel)
+			return;
+		if(!getConfig().getBoolValue("remotePanelEnabled", true))
+			return;
+
+		const auto defaultPort = m_model == md::MachineModel::Monomachine ? 8792 : 8790;
+		const auto port = getConfig().getIntValue("remotePanelPort", defaultPort);
+
+		md::RemotePanelServer::Callbacks callbacks;
+		callbacks.sendPanelEvent = [this](const uint8_t _command, const uint8_t _argument)
+		{
+			return getPlugin().withDeviceLocked([&](synthLib::Device* const _device)
+			{
+				auto* const device = dynamic_cast<md::Device*>(_device);
+				return device ? device->sendPanelEvent(_command, _argument) : false;
+			});
+		};
+		callbacks.snapshot = [this]
+		{
+			return getPlugin().withDeviceLocked([&](synthLib::Device* const _device) -> md::FrontPanel
+			{
+				auto* const device = dynamic_cast<md::Device*>(_device);
+				return device ? device->getFrontPanelSnapshot() : md::FrontPanel();
+			});
+		};
+		callbacks.sendSysex = [this](const std::vector<uint8_t>& _sysex)
+		{
+			synthLib::SMidiEvent event(synthLib::MidiEventSource::Editor);
+			event.sysex.insert(event.sysex.end(), _sysex.begin(), _sysex.end());
+			addMidiEvent(event);
+		};
+		callbacks.resource = [this](const std::string& _path, std::string& _data, std::string& _mime)
+		{
+			// a "remote" folder next to the firmware overrides the embedded web app, handy while editing it
+			const auto file = juce::File(juce::String::fromUTF8(getDataFolder().c_str())).getChildFile("remote").getChildFile(juce::String::fromUTF8(_path.c_str()));
+			if(file.existsAsFile())
+			{
+				juce::MemoryBlock block;
+				if(file.loadFileAsData(block))
+				{
+					_data.assign(static_cast<const char*>(block.getData()), block.getSize());
+					_mime.clear();
+					return true;
+				}
+			}
+			if(const auto res = findResource(_path))
+			{
+				_data.assign(res->first, res->second);
+				_mime.clear();
+				return true;
+			}
+			return false;
+		};
+
+		callbacks.machineInfo = [this]
+		{
+			// sample slot names are read from the machine at most every two seconds
+			const auto now = juce::Time::getMillisecondCounter();
+			std::vector<std::string> names;
+			{
+				std::lock_guard lock(m_remoteSlotNamesMutex);
+				if(m_remoteSlotNamesTime == 0 || now - m_remoteSlotNamesTime > 2000)
+				{
+					m_remoteSlotNamesTime = now | 1;
+					m_remoteSlotNames.clear();
+					if(const auto directory = readSampleDirectory())
+					{
+						for(const auto& slot : directory->slots)
+						{
+							auto name = slot.used ? slot.name : std::string();
+							while(!name.empty() && name.back() == ' ')
+								name.pop_back();
+							m_remoteSlotNames.push_back(slot.used && name.empty() ? std::string("----") : name);
+						}
+					}
+				}
+				names = m_remoteSlotNames;
+			}
+			return md::machines::toJson(m_model, isExtendedOs(), getCurrentTrack(), names);
+		};
+		callbacks.assignMachine = [this](const uint16_t _machineId)
+		{
+			return assignMachineToCurrentTrack(_machineId);
+		};
+
+		m_remotePanel = std::make_unique<md::RemotePanelServer>(m_model, port, std::move(callbacks));
+		if(!m_remotePanel->start())
+		{
+			m_remotePanel.reset();
+			return;
+		}
+
+		const auto url = getRemotePanelUrl();
+		juce::Logger::writeToLog("Remote panel: " + juce::String(url));
+		const auto folder = juce::File(juce::String::fromUTF8(getDataFolder().c_str()));
+		if(folder.createDirectory().wasOk())
+			folder.getChildFile("remote-panel-url.txt").replaceWithText(juce::String(url) + "\n");
+	}
+
+	std::string AudioPluginAudioProcessor::getRemotePanelUrl() const
+	{
+		if(!m_remotePanel)
+			return {};
+		juce::String host = "localhost";
+		for(const auto& address : juce::IPAddress::getAllAddresses(false))
+		{
+			if(address.isNull() || address == juce::IPAddress::local() || address.isIPv6)
+				continue;
+			// prefer the usual private LAN ranges over link-local
+			const auto s = address.toString();
+			if(s.startsWith("169.254."))
+				continue;
+			host = s;
+			break;
+		}
+		return "http://" + host.toStdString() + ":" + std::to_string(m_remotePanel->getPort()) + "/";
 	}
 
 	juce::File AudioPluginAudioProcessor::performanceDiagnosticsFolder() const
@@ -795,6 +936,21 @@ namespace mdJucePlugin
 		synthLib::DeviceCreateParams params;
 		params.customData = md::deviceCustomData(m_model);
 		params.homePath = m_deviceHomePath ? *m_deviceHomePath : getDataFolder();
+		if(!m_firmwareImagePath.empty())
+		{
+			std::vector<uint8_t> data;
+			std::string error;
+			if(readFirmwareImage(m_firmwareImagePath, data, error))
+			{
+				std::fprintf(stderr, "[MD] booting firmware image %s\n", m_firmwareImagePath.c_str());
+				m_firmwareFingerprint = md::RomLoader::fingerprint(data);
+				params.romName = m_firmwareImagePath;
+				params.romData = std::move(data);
+			}
+			else
+				std::fprintf(stderr, "[MD] firmware image %s not usable (%s), using the stock image\n",
+					m_firmwareImagePath.c_str(), error.c_str());
+		}
 		auto d = std::make_unique<md::Device>(params, m_initialPatchRam);
 		if(!d->isValid())
 			throw synthLib::DeviceException(synthLib::DeviceError::FirmwareMissing,
@@ -811,6 +967,13 @@ namespace mdJucePlugin
 		Processor::getRemoteDeviceParams(_params);
 		_params.customData = md::deviceCustomData(m_model);
 
+		std::string error;
+		if(!m_firmwareImagePath.empty() && readFirmwareImage(m_firmwareImagePath, _params.romData, error))
+		{
+			_params.romName = m_firmwareImagePath;
+			return;
+		}
+
 		auto rom = md::RomLoader::findROM(m_model);
 
 		if(rom.isValid())
@@ -818,6 +981,186 @@ namespace mdJucePlugin
 			_params.romData.assign(rom.data().begin(), rom.data().end());
 			_params.romName = rom.getFilename();
 		}
+	}
+
+	std::string AudioPluginAudioProcessor::initialFirmwareImagePath(juce::PropertiesFile& _config, const md::MachineModel _model)
+	{
+		// test hook: GEARMULATOR_FIRMWARE_IMAGE overrides the configured image without touching the config
+		const auto* const overridePath = std::getenv("GEARMULATOR_FIRMWARE_IMAGE");
+		const auto path = overridePath && *overridePath ? std::string(overridePath)
+			: _config.getValue(g_firmwareImageConfigKey).toStdString();
+		if(path.empty())
+			return {};
+		std::fprintf(stderr, "[MD] configured firmware image: %s\n", path.c_str());
+		std::vector<uint8_t> data;
+		if(!baseLib::filesystem::readFile(data, path) || !md::RomLoader::isRomForModel(data, _model))
+		{
+			std::fprintf(stderr, "[MD] configured firmware image %s is missing or invalid, using the stock image\n", path.c_str());
+			return {};
+		}
+		return path;
+	}
+
+	bool AudioPluginAudioProcessor::readFirmwareImage(const std::string& _path, std::vector<uint8_t>& _data, std::string& _error) const
+	{
+		if(!baseLib::filesystem::readFile(_data, _path))
+		{
+			_error = "the file could not be read";
+			return false;
+		}
+		if(_data.size() != md::g_romSize)
+		{
+			_error = "the file is not an 8 MiB flash image";
+			return false;
+		}
+		if(!md::RomLoader::isRomForModel(_data, m_model))
+		{
+			_error = std::string("the image is not a ") + productName(m_model) + " flash image with the stock boot loader";
+			return false;
+		}
+		return true;
+	}
+
+	std::string AudioPluginAudioProcessor::findFirmwareByFingerprint(const uint64_t _fingerprint, const std::string& _hint) const
+	{
+		if(!_fingerprint)
+			return {};
+		std::vector<std::string> folders;
+		if(!_hint.empty())
+			folders.push_back(baseLib::filesystem::getPath(_hint));
+		folders.push_back(getPublicRomFolder());
+		folders.push_back(getPublicRomFolder() + "alt/");
+		for(const auto& folder : folders)
+		{
+			std::vector<std::string> files;
+			baseLib::filesystem::findFiles(files, folder, ".bin", md::g_romSize, md::g_romSize);
+			for(const auto& file : files)
+			{
+				std::vector<uint8_t> data;
+				if(baseLib::filesystem::readFile(data, file) && md::RomLoader::fingerprint(data) == _fingerprint)
+					return file;
+			}
+		}
+		return {};
+	}
+
+	void AudioPluginAudioProcessor::applyProjectFirmware(const std::string& _path, const uint64_t _fingerprint)
+	{
+		std::string target;
+		uint64_t fingerprint = 0;
+		if(!_path.empty() || _fingerprint)
+		{
+			std::vector<uint8_t> data;
+			std::string error;
+			if(!_path.empty() && readFirmwareImage(_path, data, error)
+				&& (!_fingerprint || md::RomLoader::fingerprint(data) == _fingerprint))
+			{
+				target = _path;
+				fingerprint = _fingerprint ? _fingerprint : md::RomLoader::fingerprint(data);
+			}
+			else
+			{
+				target = findFirmwareByFingerprint(_fingerprint, _path);
+				fingerprint = _fingerprint;
+				if(target.empty())
+				{
+					reportProjectStateRestoreFailure("This project was saved with the firmware image\n"
+						+ _path + "\nwhich was not found. The machine keeps running "
+						+ (m_firmwareImagePath.empty() ? std::string("the stock OS") : m_firmwareImagePath)
+						+ ", so the saved machine state may not load.");
+					return;
+				}
+			}
+		}
+		if(target == m_firmwareImagePath)
+			return;
+		std::fprintf(stderr, "[MD] project firmware: %s\n", target.empty() ? "stock OS" : target.c_str());
+		m_firmwareImagePath = target;
+		m_firmwareFingerprint = fingerprint;
+		(void)rebootDevice();
+	}
+
+	std::string AudioPluginAudioProcessor::getFirmwareDescription() const
+	{
+		if(m_firmwareImagePath.empty())
+		{
+			const auto rom = md::RomLoader::findROM(m_model);
+			return rom.isValid() ? "Stock OS: " + baseLib::filesystem::getFilenameWithoutPath(rom.getFilename()) : std::string("Stock OS (no image found)");
+		}
+		return baseLib::filesystem::getFilenameWithoutPath(m_firmwareImagePath);
+	}
+
+	bool AudioPluginAudioProcessor::setFirmwareImage(const std::string& _path, std::string& _error)
+	{
+		uint64_t fingerprint = 0;
+		if(!_path.empty())
+		{
+			std::vector<uint8_t> data;
+			if(!readFirmwareImage(_path, data, _error))
+				return false;
+			fingerprint = md::RomLoader::fingerprint(data);
+		}
+		m_firmwareImagePath = _path;
+		m_firmwareFingerprint = fingerprint;
+		if(!m_ephemeralConfig)
+		{
+			getConfig().setValue(g_firmwareImageConfigKey, juce::String(_path));
+			getConfig().saveIfNeeded();
+		}
+		if(!rebootDevice())
+		{
+			_error = "the machine could not be restarted with this image";
+			return false;
+		}
+		if(hasController())
+			getController().onStateLoaded();
+		updateHostDisplay(juce::AudioProcessorListener::ChangeDetails()
+			.withNonParameterStateChanged(true));
+		return true;
+	}
+
+	int AudioPluginAudioProcessor::getCurrentTrack()
+	{
+		auto* const controller = dynamic_cast<Controller*>(&getController());
+		return controller ? controller->getCurrentTrack() : -1;
+	}
+
+	bool AudioPluginAudioProcessor::assignMachineToCurrentTrack(const uint16_t _machineId)
+	{
+		auto* const controller = dynamic_cast<Controller*>(&getController());
+		if(!controller)
+			return false;
+		const auto track = controller->getCurrentTrack();
+		if(track < 0 || !md::machines::find(m_model, _machineId))
+			return false;
+		const auto sysex = md::machines::assignMachine(m_model, static_cast<uint8_t>(track), _machineId);
+		synthLib::SMidiEvent event(synthLib::MidiEventSource::Editor);
+		event.sysex.assign(sysex.begin(), sysex.end());
+		getPlugin().addMidiEvent(event);
+		controller->refreshKit();
+		return true;
+	}
+
+	bool AudioPluginAudioProcessor::isExtendedOs() const
+	{
+		return m_model == md::MachineModel::Machinedrum && !m_firmwareImagePath.empty()
+			&& m_firmwareFingerprint != md::g_mdOs163Fingerprint;
+	}
+
+	std::optional<md::sampleDirectory::Directory> AudioPluginAudioProcessor::readSampleDirectory()
+	{
+		if(m_model != md::MachineModel::Machinedrum)
+			return std::nullopt;
+		return getPlugin().withDeviceLocked([](synthLib::Device* const _device) -> std::optional<md::sampleDirectory::Directory>
+		{
+			auto* const device = dynamic_cast<md::Device*>(_device);
+			if(!device || !device->isValid())
+				return std::nullopt;
+			auto dir = md::sampleDirectory::read(device->getHardware());
+			if(!dir.valid)
+				return std::nullopt;
+			return dir;
+		});
 	}
 
 	pluginLib::Controller* AudioPluginAudioProcessor::createController()
