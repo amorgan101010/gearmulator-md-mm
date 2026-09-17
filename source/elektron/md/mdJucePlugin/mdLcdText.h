@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
 
 #include "mdLib/mdfrontpanel.h"
@@ -57,9 +58,39 @@ namespace mdJucePlugin::lcdText
 	// The active track's machine name, bottom left (e.g. SWAVE>SAW).
 	inline constexpr Region g_machineName{ 0u, 56u, 48u, 7u };
 
+	// Machinedrum: the same strip reads e.g. TRX>B2>SYNT. Only the machine part (TRX>B2), not
+	// the page suffix, which changes with SYNTHESIS/EFFECTS/ROUTING.
+	inline constexpr Region g_mdMachineName{ 0u, 56u, 25u, 7u };
+
 	inline uint64_t hash(const md::FrontPanel& _panel, const Region& _region)
 	{
 		return hashRegion(_panel, _region.x, _region.y, _region.width, _region.height);
+	}
+
+	// Hash of the lit pixels cropped to their bounding box, so the same text hashes the same
+	// wherever it is centred. The Machinedrum centres column D labels one pixel differently.
+	inline uint64_t inkHash(const md::FrontPanel& _panel, const Region& _region)
+	{
+		uint32_t minX = _region.x + _region.width, maxX = 0, minY = _region.y + _region.height, maxY = 0;
+		for(uint32_t y = _region.y; y < _region.y + _region.height; ++y)
+		{
+			for(uint32_t x = _region.x; x < _region.x + _region.width; ++x)
+			{
+				if(!_panel.getLcdPixel(x, y))
+					continue;
+				minX = std::min(minX, x); maxX = std::max(maxX, x);
+				minY = std::min(minY, y); maxY = std::max(maxY, y);
+			}
+		}
+		if(minX > maxX)
+			return 0;
+		uint64_t hash = 1469598103934665603ull;
+		for(const auto byte : { static_cast<uint8_t>(maxX - minX), static_cast<uint8_t>(maxY - minY) })
+		{
+			hash ^= byte;
+			hash *= 1099511628211ull;
+		}
+		return hash ^ hashRegion(_panel, minX, minY, maxX - minX + 1, maxY - minY + 1);
 	}
 
 	inline bool blank(const md::FrontPanel& _panel, const Region& _region)

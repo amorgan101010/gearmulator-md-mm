@@ -26,6 +26,7 @@ set(SOURCES
 	mdPanelAffordances.h
 	mdParameterHelp.h
 	mdMachineHelp.h
+	mdMachinedrumHelp.h
 	mdLcdText.h
 	mdPluginEditorState.cpp mdPluginEditorState.h
 	mdProductSkinPolicy.h

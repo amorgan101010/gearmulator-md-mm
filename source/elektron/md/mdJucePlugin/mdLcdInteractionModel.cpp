@@ -128,25 +128,6 @@ namespace mdJucePlugin::lcdInteraction
 			return result;
 		}
 
-		bool hasStandardFrame(const md::FrontPanel& _panel)
-		{
-			// Every qualified engine capture shares these firmware-drawn dotted
-			// top/right cell edges. Parameter labels and value glyphs are excluded.
-			for(unsigned index = 0; index < 8; ++index)
-			{
-				const auto rect = encoderRect(LayoutKind::Standard, index);
-				for(int x = rect.x + 1; x < rect.x + rect.width; x += 2)
-					if(!_panel.getLcdPixel(static_cast<unsigned>(x),
-						static_cast<unsigned>(rect.y)))
-						return false;
-				for(int y = rect.y + 2; y < rect.y + 31; y += 2)
-					if(!_panel.getLcdPixel(static_cast<unsigned>(rect.x + rect.width - 1),
-						static_cast<unsigned>(y)))
-						return false;
-			}
-			return true;
-		}
-
 		uint64_t standardLabelFingerprint(const md::FrontPanel& _panel)
 		{
 			uint64_t hash = g_fnvOffset;
@@ -190,6 +171,25 @@ namespace mdJucePlugin::lcdInteraction
 			return {5 + 21 * column, 20 + 20 * row, 21, 20};
 		}
 		throw std::logic_error("unknown LCD layout");
+	}
+
+	bool hasStandardFrame(const md::FrontPanel& _panel)
+	{
+		// Every qualified engine capture shares these firmware-drawn dotted
+		// top/right cell edges. Parameter labels and value glyphs are excluded.
+		for(unsigned index = 0; index < 8; ++index)
+		{
+			const auto rect = encoderRect(LayoutKind::Standard, index);
+			for(int x = rect.x + 1; x < rect.x + rect.width; x += 2)
+				if(!_panel.getLcdPixel(static_cast<unsigned>(x),
+					static_cast<unsigned>(rect.y)))
+					return false;
+			for(int y = rect.y + 2; y < rect.y + 31; y += 2)
+				if(!_panel.getLcdPixel(static_cast<unsigned>(rect.x + rect.width - 1),
+					static_cast<unsigned>(y)))
+					return false;
+		}
+		return true;
 	}
 
 	std::optional<State> classify(const md::FrontPanel& _panel,

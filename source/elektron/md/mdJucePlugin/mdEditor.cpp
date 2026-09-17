@@ -4,6 +4,7 @@
 #include "mdPanelAffordances.h"
 #include "mdLcdText.h"
 #include "mdMachineHelp.h"
+#include "mdMachinedrumHelp.h"
 #include "mdParameterHelp.h"
 #include "mdPluginProcessor.h"
 #include "mdSettingsAudioInput.h"
@@ -486,29 +487,26 @@ namespace mdJucePlugin
 		const auto target = lcdTargetAt(_event);
 		const auto point = lcdNativePointAt(_event);
 
-		// Tooltip field: a field the fork's classifier recognises (on the Monomachine only
-		// SYNTHESIS), or on AMP..LFO 3 a grid field whose label reads what that page should show.
+		// Tooltip field: a field with an interaction state (the fork's classifier, or a verified
+		// label on the other data pages), or a verified grid field while that state is suspended.
 		m_tooltipLcdEncoder.reset();
-		if(target && m_lcdInteractionState
-			&& (m_lcdInteractionState->surface == lcdInteraction::SurfaceKind::Lfo
-				|| m_lcdInteractionState->surface == lcdInteraction::SurfaceKind::Synthesis))
+		if(target && m_lcdInteractionState)
 		{
 			m_tooltipLcdEncoder = target;
 		}
 		else if(point)
 		{
-			const auto page = currentMonomachineDataPage();
-			for(unsigned encoder = 0; page && encoder < 8; ++encoder)
+			for(unsigned encoder = 0; encoder < 8; ++encoder)
 			{
 				if(lcdInteraction::encoderRect(lcdInteraction::LayoutKind::Standard, encoder).contains(point->first, point->second))
 				{
-					if(lcdFieldShowsFixedLabel(*page, encoder))
+					if(lcdFieldVerified(encoder))
 						m_tooltipLcdEncoder = encoder;
 					break;
 				}
 			}
 		}
-		const auto& name = lcdText::g_machineName;
+		const auto& name = getModel() == md::MachineModel::Machinedrum ? lcdText::g_mdMachineName : lcdText::g_machineName;
 		m_tooltipLcdMachineName = point
 			&& point->first >= static_cast<int>(name.x) && point->first < static_cast<int>(name.x + name.width)
 			&& point->second >= static_cast<int>(name.y) - 1 && point->second <= static_cast<int>(name.y + name.height);
@@ -1008,17 +1006,7 @@ namespace mdJucePlugin
 			if(!target)
 				return;
 
-			constexpr md::FrontPanel::StatusLed pages[] =
-			{
-				md::FrontPanel::StatusLed::Synthesis,
-				md::FrontPanel::StatusLed::Effects,
-				md::FrontPanel::StatusLed::Routing,
-			};
-			std::array<bool, panelAffordances::g_machinedrumDataPages.size()> active{};
-			for(size_t page = 0; page < active.size(); ++page)
-				active[page] = frontPanel.getStatusLed(pages[page]);
-
-			const auto current = panelAffordances::singleActiveIndex(active);
+			const auto current = currentMachinedrumDataPage();
 			if(!current || m_machinedrumDataPageTarget.completeIfAt(*current))
 				return;
 
@@ -2894,10 +2882,26 @@ namespace mdJucePlugin
 		return panelAffordances::singleActiveIndex(active);
 	}
 
+	std::optional<int> Editor::currentMachinedrumDataPage() const
+	{
+		if(getModel() != md::MachineModel::Machinedrum || !m_frontPanelSnapshotValid)
+			return std::nullopt;
+		constexpr md::FrontPanel::StatusLed pages[] =
+		{
+			md::FrontPanel::StatusLed::Synthesis,
+			md::FrontPanel::StatusLed::Effects,
+			md::FrontPanel::StatusLed::Routing,
+		};
+		std::array<bool, panelAffordances::g_machinedrumDataPages.size()> active{};
+		for(size_t page = 0; page < active.size(); ++page)
+			active[page] = m_frontPanelSnapshot.getStatusLed(pages[page]);
+		return panelAffordances::singleActiveIndex(active);
+	}
+
 	void Editor::createParameterTooltip()
 	{
 		auto* const document = getDocument();
-		if(getModel() != md::MachineModel::Monomachine || !document)
+		if(!document)
 			return;
 
 		m_lcdArea = findChild("lcdArea", false);
@@ -2943,32 +2947,58 @@ namespace mdJucePlugin
 		return entry && label && std::strcmp(entry->abbreviation, label) == 0;
 	}
 
+	bool Editor::lcdFieldVerified(const unsigned _encoder) const
+	{
+		if(!m_frontPanelSnapshotValid || _encoder >= 8)
+			return false;
+		if(getModel() == md::MachineModel::Monomachine)
+		{
+			const auto page = currentMonomachineDataPage();
+			return page && lcdFieldShowsFixedLabel(*page, _encoder);
+		}
+		const auto page = currentMachinedrumDataPage();
+		if(!page || *page < 1)
+			return false;
+		uint16_t key = 0;
+		const auto* const machine = machinedrumHelp::machineForHash(
+			lcdText::hash(m_frontPanelSnapshot, lcdText::g_mdMachineName), key);
+		bool allTracks = false;
+		return machinedrumHelp::entry(*page, machine, machinedrumHelp::labelForHash(
+			lcdText::inkHash(m_frontPanelSnapshot, lcdText::fieldLabel(_encoder))), allTracks) != nullptr;
+	}
+
 	std::optional<lcdInteraction::State> Editor::verifiedFixedPageState() const
 	{
-		// The fork's classifier only qualifies the Monomachine SYNTHESIS page. On AMP..LFO 3 the
-		// fields sit on the same standard grid; enable exactly the fields whose label reads what
-		// that page should show, so a menu or overlay never becomes a drag target.
-		if(getModel() != md::MachineModel::Monomachine || !m_frontPanelSnapshotValid || m_encoderPress.active())
+		// The fork's classifier qualifies only the SYNTHESIS page (plus, on the Machinedrum, the LFO
+		// and master FX windows). The other data pages use the same standard grid; enable exactly
+		// the fields whose label reads what that page should show, so a menu or overlay never
+		// becomes a drag target.
+		// A popup such as the KIT menu breaks the dotted field frame even where it leaves a label visible.
+		if(!m_frontPanelSnapshotValid || m_encoderPress.active() || !lcdInteraction::hasStandardFrame(m_frontPanelSnapshot))
 			return std::nullopt;
-		const auto page = currentMonomachineDataPage();
-		if(!page || *page < 1 || *page > 6)
+		const auto isMonomachine = getModel() == md::MachineModel::Monomachine;
+		const auto page = isMonomachine ? currentMonomachineDataPage() : currentMachinedrumDataPage();
+		if(!page || *page < 1)
 			return std::nullopt;
 
 		uint8_t mask = 0;
 		for(unsigned encoder = 0; encoder < 8; ++encoder)
-			if(lcdFieldShowsFixedLabel(*page, encoder))
+			if(lcdFieldVerified(encoder))
 				mask |= static_cast<uint8_t>(1u << encoder);
 		if(mask == 0)
 			return std::nullopt;
 
-		// Identity covers the page and which fields are live, not values, so a drag survives the
-		// value redraws it causes.
+		// Identity covers the page, which fields are live and (on the Machinedrum, where MIDI and CTR
+		// machines relabel these pages) the machine, not values, so a drag survives the value
+		// redraws it causes.
 		uint64_t identity = 1469598103934665603ull;
-		for(const auto byte : { static_cast<uint8_t>(0xa6), static_cast<uint8_t>(*page), mask })
+		const auto machine = isMonomachine ? 0 : lcdText::hash(m_frontPanelSnapshot, lcdText::g_mdMachineName);
+		for(const auto byte : { static_cast<uint8_t>(isMonomachine ? 0xa6 : 0xa7), static_cast<uint8_t>(*page), mask })
 		{
 			identity ^= byte;
 			identity *= 1099511628211ull;
 		}
+		identity ^= machine;
 
 		lcdInteraction::State state;
 		state.surface = lcdInteraction::SurfaceKind::Synthesis;	// no dedicated kind exists; only layout and mask are used
@@ -2976,6 +3006,66 @@ namespace mdJucePlugin
 		state.activeEncoderMask = mask;
 		state.identityToken = identity;
 		return state;
+	}
+
+	bool Editor::describeMachinedrumEncoder(const unsigned _encoder, std::string& _abbreviation, std::string& _name,
+		std::string& _description, std::string& _footer) const
+	{
+		if(getModel() != md::MachineModel::Machinedrum || !m_frontPanelSnapshotValid || _encoder >= 8)
+			return false;
+		const auto knob = std::string(1, static_cast<char>('A' + _encoder));
+		const auto set = [&](const parameterHelp::Entry& _entry, const std::string& _footerText)
+		{
+			_abbreviation = _entry.abbreviation;
+			_name = _entry.name;
+			_description = _entry.description;
+			_footer = _footerText + ", knob " + knob;
+			return true;
+		};
+
+		// LFO and master FX windows are recognised by the fork's classifier.
+		if(m_lcdInteractionState)
+		{
+			using lcdInteraction::SurfaceKind;
+			const auto surface = m_lcdInteractionState->surface;
+			if(m_lcdInteractionState->layout == lcdInteraction::LayoutKind::Lfo && surface == SurfaceKind::Lfo)
+				return set(machinedrumHelp::g_lfo[_encoder], "LFO window");
+			if(m_lcdInteractionState->layout == lcdInteraction::LayoutKind::MasterFx)
+			{
+				const auto index = static_cast<size_t>(surface) - static_cast<size_t>(SurfaceKind::MasterFxEcho);
+				if(index < 4)
+				{
+					if(const auto* const e = machinedrumHelp::parameter(machinedrumHelp::g_masterFxFamilies[index],
+						machinedrumHelp::g_masterFxLabels[index][_encoder]))
+						return set(*e, std::string("Master FX, ") + machinedrumHelp::g_masterFxNames[index]);
+				}
+				return false;
+			}
+		}
+
+		// Data pages: read the field label and the machine name off the LCD.
+		const auto page = currentMachinedrumDataPage();
+		if(!page)
+			return false;
+		uint16_t key = 0;
+		const auto* const machine = machinedrumHelp::machineForHash(
+			lcdText::hash(m_frontPanelSnapshot, lcdText::g_mdMachineName), key);
+		bool allTracks = false;
+		const auto* const e = machinedrumHelp::entry(*page, machine, machinedrumHelp::labelForHash(
+			lcdText::inkHash(m_frontPanelSnapshot, lcdText::fieldLabel(_encoder))), allTracks);
+		if(!e)
+			return false;
+		constexpr const char* pageNames[] = { "synthesis", "Effects page", "Routing page" };
+		std::string footer = pageNames[*page];
+		if(*page == 0)
+			footer = std::string(machine->name) + " synthesis";
+		set(*e, footer);
+		if(allTracks)
+		{
+			_name += ", all tracks";
+			_description += " CTR-AL applies it to all 16 tracks.";
+		}
+		return true;
 	}
 
 	std::string Editor::lfoTargetDescription(const unsigned _encoder) const
@@ -3036,6 +3126,7 @@ namespace mdJucePlugin
 		else if(m_tooltipLcdEncoder && m_lcdArea)
 		{
 			// Re-check fixed-page fields each update: the screen may have changed under the mouse.
+			// (Machinedrum help is looked up from the LCD below, which re-checks it anyway.)
 			const auto currentPage = currentMonomachineDataPage();
 			const auto fixedGrid = currentPage && *currentPage >= 1 && *currentPage <= 6;
 			if(!fixedGrid || lcdFieldShowsFixedLabel(*currentPage, *m_tooltipLcdEncoder))
@@ -3062,7 +3153,31 @@ namespace mdJucePlugin
 
 		std::string abbreviation, name, description, footer;
 		const auto page = currentMonomachineDataPage();
-		if(machineName && m_frontPanelSnapshotValid)
+		if(getModel() == md::MachineModel::Machinedrum)
+		{
+			if(machineName && m_frontPanelSnapshotValid)
+			{
+				uint16_t key = 0;
+				if(const auto* const machine = machinedrumHelp::machineForHash(
+					lcdText::hash(m_frontPanelSnapshot, lcdText::g_mdMachineName), key))
+				{
+					abbreviation = machine->lcdName;
+					if(machine->number)
+					{
+						const auto number = machine->number + (key - machine->first);
+						abbreviation += std::string(1, static_cast<char>('0' + number / 10)) + static_cast<char>('0' + number % 10);
+					}
+					name = machine->name;
+					description = machine->description;
+					footer = "Machine on the active track";
+				}
+			}
+			else if(encoder)
+			{
+				describeMachinedrumEncoder(*encoder, abbreviation, name, description, footer);
+			}
+		}
+		else if(machineName && m_frontPanelSnapshotValid)
 		{
 			if(const auto* const machine = machineHelp::machineForHash(
 				lcdText::hash(m_frontPanelSnapshot, lcdText::g_machineName)))

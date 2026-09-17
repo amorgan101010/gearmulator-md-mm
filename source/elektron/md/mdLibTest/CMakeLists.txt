@@ -248,7 +248,7 @@ add_executable(mdmmBench mdmmBench.cpp)
 target_link_libraries(mdmmBench PRIVATE mdLib)
 
 # Local LCD frame capture for studying the firmware's screen layouts (not upstream).
-add_executable(mmLcdCapture mmLcdCapture.cpp)
+add_executable(mmLcdCapture mmLcdCapture.cpp ../mdJucePlugin/mdLcdInteractionModel.cpp)
 target_link_libraries(mmLcdCapture PRIVATE mdLib)
 
 # Shared external regressions for the independent MM workaround removals.

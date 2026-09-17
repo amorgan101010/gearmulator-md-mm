@@ -57,6 +57,9 @@ namespace mdJucePlugin::lcdInteraction
 	// _dataEntrySwitchHeld is explicit input state, not a guessed pixel
 	// property. Firmware's held-value overlay preserves the underlying grid and
 	// page LEDs, so suppressing it from known panel state is the reliable test.
+	// True when all eight standard-grid fields show their firmware-drawn dotted top and right edges.
+	bool hasStandardFrame(const md::FrontPanel& _panel);
+
 	std::optional<State> classify(const md::FrontPanel& _panel,
 		md::MachineModel _model, bool _dataEntrySwitchHeld = false);
 

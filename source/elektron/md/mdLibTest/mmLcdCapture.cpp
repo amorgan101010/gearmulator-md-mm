@@ -6,6 +6,8 @@
 // each machine assigned to track 1 and the SYNTHESIS page shown.
 
 #include "../mdJucePlugin/mdLcdText.h"
+#include "../mdJucePlugin/mdLcdInteractionModel.h"
+#include "../mdJucePlugin/mdMachinedrumHelp.h"
 
 #include "mdLib/mdhardware.h"
 #include "mdLib/mdpanel.h"
@@ -32,9 +34,11 @@ namespace
 		}
 	}
 
+	md::MachineModel g_model = md::MachineModel::Monomachine;
+
 	void tap(md::Hardware& _hardware, const md::PanelControl _control)
 	{
-		const auto packet = md::panelPacket(md::MachineModel::Monomachine, _control);
+		const auto packet = md::panelPacket(g_model, _control);
 		if(!packet)
 			return;
 		_hardware.trySendPanelEvent(packet->row, packet->mask);
@@ -58,10 +62,387 @@ namespace
 		}
 		std::fclose(file);
 	}
+
+	// Machinedrum OS 1.63 (UW): capture boot, the three data pages and every machine.
+	int runMachinedrum(const std::string& _out, int argc, char** argv)
+	{
+		const auto* path = std::getenv("GEARMULATOR_MD_FIRMWARE_BIN");
+		std::vector<uint8_t> rom;
+		if(!path || !baseLib::filesystem::readFile(rom, path)
+			|| !md::RomLoader::isRomForModel(rom, md::MachineModel::Machinedrum))
+		{
+			std::cerr << "firmware missing or not a Machinedrum image\n";
+			return 2;
+		}
+		g_model = md::MachineModel::Machinedrum;
+		auto hardware = std::make_unique<md::Hardware>(rom, path, md::MachineModel::Machinedrum);
+		advance(*hardware, md::g_samplerate * 20);
+
+		capture(*hardware, _out + "/boot.pbm");
+		for(int page = 1; page <= 2; ++page)
+		{
+			tap(*hardware, md::PanelControl::SynthesisEffectsRouting);
+			capture(*hardware, _out + "/page-" + std::to_string(page) + ".pbm");
+		}
+		tap(*hardware, md::PanelControl::SynthesisEffectsRouting);
+		capture(*hardware, _out + "/page-0.pbm");
+
+		const auto assign = [&](const int _id, const bool _userWave)
+		{
+			// Manual, Appendix C: $5b assign machine -- track, machine, 1 = UW set, 2 = init all pages.
+			synthLib::SMidiEvent e(synthLib::MidiEventSource::Host);
+			e.sysex = { 0xf0, 0x00, 0x20, 0x3c, 0x02, 0x00, 0x5b, 0x00, static_cast<uint8_t>(_id),
+				static_cast<uint8_t>(_userWave ? 1 : 0), 0x02, 0xf7 };
+			hardware->sendMidi(e);
+			advance(*hardware, md::g_samplerate);
+		};
+
+		if(argc >= 4 && std::string(argv[3]) == "machines")
+		{
+			for(int id = 0; id < 128; ++id)
+			{
+				assign(id, false);
+				capture(*hardware, _out + "/m-" + std::to_string(id) + ".pbm");
+			}
+			for(int id = 0; id < 64; ++id)
+			{
+				assign(id, true);
+				capture(*hardware, _out + "/uw-" + std::to_string(id) + ".pbm");
+			}
+			return 0;
+		}
+
+		int errors = 0;
+		std::vector<std::pair<uint64_t, std::string>> labelHashes;
+		const auto verifyLabels = [&](const md::FrontPanel& _panel, const char* const* _labels, const std::string& _context)
+		{
+			for(unsigned field = 0; field < 8; ++field)
+			{
+				const auto region = mdJucePlugin::lcdText::fieldLabel(field);
+				const std::string label = _labels[field];
+				const auto isBlank = mdJucePlugin::lcdText::blank(_panel, region);
+				if(label.empty() != isBlank)
+				{
+					std::cerr << _context << " field " << field << ": transcription '" << label
+						<< "' but region is " << (isBlank ? "blank" : "not blank") << '\n';
+					++errors;
+					continue;
+				}
+				if(isBlank)
+					continue;
+				const auto hash = mdJucePlugin::lcdText::inkHash(_panel, region);
+				const auto it = std::find_if(labelHashes.begin(), labelHashes.end(),
+					[&](const auto& _e) { return _e.first == hash || _e.second == label; });
+				if(it == labelHashes.end())
+					labelHashes.emplace_back(hash, label);
+				else if(it->first != hash || it->second != label)
+				{
+					std::cerr << _context << " field " << field << ": '" << label << "' conflicts with '"
+						<< it->second << "' (same " << (it->first == hash ? "pixels" : "text, different pixels") << ")\n";
+					++errors;
+				}
+			}
+		};
+
+		// The plugin's help must describe every label it can read, and resolve the machine name.
+		const auto checkHelp = [&](const md::FrontPanel& _panel, const int _page, const int _key, const std::string& _context)
+		{
+			namespace help = mdJucePlugin::machinedrumHelp;
+			uint16_t found = 0xffff;
+			const auto* const machine = help::machineForHash(
+				mdJucePlugin::lcdText::hash(_panel, mdJucePlugin::lcdText::g_mdMachineName), found);
+			if(_key >= 0 && (!machine || found != _key))
+			{
+				std::cerr << _context << ": machine name does not resolve to its key\n";
+				++errors;
+			}
+			if(_page > 0 && !mdJucePlugin::lcdInteraction::hasStandardFrame(_panel))
+			{
+				std::cerr << _context << ": no standard field frame\n";
+				++errors;
+			}
+			for(unsigned field = 0; field < 8; ++field)
+			{
+				const auto region = mdJucePlugin::lcdText::fieldLabel(field);
+				if(mdJucePlugin::lcdText::blank(_panel, region))
+					continue;
+				bool allTracks = false;
+				if(!help::entry(_page, machine, help::labelForHash(mdJucePlugin::lcdText::inkHash(_panel, region)), allTracks))
+				{
+					std::cerr << _context << " field " << field << ": no help entry\n";
+					++errors;
+				}
+			}
+		};
+		// TRACK EFFECTS and ROUTING on the boot kit, transcribed from the captures.
+		constexpr const char* pageLabels[2][8] =
+		{
+			{ "AMD", "AMF", "EQF", "EQG", "FLTF", "FLTW", "FLTQ", "SRR" },
+			{ "DIST", "VOL", "PAN", "DEL", "REV", "LFOS", "LFOD", "LFOM" },
+		};
+		std::vector<md::FrontPanel> pagePanels;
+		for(int page = 1; page <= 2; ++page)
+		{
+			tap(*hardware, md::PanelControl::SynthesisEffectsRouting);
+			pagePanels.push_back(hardware->getFrontPanelSnapshot());
+			verifyLabels(pagePanels.back(), pageLabels[page - 1], "page " + std::to_string(page));
+			checkHelp(pagePanels.back(), page, -1, "page " + std::to_string(page));
+		}
+		// A popup over a data page must break the field frame, so no field stays draggable under it.
+		tap(*hardware, md::PanelControl::Kit);
+		if(mdJucePlugin::lcdInteraction::hasStandardFrame(hardware->getFrontPanelSnapshot()))
+		{
+			std::cerr << "KIT menu over ROUTING still shows the standard frame\n";
+			++errors;
+		}
+		tap(*hardware, md::PanelControl::Exit);
+		tap(*hardware, md::PanelControl::SynthesisEffectsRouting);
+
+		// "screens": the LFO edit window (FUNCTION + SYNTHESIS/EFFECTS/ROUTING) and the KIT menu.
+		if(argc >= 4 && std::string(argv[3]) == "screens")
+		{
+			const auto hold = [&](const md::PanelControl _held, const md::PanelControl _tapped)
+			{
+				const auto packet = md::panelPacket(g_model, _held);
+				hardware->trySendPanelEvent(packet->row, packet->mask);
+				advance(*hardware, 4096);
+				tap(*hardware, _tapped);
+				hardware->trySendPanelEvent(packet->row, 0);
+				advance(*hardware, md::g_samplerate / 2);
+			};
+			hold(md::PanelControl::Function, md::PanelControl::SynthesisEffectsRouting);
+			capture(*hardware, _out + "/lfo.pbm");
+			tap(*hardware, md::PanelControl::Exit);
+			tap(*hardware, md::PanelControl::Kit);
+			tap(*hardware, md::PanelControl::Down);
+			tap(*hardware, md::PanelControl::Right);
+			tap(*hardware, md::PanelControl::Enter);
+			for(int i = 0; i < 4; ++i)
+			{
+				capture(*hardware, _out + "/master-" + std::to_string(i) + ".pbm");
+				tap(*hardware, md::PanelControl::Right);
+			}
+			return 0;
+		}
+
+		// "turncheck": on both pages, turn every knob and check no label changes after a detent.
+		// Also on MID-01 and CTR-AL, whose EFFECTS/ROUTING pages show their own labels.
+		if(argc >= 4 && std::string(argv[3]) == "turncheck")
+		{
+			int hidden = 0, checks = 0;
+			for(int round = 0; round < 3; ++round)
+			for(int page = 1; page <= 2; ++page)
+			{
+				if(page == 1 && round == 1)
+					assign(96, false);
+				else if(page == 1 && round == 2)
+					assign(112, false);
+				tap(*hardware, md::PanelControl::SynthesisEffectsRouting);
+				const auto before = hardware->getFrontPanelSnapshot();
+				std::vector<uint64_t> expected(8);
+				for(unsigned field = 0; field < 8; ++field)
+					expected[field] = mdJucePlugin::lcdText::hash(before, mdJucePlugin::lcdText::fieldLabel(field));
+				for(unsigned encoder = 0; encoder < 8; ++encoder)
+				{
+					const auto command = md::panelEncoderCommand(md::MachineModel::Machinedrum,
+						static_cast<md::PanelEncoder>(encoder));
+					for(int step = 0; step < 6; ++step)
+					{
+						hardware->trySendPanelEvent(*command, step < 3 ? 0x01 : 0xff);
+						advance(*hardware, 2048);
+						const auto now = hardware->getFrontPanelSnapshot();
+						++checks;
+						for(unsigned field = 0; field < 8; ++field)
+						{
+							if(mdJucePlugin::lcdText::hash(now, mdJucePlugin::lcdText::fieldLabel(field)) != expected[field])
+							{
+								std::printf("round %d page %d knob %u step %d: field %u label changed\n", round, page, encoder, step, field);
+								++hidden;
+								capture(*hardware, _out + "/turn-p" + std::to_string(page) + "-k" + std::to_string(encoder)
+									+ "-s" + std::to_string(step) + ".pbm");
+								break;
+							}
+						}
+					}
+				}
+				if(page == 2)
+					tap(*hardware, md::PanelControl::SynthesisEffectsRouting);	// back to SYNTHESIS
+			}
+			std::printf("turncheck: %d label disruptions in %d checks\n", hidden, checks);
+			return 0;
+		}
+
+		// Every machine in Appendix C. Key: SysEx number, plus 0x100 for the UW set (c = 1).
+		std::vector<int> keys;
+		for(const auto& [first, last] : std::initializer_list<std::pair<int, int>>{
+			{0, 3}, {16, 28}, {32, 39}, {48, 72}, {80, 85}, {96, 113}, {120, 123} })
+			for(int id = first; id <= last; ++id)
+				keys.push_back(id);
+		for(const auto& [first, last] : std::initializer_list<std::pair<int, int>>{ {0, 35}, {37, 40}, {48, 63} })
+			for(int id = first; id <= last; ++id)
+				keys.push_back(0x100 | id);
+
+		// SYNTHESIS labels transcribed from the captures (A-D, E-H; "" empty), checked against
+		// Appendix A. Labels drawn inverted (white on black) are written in brackets. Machines
+		// whose TRACK EFFECTS / ROUTING pages show their own labels list those too.
+		using Labels = const char* [8];
+		constexpr Labels mid1{ "CC1D", "CC1V", "CC2D", "CC2V", "CC3D", "CC3V", "CC4D", "CC4V" };
+		constexpr Labels mid2{ "CC5D", "CC5V", "CC6D", "CC6V", "PCHG", "LFOS", "LFOD", "LFOM" };
+		constexpr Labels ctrAl1{ "[AMD]", "[AMF]", "[EQF]", "[EQG]", "[FLTF]", "[FLTW]", "[FLTQ]", "[SRR]" };
+		constexpr Labels ctrAl2{ "[DIST]", "[VOL]", "[PAN]", "[DEL]", "[REV]", "[LFOS]", "[LFOD]", "[LFOM]" };
+		constexpr Labels ctrFx1{ "", "", "", "", "", "", "", "" };
+		constexpr Labels ctrFx2{ "", "", "", "", "", "LFOS", "LFOD", "LFOM" };
+		struct Transcription
+		{
+			int first, last;
+			Labels synthesis;
+			const char* const* effects;
+			const char* const* routing;
+		};
+		const Transcription transcriptions[] =
+		{
+			{ 0, 0, { "", "", "", "", "", "", "", "" } },
+			{ 1, 1, { "PTCH", "DEC", "RAMP", "RDEC", "", "", "", "" } },
+			{ 2, 2, { "DEC", "", "", "", "", "", "", "" } },
+			{ 3, 3, { "UP", "UVAL", "DOWN", "DVAL", "", "", "", "" } },
+			{ 16, 16, { "PTCH", "DEC", "RAMP", "RDEC", "STRT", "NOIS", "HARM", "CLIP" } },
+			{ 17, 17, { "PTCH", "DEC", "BUMP", "BENV", "SNAP", "TONE", "TUNE", "CLIP" } },
+			{ 18, 18, { "PTCH", "DEC", "RAMP", "RDEC", "DAMP", "DIST", "DTYP", "" } },
+			{ 19, 19, { "CLPY", "TONE", "HARD", "RICH", "RATE", "ROOM", "RSIZ", "RTUN" } },
+			{ 20, 20, { "PTCH", "DEC", "DIST", "", "", "", "", "" } },
+			{ 21, 21, { "PTCH", "DEC", "ENH", "DAMP", "TONE", "BUMP", "", "" } },
+			{ 22, 23, { "GAP", "DEC", "HPF", "LPF", "MTAL", "", "", "" } },
+			{ 24, 24, { "RICH", "DEC", "TOP", "TTUN", "SIZE", "PEAK", "", "" } },
+			{ 25, 25, { "ATT", "SUS", "REV", "DAMP", "RATL", "RTYP", "TONE", "HARD" } },
+			{ 26, 26, { "PTCH", "DEC", "DUAL", "ENH", "TUNE", "CLIC", "", "" } },
+			{ 27, 27, { "PTCH", "DEC", "RAMP", "RDEC", "DAMP", "DIST", "DTYP", "" } },
+			{ 28, 28, { "PTCH", "DEC", "RAMP", "HOLD", "TICK", "NOIS", "DIRT", "DIST" } },
+			{ 32, 32, { "PTCH", "DEC", "RAMP", "RDEC", "MOD", "MFRQ", "MDEC", "MFB" } },
+			{ 33, 33, { "PTCH", "DEC", "NOIS", "NDEC", "MOD", "MFRQ", "MDEC", "HPF" } },
+			{ 34, 34, { "PTCH", "DEC", "RAMP", "RDEC", "MOD", "MFRQ", "MDEC", "CLIC" } },
+			{ 35, 35, { "PTCH", "DEC", "CLPS", "CDEC", "MOD", "MFRQ", "MDEC", "HPF" } },
+			{ 36, 36, { "PTCH", "DEC", "MOD", "HPF", "SNAR", "SPTC", "SDEC", "SMOD" } },
+			{ 37, 37, { "PTCH", "DEC", "SNAP", "FB", "MOD", "MFRQ", "MDEC", "" } },
+			{ 38, 38, { "PTCH", "DEC", "TREM", "TFRQ", "MOD", "MFRQ", "MDEC", "FB" } },
+			{ 39, 39, { "PTCH", "DEC", "FB", "HPF", "MOD", "MFRQ", "MDEC", "" } },
+			{ 48, 48, { "PTCH", "DEC", "SNAP", "SPLN", "STRT", "RTRG", "RTIM", "BEND" } },
+			{ 49, 49, { "PTCH", "DEC", "HP", "RING", "STRT", "RTRG", "RTIM", "BEND" } },
+			{ 50, 52, { "PTCH", "DEC", "HP", "HPQ", "STRT", "RTRG", "RTIM", "BEND" } },
+			{ 53, 53, { "PTCH", "DEC", "HP", "RATL", "STRT", "RTRG", "RTIM", "BEND" } },
+			{ 54, 55, { "PTCH", "DEC", "HP", "HPQ", "STRT", "RTRG", "RTIM", "BEND" } },
+			{ 56, 56, { "PTCH", "DEC", "HP", "STOP", "STRT", "RTRG", "RTIM", "BEND" } },
+			{ 57, 57, { "PTCH", "DEC", "HP", "BELL", "STRT", "RTRG", "RTIM", "BEND" } },
+			{ 58, 58, { "PTCH", "DEC", "HP", "HPQ", "STRT", "RTRG", "RTIM", "BEND" } },
+			{ 59, 59, { "PTCH", "DEC", "HP", "REAL", "STRT", "RTRG", "RTIM", "BEND" } },
+			{ 60, 61, { "PTCH", "DEC", "HP", "HPQ", "STRT", "RTRG", "RTIM", "BEND" } },
+			{ 62, 62, { "PTCH", "DEC", "HP", "SLEW", "STRT", "RTRG", "RTIM", "BEND" } },
+			{ 63, 63, { "PTCH", "DEC", "HP", "BC", "STRT", "RTRG", "RTIM", "BEND" } },
+			{ 64, 64, { "PTCH", "DEC", "HARD", "HAMR", "TENS", "DAMP", "", "" } },
+			{ 65, 65, { "PTCH", "DEC", "HARD", "RING", "TENS", "RVOL", "RDEC", "" } },
+			{ 66, 66, { "PTCH", "DEC", "HARD", "HAMR", "TUNE", "DAMP", "SIZE", "POS" } },
+			{ 67, 67, { "PTCH", "DEC", "HARD", "TENS", "", "", "", "" } },
+			{ 68, 68, { "GRNS", "DEC", "GLEN", "", "SIZE", "HARD", "", "" } },
+			{ 69, 69, { "PTCH", "DEC", "HARD", "RING", "RVOL", "RDEC", "", "" } },
+			{ 70, 71, { "PTCH", "DEC", "HARD", "RING", "AG", "AU", "BR", "GRAB" } },
+			{ 72, 72, { "PTCH", "DEC", "CLSN", "RING", "AG", "AU", "BR", "CLOS" } },
+			{ 80, 81, { "VOL", "GATE", "ATCK", "HLD", "DEC", "", "", "" } },
+			{ 82, 83, { "ALEV", "GATE", "FATK", "FHLD", "FDEC", "FDPH", "FFRQ", "FQ" } },
+			{ 84, 85, { "ALEV", "AHLD", "ADEC", "FQ", "FDPH", "FHLD", "FDEC", "FFRQ" } },
+			{ 96, 111, { "NOTE", "N2", "N3", "LEN", "VEL", "PB", "MW", "AT" }, mid1, mid2 },
+			{ 112, 112, { "[SYN1]", "[SYN2]", "[SYN3]", "[SYN4]", "[SYN5]", "[SYN6]", "[SYN7]", "[SYN8]" }, ctrAl1, ctrAl2 },
+			{ 113, 113, { "P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8" } },
+			{ 120, 120, { "TIME", "MOD", "MFRQ", "FB", "FLTF", "FLTW", "MONO", "LEV" }, ctrFx1, ctrFx2 },
+			{ 121, 121, { "DVOL", "PRED", "DEC", "DAMP", "HP", "LP", "GATE", "LEV" }, ctrFx1, ctrFx2 },
+			{ 122, 122, { "LF", "LG", "HF", "HG", "PF", "PG", "PQ", "GAIN" }, ctrFx1, ctrFx2 },
+			{ 123, 123, { "ATCK", "REL", "TRHD", "RTIO", "KNEE", "HP", "OUTG", "MIX" }, ctrFx1, ctrFx2 },
+			{ 0x100, 0x11f, { "PTCH", "DEC", "HOLD", "BRR", "STRT", "END", "RTRG", "RTIM" } },
+			{ 0x120, 0x121, { "MLEV", "MBAL", "ILEV", "IBAL", "CUE1", "CUE2", "LEN", "RATE" } },
+			{ 0x122, 0x123, { "PTCH", "DEC", "HOLD", "BRR", "STRT", "END", "RTRG", "RTIM" } },
+			{ 0x125, 0x126, { "MLEV", "MBAL", "ILEV", "IBAL", "CUE1", "CUE2", "LEN", "RATE" } },
+			{ 0x127, 0x128, { "PTCH", "DEC", "HOLD", "BRR", "STRT", "END", "RTRG", "RTIM" } },
+			{ 0x130, 0x13f, { "PTCH", "DEC", "HOLD", "BRR", "STRT", "END", "RTRG", "RTIM" } },
+		};
+
+		std::vector<std::pair<uint64_t, int>> machineHashes;
+		for(const auto key : keys)
+		{
+			assign(key & 0xff, (key & 0x100) != 0);
+			const auto name = [&]
+			{
+				return mdJucePlugin::lcdText::hash(hardware->getFrontPanelSnapshot(), mdJucePlugin::lcdText::g_mdMachineName);
+			};
+			const auto nameHash = name();
+			capture(*hardware, _out + "/k-" + std::to_string(key) + ".pbm");
+
+			const auto* transcription = [&]() -> const Transcription*
+			{
+				for(const auto& t : transcriptions)
+					if(key >= t.first && key <= t.last)
+						return &t;
+				return nullptr;
+			}();
+			if(!transcription)
+			{
+				std::cerr << "machine " << key << " has no transcription\n";
+				++errors;
+			}
+			else
+			{
+				verifyLabels(hardware->getFrontPanelSnapshot(), transcription->synthesis, "machine " + std::to_string(key));
+				checkHelp(hardware->getFrontPanelSnapshot(), 0, key, "machine " + std::to_string(key));
+			}
+
+			// The strip also shows the page (SYNT/TFX/ROUT); the machine part must not change with it.
+			for(int page = 1; page <= 3; ++page)
+			{
+				tap(*hardware, md::PanelControl::SynthesisEffectsRouting);
+				if(page < 3)
+					capture(*hardware, _out + "/k-" + std::to_string(key) + "-p" + std::to_string(page) + ".pbm");
+				if(transcription && page < 3)
+				{
+					const auto* const own = page == 1 ? transcription->effects : transcription->routing;
+					// CTR-8P pairs track and parameter fields per shortcut; it is not transcribed.
+					if(own || key != 113)
+					{
+						verifyLabels(hardware->getFrontPanelSnapshot(), own ? own : pageLabels[page - 1],
+							"machine " + std::to_string(key) + " page " + std::to_string(page));
+						checkHelp(hardware->getFrontPanelSnapshot(), page, key,
+							"machine " + std::to_string(key) + " page " + std::to_string(page));
+					}
+				}
+				if(name() != nameHash)
+				{
+					std::cerr << "machine " << key << " name hash changes on page " << page << '\n';
+					++errors;
+				}
+			}
+			for(const auto& [hash, other] : machineHashes)
+			{
+				if(hash == nameHash)
+				{
+					std::cerr << "machine " << key << " name looks identical to machine " << other << '\n';
+					++errors;
+				}
+			}
+			machineHashes.emplace_back(nameHash, key);
+		}
+
+		std::printf("// Generated by mmLcdCapture from Machinedrum OS 1.63 screens.\n");
+		for(const auto& [hash, label] : labelHashes)
+			std::printf("{ 0x%016llxull, \"%s\" },\n", static_cast<unsigned long long>(hash), label.c_str());
+		std::printf("// machine names\n");
+		for(const auto& [hash, key] : machineHashes)
+			std::printf("{ 0x%016llxull, 0x%03x },\n", static_cast<unsigned long long>(hash), key);
+		std::cerr << "captured to " << _out << ", " << labelHashes.size() << " distinct labels, " << errors << " errors\n";
+		return errors == 0 ? 0 : 1;
+	}
 }
 
 int main(int argc, char** argv)
 {
+	if(argc >= 3 && std::string(argv[2]) == "md")
+		return runMachinedrum(argv[1], argc, argv);
+
 	const auto* path = std::getenv("GEARMULATOR_MM_FIRMWARE_BIN");
 	if(argc < 2 || !path)
 	{
@@ -279,7 +660,14 @@ int main(int argc, char** argv)
 		{ "PAGE", "DEST", "TRIG", "WAVE", "MULT", "SPD", "INTL", "DPTH" },
 	};
 	for(size_t page = 0; page < pagePanels.size(); ++page)
+	{
 		verifyLabels(pagePanels[page], pageLabels[page], "page " + std::to_string(page + 1));
+		if(!mdJucePlugin::lcdInteraction::hasStandardFrame(pagePanels[page]))
+		{
+			std::cerr << "page " << page + 1 << ": no standard field frame\n";
+			++errors;
+		}
+	}
 
 	for(const auto& machine : machines)
 	{
