@@ -36,6 +36,7 @@
 #include "mdLib/mdhardware.h"
 #include "mdLib/mdpanel.h"
 #include "mdLib/mdromloader.h"
+#include "mdLib/mdstate.h"
 #include "mdLib/mdsysextransfer.h"
 
 #include "emulatedBudget.h"
@@ -45,6 +46,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
@@ -53,6 +55,7 @@
 #include <iostream>
 #include <map>
 #include <memory>
+#include <optional>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -88,6 +91,9 @@ namespace
 		// Mono mix (sum of the six outputs) step sizes at host block edges and elsewhere, for
 		// --buffer-sizes. A glitch tied to the host buffer makes block edges stand out.
 		double edgeStep = 0, otherStep = 0;
+		double sumSquares = 0;	// mono mix loudness, for checks that something played
+		uint64_t monoSamples = 0;
+		double rms() const { return monoSamples ? std::sqrt(sumSquares / double(monoSamples)) : 0.0; }
 		uint64_t edgeCount = 0, otherCount = 0;
 		std::vector<float> mono;	// kept only when capturing, for the self-check
 	};
@@ -146,13 +152,14 @@ namespace
 		// Renders g_scenarioFrames through processAudio, the plug-in's entry point, in host blocks of
 		// m_block frames, calling _events with the frame position before each block, and returns the
 		// result for this scenario.
-		Result render(const std::string& _scenario, const std::function<void(uint32_t _frame)>& _events)
+		Result render(const std::string& _scenario, const std::function<void(uint32_t _frame)>& _events,
+			const uint32_t _frames = g_scenarioFrames)
 		{
 			Result r{m_model == md::MachineModel::Monomachine ? "MM" : "MD", _scenario};
 			Fnv audio, midi;
 			m_haveLast = false;
 			std::vector<synthLib::SMidiEvent> midiOut;
-			const auto blocks = g_scenarioFrames / m_block;
+			const auto blocks = _frames / m_block;
 			for(uint32_t b = 0; b < blocks; ++b)
 			{
 				if(_events)
@@ -188,6 +195,8 @@ namespace
 						else { r.otherStep += step; ++r.otherCount; }
 					}
 					m_last = sum;
+					r.sumSquares += sum * sum;
+					++r.monoSamples;
 					m_haveLast = true;
 					if(m_capture)
 						r.mono.push_back(static_cast<float>(sum));
@@ -221,6 +230,24 @@ namespace
 		{
 			if(!m_hw.sendMidi({synthLib::MidiEventSource::Host, _status, _controller, _value}))
 				throw std::runtime_error("CC rejected");
+		}
+
+		md::MachineModel model() const { return m_model; }
+
+		// Presses _press while _hold is held, as for FUNCTION + key combinations.
+		void tapWith(const md::PanelControl _hold, const md::PanelControl _press)
+		{
+			const auto hold = md::panelPacket(m_model, _hold);
+			const auto press = md::panelPacket(m_model, _press);
+			if(!hold || !press)
+				throw std::runtime_error("missing panel control");
+			md::PanelRowState rows;
+			for(const auto p : {rows.press(*hold), rows.press(*press), rows.release(*press), rows.release(*hold)})
+			{
+				if(!m_hw.trySendPanelEvent(p.row, p.mask))
+					throw std::runtime_error("panel event rejected");
+				advance(2048);
+			}
 		}
 
 		void note(const uint8_t _channel, const uint8_t _note, const uint8_t _velocity)
@@ -293,6 +320,108 @@ namespace
 		return s.str();
 	}
 
+
+	// Two bars at 120 BPM is 176400 frames; scenario lengths are multiples of 512 frames so that
+	// every host block size sees the same input at the same frame.
+	constexpr uint32_t g_barFrames = 172 * 512;
+
+	// Programs one track of the current pattern in grid mode, the way a user does: select the track,
+	// press RECORD, toggle step keys, press RECORD again. The pattern is not empty on a fresh machine,
+	// so the steps are read back from the step LEDs and only the ones that differ are toggled; then
+	// the LEDs must show exactly the wanted steps, or the edit did not reach the firmware.
+	// On the Machinedrum a trig key alone plays a track without selecting it; FUNCTION + trig key
+	// selects it, and its track LED must then be the only one lit, so the edit lands on that track.
+	// _verifyOnly checks the steps without changing them.
+	void programTrack(Runner& _run, md::Hardware& _hw, const md::PanelControl _select, const uint16_t _steps,
+		const bool _verifyOnly = false)
+	{
+		const bool mm = _run.model() == md::MachineModel::Monomachine;
+		const auto lit = [&](const uint32_t _i)
+		{
+			const auto p = _hw.getFrontPanelSnapshot();
+			return mm ? p.getMonomachineStepLedColor(_i) != md::FrontPanel::LedColor::Off : p.getStepLed(_i);
+		};
+		if(mm)
+		{
+			_run.tap(_select);
+		}
+		else
+		{
+			_run.tapWith(md::PanelControl::Function, _select);
+			const auto track = static_cast<uint32_t>(_select) - static_cast<uint32_t>(md::PanelControl::Trigger1);
+			const auto panel = _hw.getFrontPanelSnapshot();
+			for(uint32_t i = 0; i < 16; ++i)
+				if(panel.getDrumLed(i) != (i == track))
+					throw std::runtime_error("MD: FUNCTION + trig " + std::to_string(track + 1) + " did not select that track");
+		}
+		_run.tap(md::PanelControl::Record);
+		// Selecting a Machinedrum track with its trig key also plays it, and its LED stays lit for a
+		// moment; let that pass before reading the steps.
+		_run.advance(md::g_samplerate / 2);
+		if(!mm && !_hw.getFrontPanelSnapshot().getModeLed(md::FrontPanel::ModeLed::Record))
+			throw std::runtime_error("RECORD did not enter grid mode");
+		for(uint32_t i = 0; i < 16 && !_verifyOnly; ++i)
+			if(lit(i) != ((_steps >> i) & 1))
+				_run.tap(static_cast<md::PanelControl>(static_cast<uint32_t>(md::PanelControl::Trigger1) + i));
+		std::optional<uint32_t> wrong;
+		for(uint32_t i = 0; i < 16 && !wrong; ++i)
+			if(lit(i) != ((_steps >> i) & 1))
+				wrong = i;
+		_run.tap(md::PanelControl::Record);	// leave grid mode, also when failing
+		if(wrong)
+		{
+			const auto i = *wrong;
+			throw std::runtime_error(std::string(mm ? "MM" : "MD") + (_verifyOnly ? ": after save and restore, step " : ": grid edit did not set step ") + std::to_string(i + 1)
+					+ " of the track selected by panel control " + std::to_string(static_cast<int>(_select)));
+		}
+	}
+
+	constexpr uint16_t stepMask(const std::initializer_list<uint32_t> _steps)
+	{
+		uint16_t mask = 0;
+		for(const auto s : _steps)
+			mask |= static_cast<uint16_t>(1u << s);
+		return mask;
+	}
+
+	struct TrackSteps
+	{
+		md::PanelControl select;
+		uint16_t steps;
+	};
+
+	// Machinedrum: kick, snare (the companion) and closed hat. Monomachine: a bass line on track 1
+	// and stabs on tracks 2 and 3.
+	const std::vector<TrackSteps> g_machinedrumPattern =
+	{
+		{md::PanelControl::Trigger1, stepMask({0, 4, 8, 12})},
+		{md::PanelControl::Trigger2, stepMask({4, 12})},
+		{md::PanelControl::Trigger9, stepMask({0, 2, 4, 6, 8, 10, 12, 14})},
+	};
+	const std::vector<TrackSteps> g_monomachinePattern =
+	{
+		{md::PanelControl::Track1, stepMask({0, 2, 4, 6, 8, 10, 12, 14})},
+		{md::PanelControl::Track2, stepMask({4, 12})},
+		{md::PanelControl::Track3, stepMask({4, 12})},
+	};
+
+	// Plays the programmed pattern for two bars with no input: whatever sounds comes from the sequencer.
+	void playPattern(Runner& _run, std::vector<Result>& _results, const std::string& _scenario = "sequencer pattern")
+	{
+		// On the Monomachine the first PLAY after grid editing runs the sequencer silently; stopping
+		// and starting again plays the pattern. Do that on both models so they are driven alike.
+		_run.tap(md::PanelControl::Play);
+		_run.advance(md::g_samplerate / 2);
+		_run.tap(md::PanelControl::Stop);
+		_run.tap(md::PanelControl::Stop);
+		_run.tap(md::PanelControl::Play);
+		_results.push_back(_run.render(_scenario, nullptr, 2 * g_barFrames));
+		_run.tap(md::PanelControl::Stop);
+		_run.tap(md::PanelControl::Stop);
+		if(_results.back().rms() < 0.01)
+			throw std::runtime_error(_results.back().model + ": the programmed pattern played nothing (rms " + std::to_string(_results.back().rms()) + ")");
+	}
+
 	// Monomachine: clear the kit, then give all six tracks each machine in turn (as poly mode
 	// does) and play a rising chord, retriggered every quarter second.
 	std::vector<Result> runMonomachine(md::Hardware& _hw, const uint32_t _block, const bool _capture)
@@ -337,6 +466,14 @@ namespace
 				}));
 			}
 		}
+
+		// The machine scenarios end on FX machines, which have no voice of their own.
+		run.sysex({0xf0, 0x00, 0x20, 0x3c, 0x03, 0x00, 0x5b, 0x00, 3, 0x01, 0xf7}, md::g_samplerate / 10);	// SID-6581
+		for(const uint8_t track : {1, 2})
+			run.sysex({0xf0, 0x00, 0x20, 0x3c, 0x03, 0x00, 0x5b, track, 8, 0x01, 0xf7}, md::g_samplerate / 10);	// FM+ STAT
+		for(const auto& t : g_monomachinePattern)
+			programTrack(run, _hw, t.select, t.steps);
+		playPattern(run, results);
 		return results;
 	}
 
@@ -417,6 +554,12 @@ namespace
 				}));
 			}
 		}
+
+		run.sysex({0xf0, 0x00, 0x20, 0x3c, 0x02, 0x00, 0x5b, 0x00, 16, 0x00, 0xf7}, md::g_samplerate / 10);	// TRX-BD
+		run.sysex({0xf0, 0x00, 0x20, 0x3c, 0x02, 0x00, 0x5b, 0x08, 22, 0x00, 0xf7}, md::g_samplerate / 10);	// TRX-CH
+		for(const auto& t : g_machinedrumPattern)
+			programTrack(run, _hw, t.select, t.steps);
+		playPattern(run, results);
 		return results;
 	}
 
@@ -467,9 +610,45 @@ namespace
 			throw std::runtime_error(std::string(mm ? "MM" : "MD") + " boot incomplete");
 
 		auto results = mm ? runMonomachine(*hardware, _block, _capture) : runMachinedrum(*hardware, _block, _capture);
+
+		// Queue and MIDI loss on this machine and on the restored one below, summed.
+		Counters counters{mm ? "MM" : "MD"};
+		const auto addCounters = [&counters](const md::Hardware& _hw)
+		{
+			counters.outputOverflow += _hw.hostAudioOverflowCount();
+			counters.inputUnderflow += _hw.hostAudioInputUnderflowCount();
+			counters.inputOverflow += _hw.hostAudioInputOverflowCount();
+			counters.midiRxOverflow += _hw.midiRxOverflowCount();
+			counters.scheduledMidiOverflow += _hw.scheduledMidiOverflowCount();
+		};
+		addCounters(*hardware);
+
+		// Save and reload, as a project does: the patch RAM (kits and patterns) goes through the
+		// state encoder, the flash is carried over, and a fresh machine boots from both. The
+		// pattern programmed above must still be there and play.
+		{
+			const auto patchRam = hardware->copyPatchRam();
+			const auto flash = hardware->copyFlashData();
+			std::vector<uint8_t> state, restoredPatchRam;
+			if(!md::encodeState(state, patchRam, _model, synthLib::StateTypeGlobal)
+				|| !md::decodeState(restoredPatchRam, state, _model, synthLib::StateTypeGlobal)
+				|| restoredPatchRam != patchRam)
+				throw std::runtime_error(std::string(mm ? "MM" : "MD") + ": patch RAM did not survive the state encoder");
+			hardware.reset();
+			auto restored = std::make_unique<md::Hardware>(rom, path, _model, restoredPatchRam,
+				std::shared_ptr<md::FrontPanelPublisher>{}, flash);
+			Runner run(*restored, _model, _block);
+			run.m_capture = _capture;
+			run.advance(md::g_samplerate * 20);
+			if(!restored->isAudioReady())
+				throw std::runtime_error(std::string(mm ? "MM" : "MD") + ": restored machine did not boot");
+			for(const auto& t : mm ? g_monomachinePattern : g_machinedrumPattern)
+				programTrack(run, *restored, t.select, t.steps, true);
+			playPattern(run, results, "restored pattern");
+			addCounters(*restored);
+		}
 		if(_counters)
-			_counters->push_back({mm ? "MM" : "MD", hardware->hostAudioOverflowCount(), hardware->hostAudioInputUnderflowCount(),
-				hardware->hostAudioInputOverflowCount(), hardware->midiRxOverflowCount(), hardware->scheduledMidiOverflowCount()});
+			_counters->push_back(counters);
 		_results.insert(_results.end(), results.begin(), results.end());
 		return true;
 	}
@@ -700,7 +879,8 @@ namespace
 		for(auto& t : threads)
 			t.join();
 
-		if(std::none_of(runs.begin(), runs.end(), [](const Run& _r) { return _r.ranAny; }))
+		// Skip only when no firmware was available; a run that threw is a failure, not a skip.
+		if(std::none_of(runs.begin(), runs.end(), [](const Run& _r) { return _r.ranAny || !_r.error.empty(); }))
 			return 77;
 
 		int failures = 0;

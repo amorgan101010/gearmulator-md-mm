@@ -40,6 +40,8 @@ namespace mdGolden
 		{ "MM", "machine 015 FX-CHORUS", 0x958423ef9560accbull, 0x091c7bd5ff742f56ull, 0x8bf2a054c46c2440ull },	// 46157 non-zero samples, 77 MIDI events
 		{ "MM", "machine 016 FX-DYNAMIX", 0xc077cc72498179ffull, 0x843946e2b80b6c23ull, 0x7e1b17c7788ad80cull },	// 43972 non-zero samples, 77 MIDI events
 		{ "MM", "machine 017 FX-RINGMOD", 0x85d6d4585ad5d9eeull, 0x7136618464601b5cull, 0x0f044524c3f33f21ull },	// 3542 non-zero samples, 76 MIDI events
+		{ "MM", "sequencer pattern", 0xa06684c65b1e617eull, 0xa02dc7c88e5784aeull, 0x008bddbfab11a4b8ull },	// 352255 non-zero samples, 477 MIDI events
+		{ "MM", "restored pattern", 0xb003811b2910471bull, 0xd4d1a96c4164e6f6ull, 0x008bddbfab11a4b8ull },	// 352254 non-zero samples, 1231 MIDI events
 		{ "MD", "idle", 0xb18910aa787e8383ull, 0x1aa8cdb4437d3ce3ull, 0xced06548dea6d04aull },	// 0 non-zero samples, 16 MIDI events
 		{ "MD", "machine 000 GND---", 0xfc94017490eac5bbull, 0x1659833ff3d44398ull, 0x949e9a7a8aafc061ull },	// 87515 non-zero samples, 479 MIDI events
 		{ "MD", "machine 001 GND-SN", 0x2cc46b91bfd2b08dull, 0x14650fb0739d0383ull, 0xb916babfc029da3bull },	// 88064 non-zero samples, 0 MIDI events
@@ -176,5 +178,7 @@ namespace mdGolden
 		{ "MD", "machine 163 RAM-P2", 0xd03457f766afc6b1ull, 0x14650fb0739d0383ull, 0xbf68af0fabc3e70dull },	// 88064 non-zero samples, 0 MIDI events
 		{ "MD", "machine 167 RAM-P3", 0xe87c79cf942c85cbull, 0x14650fb0739d0383ull, 0xc111d82406c9762dull },	// 88063 non-zero samples, 0 MIDI events
 		{ "MD", "machine 168 RAM-P4", 0x01c4c8e146c621c6ull, 0x14650fb0739d0383ull, 0xf30c9ac74803828full },	// 88064 non-zero samples, 0 MIDI events
+		{ "MD", "sequencer pattern", 0x94236d7f38669499ull, 0x268536940bd6333dull, 0x571cef8c800ba43full },	// 352205 non-zero samples, 116 MIDI events
+		{ "MD", "restored pattern", 0xb04e4ef5d6d3d617ull, 0x0f53b58342f19cd0ull, 0x571cef8c800ba43full },	// 352214 non-zero samples, 132 MIDI events
 	};
 }
