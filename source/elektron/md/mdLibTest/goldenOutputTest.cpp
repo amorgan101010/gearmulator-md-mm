@@ -13,6 +13,9 @@
 //
 //   mdGoldenOutputTest            compare against goldenOutputs.h (skips a model without firmware)
 //   mdGoldenOutputTest --update FILE   write a new goldenOutputs.h to FILE (stdout carries emulator logs)
+//   mdGoldenOutputTest --buffer-sizes  render at 512, 128 and 32 frames on parallel instances: 512 must
+//                                      match the references, no host queue may lose data, and block
+//                                      edges must not stand out in the audio
 //   mdGoldenOutputTest --sensitivity   rerun with a smaller host block size, which moves the points where
 //                                      the scheduler synchronises the processors, and require every
 //                                      scenario to change, apart from the few that are silent by design
@@ -36,6 +39,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
@@ -49,12 +53,16 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 namespace
 {
 	constexpr uint32_t g_maxBlock = 512;
 	constexpr uint32_t g_sensitivityBlock = 256;
+	// Clean renders measured 0.96 to 1.02; a zeroed frame per buffer gives about 4.4.
+	constexpr double g_minEdgeRatio = 0.67;
+	constexpr double g_maxEdgeRatio = 1.5;
 	// Scenario length and note spacing, in frames: multiples of every host block size the test uses.
 	constexpr uint32_t g_scenarioFrames = 86 * 512;	// ~1 s
 	constexpr uint32_t g_retriggerFrames = 21 * 512;	// ~0.25 s
@@ -72,6 +80,11 @@ namespace
 		std::string model, scenario;
 		uint64_t audio = 0, midi = 0, lcd = 0;
 		uint64_t activeSamples = 0, midiEvents = 0;
+		// Mono mix (sum of the six outputs) step sizes at host block edges and elsewhere, for
+		// --buffer-sizes. A glitch tied to the host buffer makes block edges stand out.
+		double edgeStep = 0, otherStep = 0;
+		uint64_t edgeCount = 0, otherCount = 0;
+		std::vector<float> mono;	// kept only when capturing, for the self-check
 	};
 
 	class Runner
@@ -132,6 +145,7 @@ namespace
 		{
 			Result r{m_model == md::MachineModel::Monomachine ? "MM" : "MD", _scenario};
 			Fnv audio, midi;
+			m_haveLast = false;
 			std::vector<synthLib::SMidiEvent> midiOut;
 			const auto blocks = g_scenarioFrames / m_block;
 			for(uint32_t b = 0; b < blocks; ++b)
@@ -156,6 +170,23 @@ namespace
 						midi.byte(byte);
 				}
 				const auto& words = m_hw.getAudioOutputs();
+				for(uint32_t i = 0; i < m_block; ++i)
+				{
+					double sum = 0;
+					for(const auto& channel : words)
+						if(i < channel.size())
+							sum += static_cast<double>(static_cast<int32_t>(channel[i] << 8) >> 8) / 8388608.0;
+					if(m_haveLast)
+					{
+						const double step = std::abs(sum - m_last);
+						if(i == 0) { r.edgeStep += step; ++r.edgeCount; }
+						else { r.otherStep += step; ++r.otherCount; }
+					}
+					m_last = sum;
+					m_haveLast = true;
+					if(m_capture)
+						r.mono.push_back(static_cast<float>(sum));
+				}
 				for(const auto& channel : words)
 				{
 					for(uint32_t i = 0; i < m_block && i < channel.size(); ++i)
@@ -195,6 +226,10 @@ namespace
 		std::array<std::vector<float>, 2> m_inputBuffers;
 		synthLib::TAudioInputs m_inputs{};
 		uint64_t m_inputSample = 0;
+		double m_last = 0;
+		bool m_haveLast = false;
+	public:
+		bool m_capture = false;
 	};
 
 	// Every machine each model's stock OS offers, in the order the scenarios run. The IDs are the
@@ -249,9 +284,10 @@ namespace
 
 	// Monomachine: clear the kit, then give all six tracks each machine in turn (as poly mode
 	// does) and play a rising chord, retriggered every quarter second.
-	std::vector<Result> runMonomachine(md::Hardware& _hw, const uint32_t _block)
+	std::vector<Result> runMonomachine(md::Hardware& _hw, const uint32_t _block, const bool _capture)
 	{
 		Runner run(_hw, md::MachineModel::Monomachine, _block);
+		run.m_capture = _capture;
 		std::vector<Result> results;
 
 		// KIT > LOAD, FUNCTION+PLAY clears the selected kit, ENTER loads it: six GND-SIN tracks.
@@ -295,9 +331,10 @@ namespace
 
 	// Machinedrum: each machine on the first track (BD, note 36), trigged every quarter second
 	// with alternating velocities.
-	std::vector<Result> runMachinedrum(md::Hardware& _hw, const uint32_t _block)
+	std::vector<Result> runMachinedrum(md::Hardware& _hw, const uint32_t _block, const bool _capture)
 	{
 		Runner run(_hw, md::MachineModel::Machinedrum, _block);
+		run.m_capture = _capture;
 		std::vector<Result> results;
 		results.push_back(run.render("idle", nullptr));
 
@@ -318,6 +355,14 @@ namespace
 		return results;
 	}
 
+	// Host-side queue and MIDI loss counters after a model's scenarios; all must stay zero.
+	struct Counters
+	{
+		std::string model;
+		uint64_t outputOverflow = 0, inputUnderflow = 0, inputOverflow = 0, midiRxOverflow = 0, scheduledMidiOverflow = 0;
+		bool zero() const { return !outputOverflow && !inputUnderflow && !inputOverflow && !midiRxOverflow && !scheduledMidiOverflow; }
+	};
+
 	// True for exactly the stock images the references were made with (the ROM loader's fingerprint:
 	// standard FNV-1a 64 over the whole image).
 	bool isCanonicalImage(const std::vector<uint8_t>& _rom, const md::MachineModel _model)
@@ -333,7 +378,8 @@ namespace
 
 	// Boots a model and plays its scenarios in host blocks of _block frames, or returns false (skip)
 	// when its firmware is not available.
-	bool runModel(const md::MachineModel _model, const uint32_t _block, std::vector<Result>& _results)
+	bool runModel(const md::MachineModel _model, const uint32_t _block, std::vector<Result>& _results,
+		const bool _capture = false, std::vector<Counters>* _counters = nullptr)
 	{
 		const bool mm = _model == md::MachineModel::Monomachine;
 		const auto* path = std::getenv(mm ? "GEARMULATOR_MM_FIRMWARE_BIN" : "GEARMULATOR_MD_FIRMWARE_BIN");
@@ -355,7 +401,10 @@ namespace
 		if(!hardware->isAudioReady())
 			throw std::runtime_error(std::string(mm ? "MM" : "MD") + " boot incomplete");
 
-		auto results = mm ? runMonomachine(*hardware, _block) : runMachinedrum(*hardware, _block);
+		auto results = mm ? runMonomachine(*hardware, _block, _capture) : runMachinedrum(*hardware, _block, _capture);
+		if(_counters)
+			_counters->push_back({mm ? "MM" : "MD", hardware->hostAudioOverflowCount(), hardware->hostAudioInputUnderflowCount(),
+				hardware->hostAudioInputOverflowCount(), hardware->midiRxOverflowCount(), hardware->scheduledMidiOverflowCount()});
 		_results.insert(_results.end(), results.begin(), results.end());
 		return true;
 	}
@@ -513,6 +562,143 @@ namespace
 		return 0;
 	}
 
+	// Mean step at host block edges over mean step elsewhere, pooled over every audible scenario.
+	// Block edges are arbitrary points in the emulated signal, so a clean render gives about 1.
+	double edgeRatio(const std::vector<Result>& _results)
+	{
+		double edge = 0, other = 0;
+		uint64_t edges = 0, others = 0;
+		for(const auto& r : _results)
+		{
+			edge += r.edgeStep; edges += r.edgeCount;
+			other += r.otherStep; others += r.otherCount;
+		}
+		return edges && others && other > 0 ? (edge / double(edges)) / (other / double(others)) : 0.0;
+	}
+
+	// The same ratio from captured mono audio, optionally with the frame before every block edge
+	// zeroed, as a host-queue shortfall would leave it.
+	double capturedEdgeRatio(const std::vector<Result>& _results, const uint32_t _block, const bool _zeroEdgeFrames)
+	{
+		double edge = 0, other = 0;
+		uint64_t edges = 0, others = 0;
+		for(const auto& r : _results)
+		{
+			auto x = r.mono;
+			if(_zeroEdgeFrames)
+				for(size_t i = _block - 1; i < x.size(); i += _block)
+					x[i] = 0.0f;
+			for(size_t i = 1; i < x.size(); ++i)
+			{
+				const double step = std::abs(double(x[i]) - double(x[i - 1]));
+				if(i % _block == 0) { edge += step; ++edges; }
+				else { other += step; ++others; }
+			}
+		}
+		return edges && others && other > 0 ? (edge / double(edges)) / (other / double(others)) : 0.0;
+	}
+
+	// Renders every scenario at the reference block size and at small host buffers, each on its own
+	// thread, the way several plug-in instances run in one host. Requires:
+	// - the 512-frame run to match the references exactly, although other instances run beside it;
+	// - no host audio or MIDI queue to overflow or underflow at any buffer size;
+	// - block edges not to stand out in the audio at the small sizes (a dropped, zeroed or clicking
+	//   frame per buffer would). Exact output is not comparable across buffer sizes: the processors
+	//   interleave differently and the renders drift apart, like two takes on real hardware.
+	// The edge check first proves it can fail, on its own capture with a frame zeroed per buffer.
+	int checkBufferSizes(const std::vector<mdGolden::Entry>& _references)
+	{
+		struct Run
+		{
+			uint32_t block;
+			std::vector<Result> results;
+			std::vector<Counters> counters;
+			bool ranAny = false;
+			std::string error;
+		};
+		std::vector<Run> runs{{g_maxBlock, {}, {}, false, {}}, {128, {}, {}, false, {}}, {32, {}, {}, false, {}}};
+		std::vector<std::thread> threads;
+		for(auto& run : runs)
+		{
+			threads.emplace_back([&run]
+			{
+				try
+				{
+					for(const auto model : {md::MachineModel::Monomachine, md::MachineModel::Machinedrum})
+						run.ranAny |= runModel(model, run.block, run.results, run.block != g_maxBlock, &run.counters);
+				}
+				catch(const std::exception& _e)
+				{
+					run.error = _e.what();
+				}
+			});
+		}
+		for(auto& t : threads)
+			t.join();
+
+		if(std::none_of(runs.begin(), runs.end(), [](const Run& _r) { return _r.ranAny; }))
+			return 77;
+
+		int failures = 0;
+		for(const auto& run : runs)
+		{
+			const auto label = "block " + std::to_string(run.block);
+			if(!run.error.empty())
+			{
+				std::cerr << "FAIL " << label << ": " << run.error << '\n';
+				++failures;
+				continue;
+			}
+			for(const auto& c : run.counters)
+			{
+				if(!c.zero())
+				{
+					std::cerr << "FAIL " << label << ' ' << c.model << ": host queues lost data (output overflow " << c.outputOverflow
+						<< ", input underflow " << c.inputUnderflow << ", input overflow " << c.inputOverflow
+						<< ", MIDI receive overflow " << c.midiRxOverflow << ", scheduled MIDI overflow " << c.scheduledMidiOverflow << ")\n";
+					++failures;
+				}
+			}
+			if(run.block == g_maxBlock)
+			{
+				const auto problems = compare(run.results, _references);
+				for(const auto& p : problems)
+					std::cerr << "FAIL " << label << " beside other instances: " << p << '\n';
+				failures += static_cast<int>(problems.size());
+				continue;
+			}
+			const auto ratio = edgeRatio(run.results);
+			const auto recomputed = capturedEdgeRatio(run.results, run.block, false);
+			const auto glitched = capturedEdgeRatio(run.results, run.block, true);
+			std::cout << label << ": edge step ratio " << ratio << " (with a frame zeroed per buffer: " << glitched << ")\n";
+			if(std::abs(recomputed - ratio) > 1e-3 * ratio)
+			{
+				std::cerr << "FAIL " << label << ": edge statistic disagrees with its own capture (" << ratio << " vs " << recomputed << ")\n";
+				++failures;
+			}
+			if(glitched < g_maxEdgeRatio)
+			{
+				std::cerr << "FAIL " << label << ": self-check: a zeroed frame per buffer gave ratio " << glitched
+					<< ", which would pass; the edge check cannot detect glitches\n";
+				++failures;
+			}
+			if(ratio < g_minEdgeRatio || ratio > g_maxEdgeRatio)
+			{
+				std::cerr << "FAIL " << label << ": block edges stand out in the audio (step ratio " << ratio << ", expected "
+					<< g_minEdgeRatio << " to " << g_maxEdgeRatio << "): something happens at every host buffer boundary\n";
+				++failures;
+			}
+		}
+		if(failures)
+		{
+			std::cerr << failures << " problem(s) across host buffer sizes\n";
+			return 1;
+		}
+		std::cout << "mdBlockSizeTest: " << runs[0].results.size() << " scenarios at 512, 128 and 32 frames on parallel instances: "
+			"512 matches the references, no queue lost data, no buffer-edge artefacts\n";
+		return 0;
+	}
+
 	void writeReferences(const char* _path, const std::vector<Result>& _results)
 	{
 		std::ofstream out(_path, std::ios::binary | std::ios::trunc);
@@ -539,6 +725,7 @@ int main(const int _argc, char** _argv)
 	const std::string_view mode = _argc > 1 ? _argv[1] : "";
 	const bool update = mode == "--update" && _argc > 2;
 	const bool sensitivity = mode == "--sensitivity";
+	const bool bufferSizes = mode == "--buffer-sizes";
 	uint32_t block = sensitivity ? g_sensitivityBlock : g_maxBlock;
 	if(const char* const b = std::getenv("MD_GOLDEN_BLOCK"))
 		block = static_cast<uint32_t>(std::atoi(b));
@@ -547,13 +734,16 @@ int main(const int _argc, char** _argv)
 		std::cerr << "MD_GOLDEN_BLOCK must divide " << g_retriggerFrames << " and be at most " << g_maxBlock << '\n';
 		return 2;
 	}
-	if(!mode.empty() && !update && !sensitivity)
+	if(!mode.empty() && !update && !sensitivity && !bufferSizes)
 	{
-		std::cerr << "usage: mdGoldenOutputTest [--update FILE | --sensitivity]\n";
+		std::cerr << "usage: mdGoldenOutputTest [--update FILE | --sensitivity | --buffer-sizes]\n";
 		return 2;
 	}
 	try
 	{
+		if(bufferSizes)
+			return checkBufferSizes(std::vector<mdGolden::Entry>(std::begin(mdGolden::g_entries), std::end(mdGolden::g_entries)));
+
 		std::vector<Result> results;
 		bool ranAny = false;
 		for(const auto model : {md::MachineModel::Monomachine, md::MachineModel::Machinedrum})
