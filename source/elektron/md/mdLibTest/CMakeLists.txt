@@ -207,6 +207,9 @@ set_tests_properties(mdGoldenOutputTest PROPERTIES
 add_test(NAME mdGoldenSensitivityTest COMMAND mdGoldenOutputTest --sensitivity)
 set_tests_properties(mdGoldenSensitivityTest PROPERTIES
 	LABELS "Integration;FirmwareTest;Golden" SKIP_RETURN_CODE 77 TIMEOUT 900)
+add_test(NAME mdBlockSizeTest COMMAND mdGoldenOutputTest --buffer-sizes)
+set_tests_properties(mdBlockSizeTest PROPERTIES
+	LABELS "Integration;FirmwareTest;Golden" SKIP_RETURN_CODE 77 TIMEOUT 1200)
 set_property(TARGET mdGoldenOutputTest PROPERTY FOLDER "Elektron/test")
 add_executable(mdHelpOverridesTest mdHelpOverridesTest.cpp ../mdJucePlugin/mdHelpOverrides.cpp)
 target_link_libraries(mdHelpOverridesTest PRIVATE baseLib)
