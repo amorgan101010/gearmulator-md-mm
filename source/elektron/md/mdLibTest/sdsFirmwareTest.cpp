@@ -1,3 +1,4 @@
+#include "emulatedBudget.h"
 #include "mdLib/mdhardware.h"
 #include "sdsTestData.h"
 #include "sdsFaultWire.h"
@@ -7,7 +8,6 @@
 #include <array>
 #include <cmath>
 #include <cstdlib>
-#include <chrono>
 #include <cstdio>
 #include <fstream>
 #include <iterator>
@@ -34,11 +34,11 @@ namespace
 
 	bool boot(md::Hardware& hardware, uint32_t settleSeconds = 20)
 	{
-		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(180);
+		md::test::EmulatedBudget budget(180);
 		while(!hardware.isFirmwareMidiReady())
 		{
 			step(hardware, 64);
-			if(std::chrono::steady_clock::now() >= deadline) return false;
+			if(!budget.spend(64)) return false;
 		}
 		advance(hardware, md::g_samplerate * settleSeconds);
 		return true;
@@ -191,8 +191,8 @@ namespace
 		if(!prepared || !transfer.start(*prepared, 0)) return false;
 		const auto run = [&]()
 		{
-			const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(180);
-			while(transfer.ownsMidiWire() && std::chrono::steady_clock::now() < deadline)
+			md::test::EmulatedBudget budget(600);
+			while(transfer.ownsMidiWire() && budget.spend(1))
 			{
 				const auto before = hardware.getUC().getCycles();
 				hardware.advance(1);
@@ -256,8 +256,8 @@ namespace
 	{
 		auto prepared = md::prepareMidiSysexTransfer(bytes);
 		if(!prepared || !hardware.startMidiSysexTransfer(*prepared)) return {};
-		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(180);
-		while(std::chrono::steady_clock::now() < deadline)
+		md::test::EmulatedBudget budget(600);
+		while(budget.spend(64))
 		{
 			step(hardware, 64);
 			const auto progress = hardware.getMidiSysexTransferProgress();
@@ -287,12 +287,12 @@ namespace
 			// Explicitly test candidate heuristics; never install either as a
 			// production readiness guarantee. PC is a sampled stock-1.63 location
 			// seen both during startup and later steady-state processing.
-			const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(180);
+			md::test::EmulatedBudget budget(180);
 			while(mode == "quiet" ? hardware.getUC().flashIdleCycles() < uint64_t(delay)*40'000'000
 				: hardware.getUC().getPC() != 0x201124)
 			{
 				step(hardware, 64);
-				if(std::chrono::steady_clock::now() >= deadline) return false;
+				if(!budget.spend(64)) return false;
 			}
 		}
 		if(mode == "probe")
@@ -408,8 +408,8 @@ int main(int argc, char** argv)
 		machine = std::make_unique<md::Hardware>(rom, argv[1]);
 		if(const auto* prefix = std::getenv("MD_SDS_READINESS_TRACE"))
 			readinessTrace = std::make_unique<md::test::ReadinessTrace>(std::string(prefix) + "-init");
-		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(180);
-		while(!machine->isFactoryFlashReadyForReboot() && std::chrono::steady_clock::now() < deadline) step(*machine, 64);
+		md::test::EmulatedBudget budget(180);
+		while(!machine->isFactoryFlashReadyForReboot() && budget.spend(64)) step(*machine, 64);
 		if(!machine->isFactoryFlashReadyForReboot()) return 1;
 		const auto flash = machine->copyFlashData(), patch = machine->copyPatchRam();
 		machine.reset();
@@ -467,7 +467,7 @@ int main(int argc, char** argv)
 		if(!prepared) return 1;
 	}
 	if(!hardware.startMidiSysexTransfer(*prepared)) return 1;
-	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(180);
+	md::test::EmulatedBudget budget(600);
 	uint8_t payloadSpeed = 1;
 	bool cancelled = false;
 	for(;;)
@@ -497,7 +497,7 @@ int main(int argc, char** argv)
 			std::puts("Cancelled mid-sample, drained MIDI, and started a fresh import");
 		}
 		if(progress.state == md::MidiSysexTransferState::Complete) break;
-		if(progress.state == md::MidiSysexTransferState::Failed || std::chrono::steady_clock::now() >= deadline)
+		if(progress.state == md::MidiSysexTransferState::Failed || !budget.spend(64))
 		{
 			std::printf("SDS failed: state=%u error=%u sent=%zu/%zu retries=%u\n",
 				unsigned(progress.state), unsigned(progress.error), progress.sent, progress.total, progress.retries);

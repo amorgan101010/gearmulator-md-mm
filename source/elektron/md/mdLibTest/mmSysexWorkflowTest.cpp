@@ -1,9 +1,9 @@
+#include "emulatedBudget.h"
 #include "sysexContentOracle.h"
 #include "sysexPanelDriver.h"
 #include "digiproAudioOracle.h"
 
 #include <array>
-#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <iterator>
@@ -32,10 +32,12 @@ namespace
 		size_t cancelledStep = 0;
 		auto prepared = md::prepareMidiSysexTransfer(bytes, md::MachineModel::Monomachine);
 		require(prepared && hardware.startMidiSysexTransfer(*prepared), "MM transfer start failed");
-		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(300);
-		while(std::chrono::steady_clock::now() < deadline)
+		md::test::EmulatedBudget budget(600);
+		while(!budget.expired())
 		{
-			hardware.advance(nextSysexTestBlockSize());
+			const auto block = nextSysexTestBlockSize();
+			hardware.advance(block);
+			budget.spend(block);
 			const auto p = hardware.getMidiSysexTransferProgress();
 			require(p.state != md::MidiSysexTransferState::Failed, "MM transfer failed");
 			if(p.state == md::MidiSysexTransferState::Complete)

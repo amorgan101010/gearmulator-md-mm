@@ -1,10 +1,10 @@
+#include "emulatedBudget.h"
 #include "mdLib/mdhardware.h"
 #include "mdLib/mdsysexfile.h"
 #include "sysexPanelDriver.h"
 
 #include <algorithm>
 #include <array>
-#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
@@ -31,13 +31,12 @@ namespace
 
 	void boot(md::Hardware& _hardware)
 	{
-		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(180);
 		uint32_t frames = 0;
 		while(!_hardware.isFirmwareMidiReady() || !_hardware.isAudioReady())
 		{
 			_hardware.advance(64);
 			frames += 64;
-			if(std::chrono::steady_clock::now() >= deadline)
+			if(frames >= md::g_samplerate * 180)
 				throw std::runtime_error("MM firmware boot timed out");
 		}
 		// MIDI-ready becomes true before all firmware startup tasks have settled.
@@ -177,8 +176,8 @@ namespace
 		require(_hardware.trySendPanelEvent(enter->row, enter->mask), "send-all press rejected");
 		for(uint32_t frames = 0; frames < 2048; frames += blockSize) drainBlock();
 		require(_hardware.trySendPanelEvent(enter->row, 0), "send-all release rejected");
-		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(180);
-		while(std::chrono::steady_clock::now() < deadline)
+		md::test::EmulatedBudget budget(600);
+		while(budget.spend(blockSize))
 		{
 			drainBlock();
 			if(completed >= 128 && idleFrames >= md::g_samplerate * 5)
