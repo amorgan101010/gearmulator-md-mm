@@ -95,11 +95,15 @@ else()
 			string(APPEND CMAKE_CXX_FLAGS_RELEASE " -march=native -mtune=native")
 		endif()
 
+		# -Wno-error=coverage-mismatch: a source edited after profiling just loses its profile, instead of
+		# failing the build.
+		# Profile files are named after each object's path. Without a prefix they carry the build
+		set(_gearmulatorPgoPrefix "-fprofile-prefix-path=${CMAKE_BINARY_DIR}")
 		if(GEARMULATOR_GCC_PGO STREQUAL "generate")
 			message(STATUS "GCC PGO: instrumented build, profile goes to ${GEARMULATOR_GCC_PGO_DIR}")
 			# -fprofile-update=single: the scheduler runs on one thread, so non-atomic counters suffice.
-			string(APPEND CMAKE_C_FLAGS_RELEASE " -fprofile-generate=${GEARMULATOR_GCC_PGO_DIR} -fprofile-update=single")
-			string(APPEND CMAKE_CXX_FLAGS_RELEASE " -fprofile-generate=${GEARMULATOR_GCC_PGO_DIR} -fprofile-update=single")
+			string(APPEND CMAKE_C_FLAGS_RELEASE " -fprofile-generate=${GEARMULATOR_GCC_PGO_DIR} ${_gearmulatorPgoPrefix} -fprofile-update=single")
+			string(APPEND CMAKE_CXX_FLAGS_RELEASE " -fprofile-generate=${GEARMULATOR_GCC_PGO_DIR} ${_gearmulatorPgoPrefix} -fprofile-update=single")
 			string(APPEND CMAKE_EXE_LINKER_FLAGS " -fprofile-generate=${GEARMULATOR_GCC_PGO_DIR}")
 			string(APPEND CMAKE_SHARED_LINKER_FLAGS " -fprofile-generate=${GEARMULATOR_GCC_PGO_DIR}")
 		elseif(GEARMULATOR_GCC_PGO STREQUAL "use")
@@ -108,8 +112,8 @@ else()
 					"GEARMULATOR_GCC_PGO=use needs a profile in ${GEARMULATOR_GCC_PGO_DIR}; run a generate build first")
 			endif()
 			message(STATUS "GCC PGO: using the profile in ${GEARMULATOR_GCC_PGO_DIR}")
-			string(APPEND CMAKE_C_FLAGS_RELEASE " -fprofile-use=${GEARMULATOR_GCC_PGO_DIR} -fprofile-correction -Wno-missing-profile")
-			string(APPEND CMAKE_CXX_FLAGS_RELEASE " -fprofile-use=${GEARMULATOR_GCC_PGO_DIR} -fprofile-correction -Wno-missing-profile")
+			string(APPEND CMAKE_C_FLAGS_RELEASE " -fprofile-use=${GEARMULATOR_GCC_PGO_DIR} ${_gearmulatorPgoPrefix} -fprofile-correction -Wno-missing-profile -Wno-error=coverage-mismatch")
+			string(APPEND CMAKE_CXX_FLAGS_RELEASE " -fprofile-use=${GEARMULATOR_GCC_PGO_DIR} ${_gearmulatorPgoPrefix} -fprofile-correction -Wno-missing-profile -Wno-error=coverage-mismatch")
 		endif()
 		if(GEARMULATOR_ENABLE_GCC_LTO)
 			message(STATUS "GCC LTO enabled")

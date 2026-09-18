@@ -10,7 +10,10 @@
 #   GEARMULATOR_MM_FIRMWARE_BIN=/path/mm.bin GEARMULATOR_MD_FIRMWARE_BIN=/path/md.bin \
 #     tools/gcc-pgo.sh [target...]
 #
-# Measured on a Ryzen 5 5600G, GCC 15: Machinedrum about 3% faster, Monomachine about 1%.
+# Measured 2026-09-18 on a Ryzen 5 5600G, GCC 16, playback only, identical output hashes:
+# Machinedrum 9.6% fewer CPU cycles per emulated second (1.41x -> 1.56x realtime), Monomachine
+# heavy patch 12.1% fewer (1.00x -> 1.15x). An earlier figure here came from builds that never found
+# their profile; base.cmake now passes -fprofile-prefix-path so generate and use dirs can differ.
 
 set -euo pipefail
 
@@ -37,6 +40,8 @@ bench="${generate_dir}/source/elektron/md/mdLibTest/mdmmBench"
 
 echo "== 2/3 collecting the profile"
 rm -rf "${profile_dir}"
+# Profile playback only; the bench boots for ~20 emulated seconds first.
+export MDMM_BENCH_PGO_PLAYBACK_ONLY=1
 if [[ -n "${GEARMULATOR_MM_FIRMWARE_BIN:-}" ]]; then
 	"${bench}" mm 8 512 machine:32 6 >/dev/null 2>&1 || true	# a heavy patch, six voices
 	"${bench}" mm 6 256 machine:4 6  >/dev/null 2>&1 || true	# a light patch, smaller blocks
