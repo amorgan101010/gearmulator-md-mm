@@ -1,10 +1,12 @@
 #pragma once
 
 #include <array>
+#include <chrono>
 #include <deque>
 #include <initializer_list>
 #include <memory>
 #include <optional>
+#include <tuple>
 #include <vector>
 
 #include "jucePluginEditorLib/pluginEditor.h"
@@ -74,6 +76,8 @@ namespace mdJucePlugin
 		void applyPanelSpeeds();
 		void applyPixelPerfectPanel();
 		void applyLcdInteraction();
+		// Rereads the tooltip on/off and pop-up delay settings. Called on create and from the settings page.
+		void applyTooltipSettings();
 		void loadInstalledFactoryStorage();
 		void chooseStorageImage();
 		void restorePreviousStorage();
@@ -88,6 +92,10 @@ namespace mdJucePlugin
 		std::weak_ptr<void> getLifetimeToken() const { return m_lifetimeToken; }
 
 		static constexpr int g_panelSpeedPercents[] = {50, 75, 100, 150, 200, 300};
+		static constexpr int g_tooltipDelaysMs[] = {0, 250, 500, 1000, 2000};
+		static constexpr int g_defaultTooltipDelayMs = 500;
+		static constexpr const char* g_tooltipsEnabledKey = "tooltipsEnabled";
+		static constexpr const char* g_tooltipDelayKey = "tooltipDelayMs";
 
 	private:
 		friend struct EditorIdentityTestAccess;
@@ -194,6 +202,11 @@ namespace mdJucePlugin
 		Rml::Element* m_lcdArea = nullptr;				// tooltip anchor for the LCD
 		Rml::Element* m_parameterTooltip = nullptr;
 		HelpOverrides m_help;							// user edits to the tooltip text, see mdHelpOverrides.h
+		bool m_tooltipsEnabled = true;
+		int m_tooltipDelayMs = g_defaultTooltipDelayMs;
+		// What the pointer rests on (anchor, knob, machine name) and since when, for the pop-up delay.
+		std::tuple<const void*, int, bool> m_tooltipRestTarget{nullptr, -1, false};
+		std::chrono::steady_clock::time_point m_tooltipRestSince{};
 		std::string m_parameterTooltipContent;			// last rendered content, to skip redundant updates
 		std::optional<unsigned> m_tooltipHoverKnob;		// mouse over a panel knob
 		std::optional<unsigned> m_tooltipLcdEncoder;	// mouse over a recognised LCD field

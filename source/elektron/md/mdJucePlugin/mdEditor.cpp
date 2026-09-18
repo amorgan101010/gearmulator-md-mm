@@ -42,10 +42,12 @@
 #include "RmlUi/Core/ElementDocument.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <filesystem>
 #include <functional>
 #include <string>
+#include <tuple>
 #include <vector>
 
 namespace mdJucePlugin
@@ -289,6 +291,7 @@ namespace mdJucePlugin
 		createEncoders();
 		createMasterVolume();
 		applyPanelSpeeds();
+		applyTooltipSettings();
 		createLeds();
 		createPanelAffordances();
 		applyPixelPerfectPanel();
@@ -1140,6 +1143,14 @@ namespace mdJucePlugin
 		if (_templateName == "tus_settings_dspaudio_Machinedrum" || _templateName == "tus_settings_dspaudio_Monomachine")
 			return std::make_unique<SettingsAudioInput>(getProcessor(), _root);
 		return jucePluginEditorLib::Editor::createDeviceSpecificSettings(_templateName, _root);
+	}
+
+	void Editor::applyTooltipSettings()
+	{
+		auto& config = getProcessor().getConfig();
+		m_tooltipsEnabled = config.getBoolValue(g_tooltipsEnabledKey, true);
+		m_tooltipDelayMs = std::max(0, config.getIntValue(g_tooltipDelayKey, g_defaultTooltipDelayMs));
+		updateParameterTooltip();
 	}
 
 	void Editor::applyPanelSpeeds()
@@ -2337,6 +2348,18 @@ namespace mdJucePlugin
 			encoder = m_tooltipLcdEncoder;
 			anchor = m_lcdArea;
 		}
+
+		// Wait until the pointer has rested on the same thing for the configured delay. This runs on
+		// every UI tick, so the tooltip appears once the delay has passed.
+		const std::tuple<const void*, int, bool> restTarget{anchor, encoder ? static_cast<int>(*encoder) : -1, machineName};
+		const auto now = std::chrono::steady_clock::now();
+		if(restTarget != m_tooltipRestTarget)
+		{
+			m_tooltipRestTarget = restTarget;
+			m_tooltipRestSince = now;
+		}
+		if(!m_tooltipsEnabled || now - m_tooltipRestSince < std::chrono::milliseconds(m_tooltipDelayMs))
+			anchor = nullptr;
 
 		std::string abbreviation, name, description, footer;
 		const auto page = currentMonomachineDataPage();
