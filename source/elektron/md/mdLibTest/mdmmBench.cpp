@@ -24,8 +24,78 @@
 #include <string_view>
 #include <vector>
 
+// Present only in -fprofile-generate builds; null otherwise.
+#if defined(__GNUC__) && !defined(__clang__)
+extern "C" void __gcov_reset() __attribute__((weak));
+static void resetPgoCounters() { if(__gcov_reset) __gcov_reset(); }
+#else
+static void resetPgoCounters() {}
+#endif
+
+#if defined(__linux__)
+#include <linux/perf_event.h>
+#include <sys/ioctl.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+#endif
+
 namespace
 {
+	// User-mode hardware counter for this thread, covering the measured window only. Unlike wall
+	// time it does not tick while the bench is descheduled, and cycles do not depend on clock
+	// speed, so other programs and boost/thermal changes mostly drop out. Reads 0 if unavailable.
+	class HwCounter
+	{
+	public:
+		explicit HwCounter(const uint64_t _config)
+		{
+			(void)_config;
+#if defined(__linux__)
+			perf_event_attr attr{};
+			attr.type = PERF_TYPE_HARDWARE;
+			attr.size = sizeof(attr);
+			attr.config = _config;
+			attr.disabled = 1;
+			attr.exclude_kernel = 1;
+			attr.exclude_hv = 1;
+			m_fd = static_cast<int>(syscall(SYS_perf_event_open, &attr, 0, -1, -1, 0));
+#endif
+		}
+		~HwCounter()
+		{
+#if defined(__linux__)
+			if(m_fd >= 0)
+				close(m_fd);
+#endif
+		}
+		HwCounter(const HwCounter&) = delete;
+		HwCounter& operator=(const HwCounter&) = delete;
+
+		void start() const
+		{
+#if defined(__linux__)
+			if(m_fd < 0)
+				return;
+			ioctl(m_fd, PERF_EVENT_IOC_RESET, 0);
+			ioctl(m_fd, PERF_EVENT_IOC_ENABLE, 0);
+#endif
+		}
+		uint64_t stop() const
+		{
+			uint64_t value = 0;
+#if defined(__linux__)
+			if(m_fd < 0)
+				return 0;
+			ioctl(m_fd, PERF_EVENT_IOC_DISABLE, 0);
+			if(read(m_fd, &value, sizeof(value)) != static_cast<ssize_t>(sizeof(value)))
+				value = 0;
+#endif
+			return value;
+		}
+	private:
+		int m_fd = -1;
+	};
+
 	void advance(md::Hardware& _hardware, uint32_t _frames)
 	{
 		while(_frames)
@@ -98,6 +168,11 @@ int main(int argc, char** argv)
 		}
 	}
 
+	// PGO training: boot and setup above are most of the run, so without this the profile mostly
+	// describes boot. Drop those counts and keep only playback (JIT warm-up included).
+	if(std::getenv("MDMM_BENCH_PGO_PLAYBACK_ONLY"))
+		resetPgoCounters();
+
 	const auto warmupBlocks = md::g_samplerate * 2 / block;
 	for(uint32_t i = 0; i < warmupBlocks; ++i)
 		hardware->processAudio(outputs, block, 0);
@@ -114,6 +189,15 @@ int main(int argc, char** argv)
 	double energy = 0;
 	const auto retriggerBlocks = std::max<uint32_t>(1, md::g_samplerate / 2 / block);
 
+#if defined(__linux__)
+	const HwCounter cycleCounter(PERF_COUNT_HW_CPU_CYCLES);
+	const HwCounter instructionCounter(PERF_COUNT_HW_INSTRUCTIONS);
+#else
+	const HwCounter cycleCounter(0);
+	const HwCounter instructionCounter(0);
+#endif
+	cycleCounter.start();
+	instructionCounter.start();
 	const auto start = clock::now();
 	for(uint32_t i = 0; i < blocks; ++i)
 	{
@@ -144,6 +228,9 @@ int main(int argc, char** argv)
 		}
 	}
 	const double wallNs = std::chrono::duration<double, std::nano>(clock::now() - start).count();
+	// Includes the hashing loop above, which is identical across builds of the same output.
+	const auto cycles = cycleCounter.stop();
+	const auto instructions = instructionCounter.stop();
 
 	// Worst blocks with their position in the run: a spike at a fixed time is warm-up or JIT
 	// compilation, spikes spread through the run are something recurring.
@@ -172,6 +259,9 @@ int main(int argc, char** argv)
 		<< " over=" << std::setprecision(1) << (100.0 * over / blocks) << "%"
 		<< " realtimeX=" << std::setprecision(3) << (1e9 * seconds / wallNs)
 		<< " rms=" << std::scientific << std::sqrt(energy / (blocks * block * buffers.size()))
-		<< " hash=" << std::hex << hash << '\n';
+		<< " hash=" << std::hex << hash << std::dec
+		// Per emulated second of playback. 0 when hardware counters are unavailable.
+		<< " Mcycles/s=" << std::fixed << std::setprecision(2) << (double(cycles) / seconds / 1e6)
+		<< " Minstr/s=" << (double(instructions) / seconds / 1e6) << '\n';
 	return 0;
 }
