@@ -77,6 +77,11 @@ else()
 
 	option(GEARMULATOR_ENABLE_GCC_LTO
 		"Enable GCC link-time optimization for release builds" OFF)
+	set(GEARMULATOR_GCC_PGO "off" CACHE STRING
+		"GCC profile-guided optimization for release builds: off, generate or use")
+	set_property(CACHE GEARMULATOR_GCC_PGO PROPERTY STRINGS off generate use)
+	set(GEARMULATOR_GCC_PGO_DIR "${CMAKE_BINARY_DIR}/pgo-data" CACHE PATH
+		"Where GCC writes and reads the PGO profile. Generate and use builds must share it")
 	option(GEARMULATOR_ENABLE_GCC_NATIVE_TUNING
 		"Optimize GCC release builds for the build host CPU" OFF)
 
@@ -90,6 +95,22 @@ else()
 			string(APPEND CMAKE_CXX_FLAGS_RELEASE " -march=native -mtune=native")
 		endif()
 
+		if(GEARMULATOR_GCC_PGO STREQUAL "generate")
+			message(STATUS "GCC PGO: instrumented build, profile goes to ${GEARMULATOR_GCC_PGO_DIR}")
+			# -fprofile-update=single: the scheduler runs on one thread, so non-atomic counters suffice.
+			string(APPEND CMAKE_C_FLAGS_RELEASE " -fprofile-generate=${GEARMULATOR_GCC_PGO_DIR} -fprofile-update=single")
+			string(APPEND CMAKE_CXX_FLAGS_RELEASE " -fprofile-generate=${GEARMULATOR_GCC_PGO_DIR} -fprofile-update=single")
+			string(APPEND CMAKE_EXE_LINKER_FLAGS " -fprofile-generate=${GEARMULATOR_GCC_PGO_DIR}")
+			string(APPEND CMAKE_SHARED_LINKER_FLAGS " -fprofile-generate=${GEARMULATOR_GCC_PGO_DIR}")
+		elseif(GEARMULATOR_GCC_PGO STREQUAL "use")
+			if(NOT EXISTS "${GEARMULATOR_GCC_PGO_DIR}")
+				message(FATAL_ERROR
+					"GEARMULATOR_GCC_PGO=use needs a profile in ${GEARMULATOR_GCC_PGO_DIR}; run a generate build first")
+			endif()
+			message(STATUS "GCC PGO: using the profile in ${GEARMULATOR_GCC_PGO_DIR}")
+			string(APPEND CMAKE_C_FLAGS_RELEASE " -fprofile-use=${GEARMULATOR_GCC_PGO_DIR} -fprofile-correction -Wno-missing-profile")
+			string(APPEND CMAKE_CXX_FLAGS_RELEASE " -fprofile-use=${GEARMULATOR_GCC_PGO_DIR} -fprofile-correction -Wno-missing-profile")
+		endif()
 		if(GEARMULATOR_ENABLE_GCC_LTO)
 			message(STATUS "GCC LTO enabled")
 			string(APPEND CMAKE_C_FLAGS_RELEASE " -flto=auto")
