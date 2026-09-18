@@ -32,9 +32,14 @@
 
 #include "goldenOutputs.h"
 
+#include "mdLib/mdautomation.h"
 #include "mdLib/mdhardware.h"
 #include "mdLib/mdpanel.h"
 #include "mdLib/mdromloader.h"
+#include "mdLib/mdsysextransfer.h"
+
+#include "emulatedBudget.h"
+#include "sdsTestData.h"
 #include "baseLib/filesystem.h"
 
 #include <algorithm>
@@ -212,6 +217,12 @@ namespace
 			return r;
 		}
 
+		void controlChange(const uint8_t _status, const uint8_t _controller, const uint8_t _value)
+		{
+			if(!m_hw.sendMidi({synthLib::MidiEventSource::Host, _status, _controller, _value}))
+				throw std::runtime_error("CC rejected");
+		}
+
 		void note(const uint8_t _channel, const uint8_t _note, const uint8_t _velocity)
 		{
 			m_hw.sendMidi({synthLib::MidiEventSource::Host, static_cast<uint8_t>(0x90 | _channel), _note, _velocity});
@@ -329,7 +340,44 @@ namespace
 		return results;
 	}
 
-	// Machinedrum: each machine on the first track (BD, note 36), trigged every quarter second
+	// The UW loop slots (ROM-33 to ROM-48) are empty on a fresh machine, so their machines would play
+	// nothing. Import a short generated sample into each over SDS, a different pitch per slot, the
+	// way a user fills them; this also covers the sample import and playback paths.
+	void importTestSamples(md::Hardware& _hw, Runner& _run)
+	{
+		md::test::EmulatedBudget ready(180);
+		while(_hw.isFactoryFlashInitializationExpected() && !_hw.isFactoryFlashCacheReady())
+		{
+			_run.advance(64);
+			if(!ready.spend(64))
+				throw std::runtime_error("MD factory flash initialization did not finish");
+		}
+		std::vector<uint8_t> stream;
+		for(uint8_t slot = 32; slot < 48; ++slot)
+		{
+			const auto sample = md::test::sdsSample(1024, 16, 0, slot, 40 + (slot - 32) * 5);
+			stream.insert(stream.end(), sample.begin(), sample.end());
+		}
+		auto prepared = md::prepareMidiSysexTransfer(stream, md::MachineModel::Machinedrum);
+		if(!prepared || !_hw.startMidiSysexTransfer(*prepared))
+			throw std::runtime_error("sample import did not start");
+		md::test::EmulatedBudget transfer(600);
+		for(;;)
+		{
+			_run.advance(64);
+			const auto progress = _hw.getMidiSysexTransferProgress();
+			if(progress.state == md::MidiSysexTransferState::Complete)
+				break;
+			if(progress.state == md::MidiSysexTransferState::Failed || progress.state == md::MidiSysexTransferState::Cancelled)
+				throw std::runtime_error("sample import failed");
+			if(!transfer.spend(64))
+				throw std::runtime_error("sample import did not finish");
+		}
+		_run.advance(md::g_samplerate * 15);	// let the firmware finish writing the samples to flash
+	}
+
+	// Machinedrum: each machine on the first track (BD, note 36) with the companion on the second,
+	// trigged every quarter second
 	// with alternating velocities.
 	std::vector<Result> runMachinedrum(md::Hardware& _hw, const uint32_t _block, const bool _capture)
 	{
@@ -337,6 +385,21 @@ namespace
 		run.m_capture = _capture;
 		std::vector<Result> results;
 		results.push_back(run.render("idle", nullptr));
+		importTestSamples(_hw, run);
+
+		// A companion: TRX-SD on the second track, with delay and reverb sends up, played with every
+		// hit. Control machines (CTR-*) act on other tracks and on the master effects, so without a
+		// second sounding track they have nothing to act on.
+		run.sysex({0xf0, 0x00, 0x20, 0x3c, 0x02, 0x00, 0x5b, 0x01, 17, 0x00, 0xf7}, md::g_samplerate / 10);
+		for(const uint8_t send : {3, 4})	// ROUTING page: DEL, REV
+		{
+			const auto cc = md::automation::encodeParameterChange(md::MachineModel::Machinedrum,
+				{md::automation::machinedrum::Routing, 1, send, 80}, 0);
+			if(!cc)
+				throw std::runtime_error("no CC for the companion's sends");
+			run.controlChange((*cc)[0], (*cc)[1], (*cc)[2]);
+		}
+		run.advance(md::g_samplerate / 10);
 
 		{
 			for(const auto& m : g_machinedrumMachines)
@@ -347,8 +410,10 @@ namespace
 					md::g_samplerate / 10);
 				results.push_back(run.render(machineScenario(m), [&](const uint32_t _frame)
 				{
-					if(_frame % g_retriggerFrames == 0)
-						run.note(0, 36, (_frame / g_retriggerFrames) % 2 ? 64 : 127);
+					if(_frame % g_retriggerFrames)
+						return;
+					run.note(0, 36, (_frame / g_retriggerFrames) % 2 ? 64 : 127);
+					run.note(0, 38, 100);	// the companion
 				}));
 			}
 		}
@@ -498,7 +563,6 @@ namespace
 	const std::set<Key> g_timingInsensitive =
 	{
 		{"MD", "idle"},
-		{"MD", "machine 000 GND---"},
 	};
 
 	// Runs with a different host block size and checks that every scenario notices, apart from
