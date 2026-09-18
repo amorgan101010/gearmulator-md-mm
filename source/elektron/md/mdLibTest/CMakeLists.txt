@@ -199,6 +199,16 @@ add_test(NAME mdStateTest COMMAND mdStateTest)
 set_tests_properties(mdStateTest PROPERTIES LABELS "UnitTest")
 set_property(TARGET mdStateTest PROPERTY FOLDER "Elektron")
 
+add_executable(mdGoldenOutputTest goldenOutputTest.cpp goldenOutputs.h)
+target_link_libraries(mdGoldenOutputTest PRIVATE mdLib)
+add_test(NAME mdGoldenOutputTest COMMAND mdGoldenOutputTest)
+set_tests_properties(mdGoldenOutputTest PROPERTIES
+	LABELS "Integration;FirmwareTest;Golden" SKIP_RETURN_CODE 77 TIMEOUT 900)
+add_test(NAME mdGoldenSensitivityTest COMMAND mdGoldenOutputTest --sensitivity)
+set_tests_properties(mdGoldenSensitivityTest PROPERTIES
+	LABELS "Integration;FirmwareTest;Golden" SKIP_RETURN_CODE 77 TIMEOUT 900)
+set_property(TARGET mdGoldenOutputTest PROPERTY FOLDER "Elektron/test")
+
 add_executable(mdAudioQueueTest mdAudioQueueTest.cpp)
 target_link_libraries(mdAudioQueueTest PRIVATE mdLib)
 
