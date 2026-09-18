@@ -18,7 +18,6 @@
 #include "juce_data_structures/juce_data_structures.h"
 #include "juce_events/juce_events.h"
 
-#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -125,17 +124,23 @@ namespace
 
 		auto hardware = std::make_unique<md::Hardware>(rom, firmware, md::MachineModel::Machinedrum, std::vector<uint8_t>{},
 			std::shared_ptr<md::FrontPanelPublisher>{}, flash, cache);
-		const auto bootDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(240);
-		while(!hardware->isFirmwareMidiReady() || hardware->isFactoryFlashInitializationExpected())
+		// Without a factory cache the first boot initializes the UW flash, which takes a while;
+		// isFactoryFlashInitializationExpected() stays true for this machine's lifetime, so wait
+		// for the initialized flash to be published instead. Deadlines are in emulated time so
+		// the result does not depend on how fast the host is.
+		uint64_t bootFrames = 0;
+		while(!hardware->isFirmwareMidiReady()
+			|| (hardware->isFactoryFlashInitializationExpected() && !hardware->isFactoryFlashCacheReady()))
 		{
 			advance(*hardware, 64);
-			require(std::chrono::steady_clock::now() < bootDeadline, "machine did not become ready");
+			bootFrames += 64;
+			require(bootFrames < uint64_t(md::g_samplerate) * 180, "machine did not become ready");
 		}
 		advance(*hardware, md::g_samplerate * 20);
 
 		auto prepared = md::prepareMidiSysexTransfer(_stream, md::MachineModel::Machinedrum);
 		require(prepared.has_value() && hardware->startMidiSysexTransfer(*prepared), "transfer did not start");
-		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(300);
+		uint64_t transferFrames = 0;
 		while(true)
 		{
 			advance(*hardware, 64);
@@ -146,7 +151,8 @@ namespace
 				break;
 			}
 			require(progress.state != md::MidiSysexTransferState::Failed && progress.state != md::MidiSysexTransferState::Cancelled, "transfer failed");
-			require(std::chrono::steady_clock::now() < deadline, "transfer timed out");
+			transferFrames += 64;
+			require(transferFrames < uint64_t(md::g_samplerate) * 600, "transfer timed out");
 		}
 		advance(*hardware, md::g_samplerate * 15);
 
