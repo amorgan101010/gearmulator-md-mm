@@ -351,15 +351,18 @@ if(BUILD_TESTING)
 	endif()
 
 	# Diagnostic tool, not a test: renders the real editor with the software renderer to PNG.
-	add_executable(mdSkinSnapshotTool mdSkinSnapshotTool.cpp mdSkinSnapshotLoop.mm)
-	target_link_libraries(mdSkinSnapshotTool PRIVATE
-		mdJucePlugin jucePluginEditorLib mdLib juce_plugin_modules
-		juce::juce_opengl)
-	target_include_directories(mdSkinSnapshotTool PRIVATE
-		${CMAKE_CURRENT_SOURCE_DIR}/../../..)
-	target_compile_definitions(mdSkinSnapshotTool PRIVATE
-		JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1)
-	set_property(TARGET mdSkinSnapshotTool PROPERTY FOLDER "Elektron/test")
+	# macOS only: its render loop is Objective-C++ (Foundation), which breaks Linux builds of "all".
+	if(APPLE)
+		add_executable(mdSkinSnapshotTool mdSkinSnapshotTool.cpp mdSkinSnapshotLoop.mm)
+		target_link_libraries(mdSkinSnapshotTool PRIVATE
+			mdJucePlugin jucePluginEditorLib mdLib juce_plugin_modules
+			juce::juce_opengl)
+		target_include_directories(mdSkinSnapshotTool PRIVATE
+			${CMAKE_CURRENT_SOURCE_DIR}/../../..)
+		target_compile_definitions(mdSkinSnapshotTool PRIVATE
+			JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1)
+		set_property(TARGET mdSkinSnapshotTool PROPERTY FOLDER "Elektron/test")
+	endif()
 
 	add_executable(mdSampleImportTest mdSampleImportTest.cpp)
 	target_link_libraries(mdSampleImportTest PRIVATE
