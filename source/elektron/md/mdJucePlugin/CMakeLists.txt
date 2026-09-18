@@ -25,6 +25,7 @@ set(SOURCES
 	mdParameterHelp.h
 	mdMachineHelp.h
 	mdMachinedrumHelp.h
+	mdHelpOverrides.cpp mdHelpOverrides.h
 	mdPixelPerfectPanel.cpp mdPixelPerfectPanel.h
 	mdPanelAffordances.h
 	mdPluginEditorState.cpp mdPluginEditorState.h

@@ -10,6 +10,7 @@
 #include "jucePluginEditorLib/pluginEditor.h"
 
 #include "mdFrontPanelPresentation.h"
+#include "mdHelpOverrides.h"
 #include "mdLcdGesture.h"
 #include "mdLcdInteractionModel.h"
 #include "mdPanelAffordances.h"
@@ -192,6 +193,7 @@ namespace mdJucePlugin
 		std::optional<unsigned> m_lcdHoverEncoder;
 		Rml::Element* m_lcdArea = nullptr;				// tooltip anchor for the LCD
 		Rml::Element* m_parameterTooltip = nullptr;
+		HelpOverrides m_help;							// user edits to the tooltip text, see mdHelpOverrides.h
 		std::string m_parameterTooltipContent;			// last rendered content, to skip redundant updates
 		std::optional<unsigned> m_tooltipHoverKnob;		// mouse over a panel knob
 		std::optional<unsigned> m_tooltipLcdEncoder;	// mouse over a recognised LCD field
