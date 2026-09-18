@@ -199,6 +199,11 @@ add_test(NAME mdStateTest COMMAND mdStateTest)
 set_tests_properties(mdStateTest PROPERTIES LABELS "UnitTest")
 set_property(TARGET mdStateTest PROPERTY FOLDER "Elektron")
 
+add_executable(mdHelpOverridesTest mdHelpOverridesTest.cpp ../mdJucePlugin/mdHelpOverrides.cpp)
+target_link_libraries(mdHelpOverridesTest PRIVATE baseLib)
+add_test(NAME mdHelpOverridesTest COMMAND mdHelpOverridesTest)
+set_tests_properties(mdHelpOverridesTest PROPERTIES LABELS "UnitTest")
+set_property(TARGET mdHelpOverridesTest PROPERTY FOLDER "Elektron/test")
 add_executable(mdAudioQueueTest mdAudioQueueTest.cpp)
 target_link_libraries(mdAudioQueueTest PRIVATE mdLib)
 

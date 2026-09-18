@@ -28,6 +28,7 @@ set(SOURCES
 	mdMachineHelp.h
 	mdMachinedrumHelp.h
 	mdLcdText.h
+	mdHelpOverrides.cpp mdHelpOverrides.h
 	mdPluginEditorState.cpp mdPluginEditorState.h
 	mdProductSkinPolicy.h
 	mdProductSkins.h

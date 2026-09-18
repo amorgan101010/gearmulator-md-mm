@@ -48,6 +48,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <functional>
 #include <iterator>
 #include <limits>
@@ -3400,6 +3401,12 @@ namespace mdJucePlugin
 
 		m_lcdArea = findChild("lcdArea", false);
 
+		// Tooltip wording can be changed without rebuilding: tooltips.txt in the data folder
+		// overrides the built-in text, and tooltips-defaults.txt beside it lists every key.
+		const std::filesystem::path dataFolder = std::filesystem::u8path(getProcessor().getDataFolder());
+		HelpOverrides::writeDefaults(dataFolder / "tooltips-defaults.txt");
+		m_help.setFile(dataFolder / "tooltips.txt");
+
 		// One tooltip, reparented under whatever it describes so it follows panel scaling.
 		auto tooltip = document->CreateElement("div");
 		tooltip->SetAttribute("style",
@@ -3441,8 +3448,8 @@ namespace mdJucePlugin
 		const auto set = [&](const parameterHelp::Entry& _entry, const std::string& _footerText)
 		{
 			_abbreviation = _entry.abbreviation;
-			_name = _entry.name;
-			_description = _entry.description;
+			_name = m_help(_entry.name);
+			_description = m_help(_entry.description);
 			_footer = _footerText + ", knob " + knob;
 			return true;
 		};
@@ -3460,7 +3467,7 @@ namespace mdJucePlugin
 				{
 					if(const auto* const value = machinedrumHelp::lfoUpdateForHash(
 						lcdText::hash(m_frontPanelSnapshot, lcdText::mdLfoValue(4))))
-						_description += std::string(" Now: ") + value->text + ". " + value->meaning;
+						_description += std::string(" Now: ") + value->text + ". " + m_help(value->meaning);
 				}
 				else if(_encoder == 1)
 				{
@@ -3473,7 +3480,7 @@ namespace mdJucePlugin
 						if(!entry)
 							entry = machinedrumHelp::entry(2, nullptr, label, allTracks);
 						if(entry)
-							_description += std::string(" ") + entry->name + ": " + entry->description;
+							_description += std::string(" ") + m_help(entry->name) + ": " + m_help(entry->description);
 					}
 				}
 				return true;
@@ -3506,7 +3513,7 @@ namespace mdJucePlugin
 		constexpr const char* pageNames[] = { "synthesis", "Effects page", "Routing page" };
 		std::string footer = pageNames[*page];
 		if(*page == 0)
-			footer = std::string(machine->name) + " synthesis";
+			footer = std::string(m_help(machine->name)) + " synthesis";
 		set(*e, footer);
 		if(allTracks)
 		{
@@ -3524,7 +3531,7 @@ namespace mdJucePlugin
 		if(!target)
 			return {};
 		if(_encoder == 0)
-			return std::string(" Now: ") + target->text + " (" + target->name + ").";
+			return std::string(" Now: ") + target->text + " (" + m_help(target->name) + ").";
 
 		// DEST: describe the parameter the LFO is aimed at on the selected page.
 		const auto destinationHash = lcdText::hash(m_frontPanelSnapshot, lcdText::lfoValue(1));
@@ -3546,15 +3553,16 @@ namespace mdJucePlugin
 			}
 		}
 		if(!destination)
-			return std::string(" Now on the ") + target->name + " page.";
-		return std::string(" Now: ") + destination->abbreviation + " (" + destination->name + ") on the "
-			+ target->name + " page. " + destination->description;
+			return std::string(" Now on the ") + m_help(target->name) + " page.";
+		return std::string(" Now: ") + destination->abbreviation + " (" + m_help(destination->name) + ") on the "
+			+ m_help(target->name) + " page. " + m_help(destination->description);
 	}
 
 	void Editor::updateParameterTooltip()
 	{
 		if(!m_parameterTooltip)
 			return;
+		m_help.refresh();
 
 		// What to describe, in priority order: mouse over a knob, mouse over the LCD (the machine
 		// name or a recognised field), a held keyboard knob key, then the gamepad's focused knob.
@@ -3608,8 +3616,8 @@ namespace mdJucePlugin
 						const auto number = machine->number + (key - machine->first);
 						abbreviation += std::string(1, static_cast<char>('0' + number / 10)) + static_cast<char>('0' + number % 10);
 					}
-					name = machine->name;
-					description = machine->description;
+					name = m_help(machine->name);
+					description = m_help(machine->description);
 					footer = "Machine on the active track";
 				}
 			}
@@ -3624,8 +3632,8 @@ namespace mdJucePlugin
 				lcdText::hash(m_frontPanelSnapshot, lcdText::g_machineName)))
 			{
 				abbreviation = machine->lcdName;
-				name = machine->name;
-				description = machine->description;
+				name = m_help(machine->name);
+				description = m_help(machine->description);
 				footer = "Machine on the active track";
 			}
 		}
@@ -3643,20 +3651,20 @@ namespace mdJucePlugin
 				if(const auto* const entry = label && machine ? machineHelp::parameter(machine->id, label) : nullptr)
 				{
 					abbreviation = entry->abbreviation;
-					name = entry->name;
-					description = entry->description;
-					footer = std::string(machine->name) + " synthesis, knob " + knob;
+					name = m_help(entry->name);
+					description = m_help(entry->description);
+					footer = std::string(m_help(machine->name)) + " synthesis, knob " + knob;
 					// Settings print their value under the knob; say what it is set to.
 					if(const auto* const value = machineHelp::machineValueForHash(machine->id, label,
 						lcdText::hash(m_frontPanelSnapshot, lcdText::lfoValue(*encoder))))
-						description += std::string(" Now: ") + value->text + ". " + value->meaning;
+						description += std::string(" Now: ") + value->text + ". " + m_help(value->meaning);
 				}
 			}
 			else if(const auto* const entry = parameterHelp::monomachineEntry(*page, *encoder))
 			{
 				abbreviation = entry->abbreviation;
-				name = entry->name;
-				description = entry->description;
+				name = m_help(entry->name);
+				description = m_help(entry->description);
 				footer = std::string(parameterHelp::g_monomachinePageNames[*page]) + " page, knob " + knob;
 
 				// On an LFO page, say what the knob is currently set to, read off the LCD.
@@ -3666,7 +3674,7 @@ namespace mdJucePlugin
 				{
 					if(const auto* const value = machineHelp::lfoValueForHash(*encoder,
 						lcdText::hash(m_frontPanelSnapshot, lcdText::lfoValue(*encoder))))
-						description += std::string(" Now: ") + value->text + ". " + value->meaning;
+						description += std::string(" Now: ") + value->text + ". " + m_help(value->meaning);
 				}
 			}
 		}

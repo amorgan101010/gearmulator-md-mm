@@ -13,6 +13,7 @@
 
 #include "mdFrontPanelPresentation.h"
 #include "mdGamepad.h"
+#include "mdHelpOverrides.h"
 #include "mdLcdGesture.h"
 #include "mdLcdInteractionModel.h"
 #include "mdPanelAffordances.h"
@@ -386,6 +387,7 @@ namespace mdJucePlugin
 		// The gamepad focus highlight shows only after controller input and hides after a quiet spell.
 		double m_gamepadLastActivityMilliseconds = 0.0;
 		bool m_gamepadHighlightVisible = false;
+		HelpOverrides m_help;							// user edits to the tooltip text, see mdHelpOverrides.h
 		std::string m_parameterTooltipContent;
 	};
 }
