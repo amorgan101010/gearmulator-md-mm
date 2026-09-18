@@ -653,6 +653,53 @@ namespace
 		return true;
 	}
 
+
+	// Runs both models, each on its own thread (separate machine instances are independent, which
+	// the block-size test checks), and returns their results in a fixed order: Monomachine, then
+	// Machinedrum. Returns false when neither model's firmware is available; rethrows a failure.
+	bool runModels(const uint32_t _block, std::vector<Result>& _results, const bool _capture = false,
+		std::vector<Counters>* _counters = nullptr)
+	{
+		struct PerModel
+		{
+			md::MachineModel model;
+			std::vector<Result> results;
+			std::vector<Counters> counters;
+			bool ran = false;
+			std::string error;
+		};
+		std::array<PerModel, 2> models{{{md::MachineModel::Monomachine, {}, {}, false, {}}, {md::MachineModel::Machinedrum, {}, {}, false, {}}}};
+		std::vector<std::thread> threads;
+		for(auto& m : models)
+		{
+			threads.emplace_back([&m, _block, _capture, _counters]
+			{
+				try
+				{
+					m.ran = runModel(m.model, _block, m.results, _capture, _counters ? &m.counters : nullptr);
+				}
+				catch(const std::exception& _e)
+				{
+					m.error = _e.what();
+				}
+			});
+		}
+		for(auto& t : threads)
+			t.join();
+		for(const auto& m : models)
+			if(!m.error.empty())
+				throw std::runtime_error(m.error);
+		bool ran = false;
+		for(auto& m : models)
+		{
+			ran |= m.ran;
+			_results.insert(_results.end(), m.results.begin(), m.results.end());
+			if(_counters)
+				_counters->insert(_counters->end(), m.counters.begin(), m.counters.end());
+		}
+		return ran;
+	}
+
 	std::string hex(const uint64_t _v)
 	{
 		std::ostringstream s;
@@ -867,8 +914,7 @@ namespace
 			{
 				try
 				{
-					for(const auto model : {md::MachineModel::Monomachine, md::MachineModel::Machinedrum})
-						run.ranAny |= runModel(model, run.block, run.results, run.block != g_maxBlock, &run.counters);
+					run.ranAny = runModels(run.block, run.results, run.block != g_maxBlock, &run.counters);
 				}
 				catch(const std::exception& _e)
 				{
@@ -989,10 +1035,7 @@ int main(const int _argc, char** _argv)
 			return checkBufferSizes(std::vector<mdGolden::Entry>(std::begin(mdGolden::g_entries), std::end(mdGolden::g_entries)));
 
 		std::vector<Result> results;
-		bool ranAny = false;
-		for(const auto model : {md::MachineModel::Monomachine, md::MachineModel::Machinedrum})
-			ranAny |= runModel(model, block, results);
-		if(!ranAny)
+		if(!runModels(block, results))
 			return 77;
 
 		if(update)
