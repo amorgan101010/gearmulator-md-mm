@@ -5,11 +5,13 @@
 #include <initializer_list>
 #include <memory>
 #include <optional>
+#include <string>
 #include <vector>
 
 #include "jucePluginEditorLib/pluginEditor.h"
 
 #include "mdFrontPanelPresentation.h"
+#include "mdGamepad.h"
 #include "mdLcdGesture.h"
 #include "mdLcdInteractionModel.h"
 #include "mdPanelAffordances.h"
@@ -136,6 +138,43 @@ namespace mdJucePlugin
 			float& _last, float& _accum);
 		void onEncoderChanged(juceRmlUi::ElemKnob* _knob, md::PanelEncoder _encoder,
 			float& _last, float& _accum);
+		// Standalone game controller: LSDJ-style focus over the panel controls.
+		struct GamepadTarget
+		{
+			Rml::Element* element = nullptr;
+			juceRmlUi::ElemButton* button = nullptr;	// set for a panel button
+			juceRmlUi::ElemKnob* knob = nullptr;		// set for an encoder
+			md::PanelControl control{};
+			md::PanelEncoder encoder{};
+		};
+		enum class GamepadDirection { Up, Down, Left, Right };
+
+		void createGamepad();
+		void serviceGamepad(double _nowMilliseconds);
+		void moveGamepadFocus(GamepadDirection _direction);
+		void setGamepadFocus(size_t _index);
+		std::optional<size_t> findGamepadTarget(md::PanelControl _control) const;
+		std::optional<size_t> findGamepadTarget(const juceRmlUi::ElemKnob* _knob) const;
+		// _momentaryBanks: MM bank keys act like any held key instead of toggling the click latch.
+		void pressHeldControl(md::PanelControl _control, bool _latch, bool _momentaryBanks = false);
+		void releaseHeldControl(md::PanelControl _control);
+		void turnGamepadKnob(juceRmlUi::ElemKnob* _knob, float _detents);
+		void releaseGamepadInputs();
+
+		// Standalone computer-keyboard control of the panel.
+		void createKeyboardControl();
+		void onPanelKey(Rml::Event& _event, bool _down);
+		// Acts on a key after auto-repeat filtering; true if the key belongs to panel control.
+		bool handlePanelKey(int _key, bool _down, bool _shift);
+		void serviceKeyboardReleases(double _nowMilliseconds);
+		void resetKeyboardControl();
+		void releaseKeyboardEncoderPress();
+
+		// DATA PAGE currently lit on the Monomachine: 0 SYNTHESIS .. 6 LFO 3.
+		std::optional<int> currentMonomachineDataPage() const;
+
+		// Hover help for parameter abbreviations.
+
 		void createLeds();
 		bool updateLeds();
 		void paintLcd(const juce::Image& _target, juce::Graphics& _graphics) const;
@@ -261,5 +300,36 @@ namespace mdJucePlugin
 		double m_sysexLastAdvanceMilliseconds = 0.0;
 		bool m_sysexStallWarningShown = false;
 		std::shared_ptr<void> m_lifetimeToken = std::make_shared<int>(0);
+
+		std::unique_ptr<Gamepad> m_gamepad;
+		Gamepad::State m_gamepadPrevious;
+		double m_gamepadLastPollMilliseconds = 0.0;
+		std::vector<GamepadTarget> m_gamepadTargets;
+		size_t m_gamepadFocus = 0;
+		Rml::Element* m_gamepadFocusRing = nullptr;
+		bool m_gamepadLatchHeld = false;				// L1: gamepad equivalent of holding Shift
+		std::vector<md::PanelControl> m_gamepadHeldControls;	// pressed by the pad, awaiting release
+		// Cross held on the focused control. On a knob, a short press without turning is an encoder click.
+		bool m_gamepadActHeld = false;
+		size_t m_gamepadActTarget = 0;
+		double m_gamepadActStartMilliseconds = 0.0;
+		bool m_gamepadActTurned = false;
+		// D-pad / right-stick auto-repeat.
+		std::optional<GamepadDirection> m_gamepadRepeatDirection;
+		double m_gamepadRepeatNextMilliseconds = 0.0;
+		bool m_gamepadRepeatFromStick = false;
+		int m_gamepadTrack = 0;		// 0-5 on the Monomachine, 0-15 on the Machinedrum
+		int m_gamepadPage = 0;		// Machinedrum data page
+		std::optional<md::PanelControl> m_gamepadTouchTrig;
+
+		bool m_keyboardControl = false;
+		std::vector<std::pair<int, double>> m_keyboardPendingReleases;	// key, deadline: releases waiting out auto-repeat
+		std::vector<int> m_keyboardHeldKeys;			// Rml key identifiers currently down, to ignore auto-repeat
+		bool m_keyboardFunctionHeld = false;			// Ctrl
+		std::optional<size_t> m_keyboardEncoder;		// index into g_keyboardEncoders while its key is held
+		bool m_keyboardEncoderTurned = false;
+		std::optional<md::PanelPacket> m_keyboardEncoderPressPacket;	// encoder switch held by [ or ]
+		juceRmlUi::ElemKnob* m_keyboardPressedKnob = nullptr;
+
 	};
 }
