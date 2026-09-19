@@ -25,7 +25,7 @@ set(SOURCES
 	mdPixelPerfectPanel.cpp mdPixelPerfectPanel.h
 	mdPanelAffordances.h
 	mdParameterHelp.h
-	mdMachineHelp.h
+	mdMonomachineHelp.h
 	mdMachinedrumHelp.h
 	mdLcdText.h
 	mdHelpOverrides.cpp mdHelpOverrides.h

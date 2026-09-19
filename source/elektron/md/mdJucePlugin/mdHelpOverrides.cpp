@@ -1,7 +1,7 @@
 #include "mdHelpOverrides.h"
 
 #include "mdMachinedrumHelp.h"
-#include "mdMachineHelp.h"
+#include "mdMonomachineHelp.h"
 #include "mdParameterHelp.h"
 
 #include "baseLib/configFile.h"
@@ -39,7 +39,7 @@ namespace mdJucePlugin
 
 		std::string monomachineLcdName(const uint8_t _machine)
 		{
-			for(const auto& m : machineHelp::g_machines)
+			for(const auto& m : monomachineHelp::g_machines)
 				if(m.id == _machine)
 					return m.lcdName;
 			return "machine-" + std::to_string(_machine);
@@ -63,7 +63,7 @@ namespace mdJucePlugin
 		}
 
 		template<size_t N>
-		void values(const HelpOverrides::TextFunc& _func, const std::string& _prefix, const machineHelp::ValueHash (&_values)[N])
+		void values(const HelpOverrides::TextFunc& _func, const std::string& _prefix, const monomachineHelp::ValueHash (&_values)[N])
 		{
 			for(const auto& v : _values)
 				_func(_prefix + v.text + ".meaning", v.meaning);
@@ -91,28 +91,28 @@ namespace mdJucePlugin
 		page(_func, "mm.filter.", parameterHelp::g_monomachineFilter);
 		page(_func, "mm.effects.", parameterHelp::g_monomachineEffects);
 		page(_func, "mm.lfo.", parameterHelp::g_monomachineLfo);
-		for(const auto& p : machineHelp::g_lfoPages)
+		for(const auto& p : monomachineHelp::g_lfoPages)
 			_func(std::string("mm.lfo-page.") + p.text + ".name", p.name);
-		for(const auto& e : machineHelp::g_lfoSpecialDestinations)
+		for(const auto& e : monomachineHelp::g_lfoSpecialDestinations)
 		{
 			_func(std::string("mm.lfo-destination.") + e.abbreviation + ".name", e.name);
 			_func(std::string("mm.lfo-destination.") + e.abbreviation + ".description", e.description);
 		}
-		values(_func, "mm.lfo-trig.", machineHelp::g_lfoTrigValues);
-		values(_func, "mm.lfo-wave.", machineHelp::g_lfoWaveValues);
-		values(_func, "mm.lfo-mult.", machineHelp::g_lfoMultValues);
-		for(const auto& m : machineHelp::g_machines)
+		values(_func, "mm.lfo-trig.", monomachineHelp::g_lfoTrigValues);
+		values(_func, "mm.lfo-wave.", monomachineHelp::g_lfoWaveValues);
+		values(_func, "mm.lfo-mult.", monomachineHelp::g_lfoMultValues);
+		for(const auto& m : monomachineHelp::g_machines)
 		{
 			_func(std::string("mm.machine.") + m.lcdName + ".name", m.name);
 			_func(std::string("mm.machine.") + m.lcdName + ".description", m.description);
 		}
-		for(const auto& p : machineHelp::g_parameters)
+		for(const auto& p : monomachineHelp::g_parameters)
 		{
 			const auto prefix = "mm.machine." + monomachineLcdName(p.machine) + "." + p.label;
 			_func(prefix + ".name", p.entry.name);
 			_func(prefix + ".description", p.entry.description);
 		}
-		for(const auto& v : machineHelp::g_machineValues)
+		for(const auto& v : monomachineHelp::g_machineValues)
 			_func("mm.machine." + monomachineLcdName(v.machine) + "." + v.label + "." + v.value.text + ".meaning", v.value.meaning);
 
 		// Machinedrum

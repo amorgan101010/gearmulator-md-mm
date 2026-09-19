@@ -5,7 +5,7 @@
 //   mdHelpOverridesTest --dump     print the defaults file to stdout
 
 #include "../mdJucePlugin/mdHelpOverrides.h"
-#include "../mdJucePlugin/mdMachineHelp.h"
+#include "../mdJucePlugin/mdMonomachineHelp.h"
 #include "../mdJucePlugin/mdParameterHelp.h"
 
 #include "baseLib/configFile.h"
@@ -90,9 +90,9 @@ int main(const int _argc, char** _argv)
 
 	// One override replaces that string only. text::tune is shared by several rows; overriding one
 	// of those rows must not change the others.
-	const mdJucePlugin::machineHelp::Parameter* sineTune = nullptr;
-	const mdJucePlugin::machineHelp::Parameter* noiseTune = nullptr;
-	for(const auto& p : mdJucePlugin::machineHelp::g_parameters)
+	const mdJucePlugin::monomachineHelp::Parameter* sineTune = nullptr;
+	const mdJucePlugin::monomachineHelp::Parameter* noiseTune = nullptr;
+	for(const auto& p : mdJucePlugin::monomachineHelp::g_parameters)
 	{
 		if(std::strcmp(p.label, "TUNE") != 0)
 			continue;

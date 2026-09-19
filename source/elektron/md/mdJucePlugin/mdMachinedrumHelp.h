@@ -4,7 +4,6 @@
 #include <cstring>
 #include <string>
 
-#include "mdMachineHelp.h"
 #include "mdParameterHelp.h"
 
 // Plain-language help for Machinedrum OS 1.63 machines and DATA ENTRY parameters. The LCD is
@@ -12,7 +11,7 @@
 // lcdText::hash over g_mdMachineName); descriptions are paraphrased from the owner's manual.
 namespace mdJucePlugin::machinedrumHelp
 {
-	using machineHelp::LabelHash;
+	using parameterHelp::LabelHash;
 	using parameterHelp::Entry;
 
 	// Machines whose SYNTHESIS parameters mean the same thing share a family.
@@ -749,13 +748,13 @@ namespace mdJucePlugin::machinedrumHelp
 	};
 
 	// The LFO window prints these as text. Captured with mdmmLcdCapture (mode "md mdlfo").
-	inline constexpr machineHelp::ValueHash g_lfoUpdateValues[] =
+	inline constexpr parameterHelp::ValueHash g_lfoUpdateValues[] =
 	{
 		{ 0x0f1ff25dbbca3ab3ull, "FREE", "Never restarts: the LFO keeps running whatever you play." },
 		{ 0x977bd6602bcbae6full, "TRIG", "Restarts every time the target track is trigged." },
 		{ 0x88f5b25fa5281107ull, "HOLD", "Samples and holds: each trig freezes the LFO's level until the next one." },
 	};
-	inline const machineHelp::ValueHash* lfoUpdateForHash(const uint64_t _hash)
+	inline const parameterHelp::ValueHash* lfoUpdateForHash(const uint64_t _hash)
 	{
 		for(const auto& entry : g_lfoUpdateValues)
 			if(entry.hash == _hash)

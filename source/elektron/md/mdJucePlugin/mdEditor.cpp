@@ -3,7 +3,7 @@
 #include "mdController.h"
 #include "mdPanelAffordances.h"
 #include "mdLcdText.h"
-#include "mdMachineHelp.h"
+#include "mdMonomachineHelp.h"
 #include "mdMachinedrumHelp.h"
 #include "mdParameterHelp.h"
 #include "mdPluginProcessor.h"
@@ -3538,7 +3538,7 @@ namespace mdJucePlugin
 	{
 		if(!m_frontPanelSnapshotValid)
 			return {};
-		const auto* const target = machineHelp::lfoPageForHash(lcdText::hash(m_frontPanelSnapshot, lcdText::lfoValue(0)));
+		const auto* const target = monomachineHelp::lfoPageForHash(lcdText::hash(m_frontPanelSnapshot, lcdText::lfoValue(0)));
 		if(!target)
 			return {};
 		if(_encoder == 0)
@@ -3546,20 +3546,20 @@ namespace mdJucePlugin
 
 		// DEST: describe the parameter the LFO is aimed at on the selected page.
 		const auto destinationHash = lcdText::hash(m_frontPanelSnapshot, lcdText::lfoValue(1));
-		const parameterHelp::Entry* destination = machineHelp::lfoSpecialDestinationForHash(destinationHash);
+		const parameterHelp::Entry* destination = monomachineHelp::lfoSpecialDestinationForHash(destinationHash);
 		if(!destination)
 		{
-			if(const auto* const label = machineHelp::labelForHash(destinationHash))
+			if(const auto* const label = monomachineHelp::labelForHash(destinationHash))
 			{
 				if(target->dataPage == 0)
 				{
-					if(const auto* const machine = machineHelp::machineForHash(
+					if(const auto* const machine = monomachineHelp::machineForHash(
 						lcdText::hash(m_frontPanelSnapshot, lcdText::g_machineName)))
-						destination = machineHelp::parameter(machine->id, label);
+						destination = monomachineHelp::parameter(machine->id, label);
 				}
 				else if(target->dataPage > 0)
 				{
-					destination = machineHelp::fixedPageEntry(target->dataPage, label);
+					destination = monomachineHelp::fixedPageEntry(target->dataPage, label);
 				}
 			}
 		}
@@ -3651,7 +3651,7 @@ namespace mdJucePlugin
 		}
 		else if(machineName && m_frontPanelSnapshotValid)
 		{
-			if(const auto* const machine = machineHelp::machineForHash(
+			if(const auto* const machine = monomachineHelp::machineForHash(
 				lcdText::hash(m_frontPanelSnapshot, lcdText::g_machineName)))
 			{
 				abbreviation = machine->lcdName;
@@ -3667,18 +3667,18 @@ namespace mdJucePlugin
 			{
 				// SYNTHESIS depends on the machine: read both the field label and the machine
 				// name off the LCD. Anything unrecognised (a menu, an overlay) shows nothing.
-				const auto* const label = m_frontPanelSnapshotValid ? machineHelp::labelForHash(
+				const auto* const label = m_frontPanelSnapshotValid ? monomachineHelp::labelForHash(
 					lcdText::hash(m_frontPanelSnapshot, lcdText::fieldLabel(*encoder))) : nullptr;
-				const auto* const machine = m_frontPanelSnapshotValid ? machineHelp::machineForHash(
+				const auto* const machine = m_frontPanelSnapshotValid ? monomachineHelp::machineForHash(
 					lcdText::hash(m_frontPanelSnapshot, lcdText::g_machineName)) : nullptr;
-				if(const auto* const entry = label && machine ? machineHelp::parameter(machine->id, label) : nullptr)
+				if(const auto* const entry = label && machine ? monomachineHelp::parameter(machine->id, label) : nullptr)
 				{
 					abbreviation = entry->abbreviation;
 					name = m_help(entry->name);
 					description = m_help(entry->description);
 					footer = std::string(m_help(machine->name)) + " synthesis, knob " + knob;
 					// Settings print their value under the knob; say what it is set to.
-					if(const auto* const value = machineHelp::machineValueForHash(machine->id, label,
+					if(const auto* const value = monomachineHelp::machineValueForHash(machine->id, label,
 						lcdText::hash(m_frontPanelSnapshot, lcdText::lfoValue(*encoder))))
 						description += std::string(" Now: ") + value->text + ". " + m_help(value->meaning);
 				}
@@ -3695,7 +3695,7 @@ namespace mdJucePlugin
 					description += lfoTargetDescription(*encoder);
 				else if(*page >= 4 && *page <= 6 && m_frontPanelSnapshotValid)
 				{
-					if(const auto* const value = machineHelp::lfoValueForHash(*encoder,
+					if(const auto* const value = monomachineHelp::lfoValueForHash(*encoder,
 						lcdText::hash(m_frontPanelSnapshot, lcdText::lfoValue(*encoder))))
 						description += std::string(" Now: ") + value->text + ". " + m_help(value->meaning);
 				}

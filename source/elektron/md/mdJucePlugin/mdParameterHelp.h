@@ -2,9 +2,27 @@
 
 #include <array>
 #include <cstddef>
+#include <cstdint>
 
 namespace mdJucePlugin::parameterHelp
 {
+	// Types shared by the Monomachine and Machinedrum help tables.
+
+	// A text drawn on the LCD, identified by the hash of its pixels (see mdLcdText.h).
+	struct LabelHash
+	{
+		uint64_t hash;
+		const char* label;
+	};
+
+	// A setting's value as the LCD prints it, with what that choice means.
+	struct ValueHash
+	{
+		uint64_t hash;
+		const char* text;
+		const char* meaning;
+	};
+
 	// Plain-language help for the Monomachine DATA ENTRY knobs, shown as hover tooltips.
 	// Abbreviations are the labels the firmware draws on the LCD. Knob order matches
 	// parameterDescriptions_mm.json (A-D top row, E-H bottom row).

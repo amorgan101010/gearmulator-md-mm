@@ -1,7 +1,7 @@
 # Changing MD/MM tooltip text without rebuilding
 
 The hover tooltips for knobs, LCD fields and machine names have built-in text: see
-`source/elektron/md/mdJucePlugin/mdParameterHelp.h`, `mdMachineHelp.h` and `mdMachinedrumHelp.h`.
+`source/elektron/md/mdJucePlugin/mdParameterHelp.h`, `mdMonomachineHelp.h` and `mdMachinedrumHelp.h`.
 To try new wording, you don't need to edit those headers or rebuild.
 
 1. Open the plug-in once. It writes `tooltips-defaults.txt` to its data folder, the folder that also
