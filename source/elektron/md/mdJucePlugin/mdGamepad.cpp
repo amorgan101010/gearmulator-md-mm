@@ -29,6 +29,8 @@ namespace mdJucePlugin
 			if(ids && count > 0)
 				pad = SDL_OpenGamepad(ids[0]);
 			SDL_free(ids);
+			if(pad && SDL_GamepadHasSensor(pad, SDL_SENSOR_GYRO))
+				SDL_SetGamepadSensorEnabled(pad, SDL_SENSOR_GYRO, true);
 		}
 	};
 
@@ -108,6 +110,15 @@ namespace mdJucePlugin
 				state.touchX = x;
 				state.touchY = y;
 			}
+		}
+
+		float gyro[3] = {};
+		if(SDL_GamepadSensorEnabled(pad, SDL_SENSOR_GYRO)
+			&& SDL_GetGamepadSensorData(pad, SDL_SENSOR_GYRO, gyro, 3))
+		{
+			state.gyroX = gyro[0];
+			state.gyroY = gyro[1];
+			state.gyroZ = gyro[2];
 		}
 		return state;
 	}

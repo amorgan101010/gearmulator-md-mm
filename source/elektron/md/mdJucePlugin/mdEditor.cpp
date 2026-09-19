@@ -2608,6 +2608,8 @@ namespace mdJucePlugin
 		constexpr float g_gamepadStickDetentsPerSecond = 30.0f;
 		constexpr float g_gamepadTouchDetentsPerWidth = 48.0f;	// knob steps for a finger across the whole touchpad
 		constexpr float g_gamepadTouchpadAspect = 0.5f;	// height / width, so a step is the same distance both ways
+		constexpr float g_gamepadGyroDetentsPerRadian = 40.0f;	// a 45 degree tilt is about 30 knob steps
+		constexpr float g_gamepadGyroDeadzone = 0.03f;	// rad/s: slower rotation is sensor drift, not a tilt
 
 		struct GamepadDirectButton
 		{
@@ -3227,6 +3229,24 @@ namespace mdJucePlugin
 		else if(!state.touching)
 		{
 			m_gamepadTouchColumn.reset();
+		}
+
+		// Gyro: hold the PS / Guide button and tilt. It turns the column of the focused data-entry knob: rolling
+		// left/right turns the top knob, pitching forward/back the bottom one. Only rotation moves the knobs, so
+		// holding still changes nothing, and nothing happens while focus is on anything else.
+		const auto& focused = m_gamepadFocus < m_gamepadTargets.size() ? m_gamepadTargets[m_gamepadFocus] : GamepadTarget{};
+		const auto focusedEncoder = static_cast<size_t>(focused.encoder);
+		if(state.pressed(Button::Guide) && focused.knob && focusedEncoder < m_encoders.size()
+			&& focused.knob == m_encoders[focusedEncoder])
+		{
+			const auto column = focusedEncoder % 4;
+			const auto seconds = static_cast<float>(elapsedMilliseconds / 1000.0);
+			const auto rate = [](const float _radiansPerSecond)
+			{
+				return std::abs(_radiansPerSecond) > g_gamepadGyroDeadzone ? _radiansPerSecond : 0.0f;
+			};
+			turnGamepadKnob(m_encoders[column], -rate(state.gyroZ) * g_gamepadGyroDetentsPerRadian * seconds);
+			turnGamepadKnob(m_encoders[column + 4], rate(state.gyroX) * g_gamepadGyroDetentsPerRadian * seconds);
 		}
 
 		// Right stick turns the focused knob, faster the further it is pushed.

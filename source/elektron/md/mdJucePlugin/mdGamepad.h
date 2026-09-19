@@ -43,6 +43,9 @@ namespace mdJucePlugin
 			float leftTrigger = 0.0f, rightTrigger = 0.0f;	// 0..1
 			bool touching = false;
 			float touchX = 0.0f, touchY = 0.0f;				// 0..1, first finger
+			// Rotation rate in radians per second, as SDL reports it: x pitches forward/back, y yaws, z rolls
+			// left/right. All zero on a controller without a gyro.
+			float gyroX = 0.0f, gyroY = 0.0f, gyroZ = 0.0f;
 
 			bool pressed(const Button _button) const { return buttons.test(static_cast<size_t>(_button)); }
 		};
