@@ -14,6 +14,7 @@
 #include "mdLib/mdpanel.h"
 
 #include "synthLib/deviceException.h"
+#include "synthLib/romLoader.h"
 
 #include "baseLib/binarystream.h"
 
@@ -62,14 +63,35 @@ namespace
 	constexpr auto g_defaultModel = md::MachineModel::Machinedrum;
 	#endif
 
+	#ifndef GEARMULATOR_STANDALONE_PROFILE
+	#define GEARMULATOR_STANDALONE_PROFILE ""
+	#endif
+
+	// A profile build (GEARMULATOR_STANDALONE_PROFILE in CMake) appends the profile to every name that locates
+	// settings or data, so it never shares them with a normal build.
+	std::string withProfile(const char* const _name)
+	{
+		const std::string profile = GEARMULATOR_STANDALONE_PROFILE;
+		return profile.empty() ? std::string(_name) : std::string(_name) + " " + profile;
+	}
+
 	const char* productName(const md::MachineModel _model)
 	{
-		return _model == md::MachineModel::Monomachine ? "Gearmulator MM" : "Gearmulator MD";
+		static const auto monomachine = withProfile("Gearmulator MM");
+		static const auto machinedrum = withProfile("Gearmulator MD");
+		return (_model == md::MachineModel::Monomachine ? monomachine : machinedrum).c_str();
+	}
+
+	const char* baseDataFolderName(const md::MachineModel _model)
+	{
+		return _model == md::MachineModel::Monomachine ? "Monomachine" : "Machinedrum";
 	}
 
 	const char* dataFolderName(const md::MachineModel _model)
 	{
-		return _model == md::MachineModel::Monomachine ? "Monomachine" : "Machinedrum";
+		static const auto monomachine = withProfile(baseDataFolderName(md::MachineModel::Monomachine));
+		static const auto machinedrum = withProfile(baseDataFolderName(md::MachineModel::Machinedrum));
+		return (_model == md::MachineModel::Monomachine ? monomachine : machinedrum).c_str();
 	}
 
 	juce::PropertiesFile::Options getOptions(const md::MachineModel _model,
@@ -81,7 +103,7 @@ namespace
 		opts.applicationName = _ephemeral
 			? juce::String("DSP56300EmulatorMachineRackEditorIdentityTest_") + suffix
 				+ "_" + juce::Uuid().toString()
-			: juce::String("DSP56300Emulator") + suffix;
+			: juce::String(withProfile((std::string("DSP56300Emulator") + suffix).c_str()));
 		opts.filenameSuffix = ".settings";
 		opts.folderName = opts.applicationName;
 		opts.osxLibrarySubFolder = "Application Support/" + opts.applicationName;
@@ -376,6 +398,13 @@ namespace mdJucePlugin
 		, m_rescueFolder(_ephemeralConfig ? std::move(_rescueFolder)
 			: std::optional<std::string>(getDataFolder() + "rescued-projects"))
 	{
+		// A profile build keeps its own data folder, but finds firmware in the normal build's roms folder too.
+		if(*GEARMULATOR_STANDALONE_PROFILE)
+		{
+			const auto normalRoms = juce::File(juce::String::fromUTF8(getDataFolder().c_str())).getParentDirectory()
+				.getChildFile(baseDataFolderName(_model)).getChildFile("roms");
+			synthLib::RomLoader::addSearchPath(normalRoms.getFullPathName().toStdString() + "/");
+		}
 		if(m_model == md::MachineModel::Machinedrum)
 			m_ramRecordingMode.store(
 				static_cast<uint8_t>(md::RamRecordingMode::CompleteTail),
