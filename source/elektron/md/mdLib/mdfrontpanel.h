@@ -207,7 +207,13 @@ namespace md
 		FrontPanelLedTransitionStatus getLedTransitionStatus() const;
 		void reset();
 
+		// Set when the device that owns this publisher goes away. A reader that keeps the publisher, instead
+		// of fetching it under the device lock every time, fetches the new device's one once this is set.
+		void retire() { m_retired.store(true, std::memory_order_release); }
+		bool isRetired() const { return m_retired.load(std::memory_order_acquire); }
+
 	private:
+		std::atomic<bool> m_retired{false};
 		mutable std::mutex m_mutex;
 		FrontPanel m_snapshot;
 		std::array<FrontPanelLedTransition, g_ledTransitionCapacity> m_ledTransitions{};

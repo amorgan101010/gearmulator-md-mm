@@ -185,7 +185,12 @@ namespace mdJucePlugin
 
 	bool Editor::refreshFrontPanelState(const double _nowMilliseconds)
 	{
-		auto publisher = getFrontPanelPublisher();
+		// Fetching the publisher takes the device lock, which the audio thread holds for its whole block. Doing
+		// that every frame made the UI, LEDs included, wait out most of a block whenever the machine ran close
+		// to realtime. The publisher lasts as long as its device, so fetch it again only when it is retired.
+		if(!m_frontPanelPublisher || m_frontPanelPublisher->isRetired())
+			m_frontPanelPublisher = getFrontPanelPublisher();
+		const auto& publisher = m_frontPanelPublisher;
 		if(!publisher)
 			return false;
 		const auto presentationBeforeDrain = m_ledPresentation;
