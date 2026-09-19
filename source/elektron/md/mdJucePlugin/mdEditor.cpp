@@ -2624,7 +2624,8 @@ namespace mdJucePlugin
 		constexpr float g_gamepadGyroDetentsPerRadian = 40.0f;	// a 45 degree tilt is about 30 knob steps
 		constexpr float g_gamepadGyroDeadzone = 0.03f;	// rad/s: slower rotation is sensor drift, not a tilt
 		constexpr float g_gamepadTiltRangeRadians = 0.785398f;	// absolute tilt: +-45 degrees covers the knob at 100%
-		constexpr int g_gamepadAxisStepsPerPoll = 8;	// absolute axes glide to their target at most this fast
+		constexpr int g_gamepadAxisStepsPerPoll = 4;	// absolute axes glide to their target at most this fast
+		constexpr float g_gamepadAxisSmoothing = 0.35f;	// share of a new position taken per poll, against jitter
 
 		struct GamepadDirectButton
 		{
@@ -3002,6 +3003,19 @@ namespace mdJucePlugin
 		return m_encoders[encoder % 4 + (target == gamepadAxes::g_targetFocusedBottom ? 4 : 0)];
 	}
 
+	namespace
+	{
+		std::FILE* gamepadDebugLog()
+		{
+			static std::FILE* const file = []() -> std::FILE*
+			{
+				const auto* const path = std::getenv("GEARMULATOR_GAMEPAD_DEBUG");
+				return path && *path ? std::fopen(path, "w") : nullptr;
+			}();
+			return file;
+		}
+	}
+
 	void Editor::driveGamepadAxis(const gamepadAxes::Axis _axis, const bool _engaged, const float _position,
 		const float _detents)
 	{
@@ -3019,6 +3033,11 @@ namespace mdJucePlugin
 		{
 			run.knob = knob;
 			run.value = settings.absolute && _position >= 0.0f ? currentKnobValue(knob) : -1;
+			run.position = _position;
+			if(auto* const log = gamepadDebugLog())
+				std::fprintf(log, "engage axis=%d encoder=%d absolute=%d position=%.3f startValue=%d\n",
+					static_cast<int>(_axis), static_cast<int>(knobEncoder(knob)), settings.absolute ? 1 : 0,
+					_position, run.value);
 		}
 
 		if(run.value < 0)
@@ -3029,10 +3048,24 @@ namespace mdJucePlugin
 			return;
 		}
 
-		// Absolute: step towards the value for this position, a few steps per poll so a jump glides.
-		const auto position = settings.invert ? 1.0f - _position : _position;
+		// Absolute: step towards the value for this position. The machine accelerates steps that arrive quickly,
+		// so a step can move the value by more than one: steer by the knob's actual value, as the controller
+		// tracks it, and close about half the gap each poll. Differences of one are sensor noise.
+		run.position += (_position - run.position) * g_gamepadAxisSmoothing;
+		const auto position = settings.invert ? 1.0f - run.position : run.position;
 		const auto target = static_cast<int>(std::lround(std::clamp(position, 0.0f, 1.0f) * 127.0f));
-		const auto steps = std::clamp(target - run.value, -g_gamepadAxisStepsPerPoll, g_gamepadAxisStepsPerPoll);
+		const auto actual = currentKnobValue(knob);
+		if(actual >= 0)
+			run.value = actual;
+		const auto error = target - run.value;
+		const auto steps = std::abs(error) <= 1 ? 0
+			: std::clamp(error / 2 + (error > 0 ? 1 : -1), -g_gamepadAxisStepsPerPoll, g_gamepadAxisStepsPerPoll);
+		if(auto* const log = gamepadDebugLog())
+		{
+			std::fprintf(log, "axis=%d position=%.3f target=%d believed=%d mirror=%d steps=%d\n",
+				static_cast<int>(_axis), _position, target, run.value, currentKnobValue(knob), steps);
+			std::fflush(log);
+		}
 		if(steps == 0)
 			return;
 		emitEncoderSteps(knobEncoder(knob), steps);

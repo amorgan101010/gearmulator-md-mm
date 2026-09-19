@@ -449,6 +449,7 @@ namespace mdJucePlugin
 		{
 			juceRmlUi::ElemKnob* knob = nullptr;	// the knob being driven while engaged
 			int value = -1;							// absolute mode: the knob's value as we have set it
+			float position = 0.0f;					// absolute mode: the smoothed touchpad / tilt position
 		};
 		std::array<GamepadAxisRun, std::size(gamepadAxes::g_axes)> m_gamepadAxisRuns{};
 
