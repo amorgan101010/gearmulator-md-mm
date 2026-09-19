@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "jucePluginEditorLib/pluginEditor.h"
+#include "baseLib/event.h"
 
 #include "mdFrontPanelPresentation.h"
 #include "mdGamepad.h"
@@ -152,6 +153,11 @@ namespace mdJucePlugin
 		void serviceGamepad(double _nowMilliseconds);
 		void moveGamepadFocus(GamepadDirection _direction);
 		void setGamepadFocus(size_t _index);
+		// The right stick's cursor: _x/_y are the stick, and whatever control it overlaps takes the focus.
+		void moveGamepadCursor(float _x, float _y, double _elapsedMilliseconds);
+		void centreGamepadCursor();		// onto the focused control, after the D-pad moved the focus
+		void placeGamepadCursor(bool _requestUpdate = true);
+		void stepGamepadCursor();		// once per drawn frame while the right stick is pushed
 		std::optional<size_t> findGamepadTarget(md::PanelControl _control) const;
 		std::optional<size_t> findGamepadTarget(const juceRmlUi::ElemKnob* _knob) const;
 		// _latch: hold the key like Shift-click.
@@ -292,6 +298,14 @@ namespace mdJucePlugin
 		std::vector<GamepadTarget> m_gamepadTargets;
 		size_t m_gamepadFocus = 0;
 		Rml::Element* m_gamepadFocusRing = nullptr;
+		Rml::Element* m_gamepadCursor = nullptr;
+		Rml::Vector2f m_gamepadCursorPosition{ 0.5f, 0.5f };	// fraction of the panel, so it survives a resize
+		double m_gamepadCursorLastMoveMilliseconds = 0.0;	// last time the right stick was pushed
+		Rml::Vector2f m_gamepadCursorStick{ 0.0f, 0.0f };	// right stick, zero while it isn't moving the cursor
+		double m_gamepadCursorLastFrameMilliseconds = 0.0;	// time of the last cursor frame, 0 while idle
+		baseLib::EventListener<juceRmlUi::RmlComponent*> m_gamepadCursorFrame;
+		baseLib::EventListener<juceRmlUi::RmlComponent*> m_gamepadCursorFrameDone;
+		bool m_gamepadCursorVisible = false;
 		bool m_gamepadLatchHeld = false;				// L1: gamepad equivalent of holding Shift
 		std::vector<md::PanelControl> m_gamepadHeldControls;	// pressed by the pad, awaiting release
 		// Cross held on the focused control. On a knob, a short press without turning is an encoder click.
@@ -299,10 +313,9 @@ namespace mdJucePlugin
 		size_t m_gamepadActTarget = 0;
 		double m_gamepadActStartMilliseconds = 0.0;
 		bool m_gamepadActTurned = false;
-		// D-pad / right-stick auto-repeat.
+		// D-pad auto-repeat.
 		std::optional<GamepadDirection> m_gamepadRepeatDirection;
 		double m_gamepadRepeatNextMilliseconds = 0.0;
-		bool m_gamepadRepeatFromStick = false;
 		int m_gamepadTrack = 0;		// 0-5 on the Monomachine, 0-15 on the Machinedrum
 		int m_gamepadPage = 0;		// Machinedrum data page
 		std::optional<md::PanelControl> m_gamepadTouchTrig;
