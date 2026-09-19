@@ -3034,6 +3034,7 @@ namespace mdJucePlugin
 		{
 			run.knob = knob;
 			run.value = settings.absolute && _position >= 0.0f ? currentKnobValue(knob) : -1;
+			run.trackedValue = run.value;
 			run.position = _position;
 			if(auto* const log = gamepadDebugLog())
 				std::fprintf(log, "engage axis=%d encoder=%d absolute=%d position=%.3f startValue=%d\n",
@@ -3055,9 +3056,14 @@ namespace mdJucePlugin
 		run.position += (_position - run.position) * g_gamepadAxisSmoothing;
 		const auto position = settings.invert ? 1.0f - run.position : run.position;
 		const auto target = static_cast<int>(std::lround(std::clamp(position, 0.0f, 1.0f) * 127.0f));
-		const auto actual = currentKnobValue(knob);
-		if(actual >= 0)
-			run.value = actual;
+		// Resync only when the tracked value moves. If it ever stops following the machine, the step count
+		// carries on alone and stops at the target, instead of pushing the knob to the end of its range.
+		const auto tracked = currentKnobValue(knob);
+		if(tracked >= 0 && tracked != run.trackedValue)
+		{
+			run.value = tracked;
+			run.trackedValue = tracked;
+		}
 		const auto error = target - run.value;
 		const auto steps = std::abs(error) <= 1 ? 0
 			: std::clamp(error / 2 + (error > 0 ? 1 : -1), -g_gamepadAxisStepsPerPoll, g_gamepadAxisStepsPerPoll);
@@ -3083,7 +3089,10 @@ namespace mdJucePlugin
 
 	int Editor::currentKnobValue(const juceRmlUi::ElemKnob* const _knob) const
 	{
-		// Known for the eight data entry knobs on a data page, from the controller's copy of the kit.
+		// Known for the eight data entry knobs on a data page, from the controller's copy of the kit, once that
+		// copy is synchronized with the machine. Until then (right after launch) it can hold stale values.
+		if(!m_controller.isAutomationSynchronized())
+			return -1;
 		const auto encoder = static_cast<size_t>(knobEncoder(_knob));
 		if(encoder >= m_encoders.size() || m_encoders[encoder] != _knob)
 			return -1;
