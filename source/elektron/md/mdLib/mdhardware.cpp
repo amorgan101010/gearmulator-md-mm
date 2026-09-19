@@ -124,6 +124,10 @@ namespace md
 		// established path as a field fallback and exact A/B control.
 		const auto* const boundedJit = std::getenv("GEARMULATOR_MDMM_BOUNDED_JIT");
 		m_schedBoundedJit = boundedJit == nullptr || std::strcmp(boundedJit, "0") != 0;
+		// Threading experiment only: see m_schedLookaheadDspCycles.
+		if(const auto* const lookahead = std::getenv("GEARMULATOR_MDMM_LOOKAHEAD_US"))
+			m_schedLookaheadDspCycles = static_cast<uint64_t>(std::max(0.0, std::atof(lookahead))
+				* static_cast<double>(g_dsp1CyclesPerEsaiFrame) * static_cast<double>(g_samplerate) / 1e6);
 
 		if(!m_rom.isValid())
 			return;
@@ -1531,9 +1535,10 @@ namespace md
 			MD_TRANSPORT_RECORD(++score.timeUnavailable;);
 			return;
 		}
-		const uint64_t targetCyc = dspCatchupDeadline<g_ucClockHz,
+		const uint64_t exactCyc = dspCatchupDeadline<g_ucClockHz,
 			g_dsp1CyclesPerEsaiFrame * g_samplerate>(m_schedDspOriginCycles[i],
 				m_schedUcCyclesDone - m_schedDspOriginUcCycles[i]);
+		const uint64_t targetCyc = exactCyc > m_schedLookaheadDspCycles ? exactCyc - m_schedLookaheadDspCycles : 0;
 		const uint64_t startCyc = d.dsp().getCycles();
 		if(startCyc >= targetCyc)
 		{

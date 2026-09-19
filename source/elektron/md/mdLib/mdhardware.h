@@ -397,6 +397,9 @@ namespace md
 		std::atomic<uint64_t> m_mmLinkStrobeEpoch{0};	// cancels delivery after nested catch-up
 		uint32_t m_mmLinkStrobeLevel = 2;		// mixer-context edge detector; 2 = no level observed yet
 		bool     m_schedDspOriginLatched[2] = { false, false };	// [0]=mixer/DSP1, [1]=producer/DSP2
+		// Threading experiment (doc/mdmm-threading-plan.md, phase 0): catch a DSP up to this many cycles BEFORE the
+		// UC's time instead of exactly to it, as a thread running behind would be. From GEARMULATOR_MDMM_LOOKAHEAD_US; 0 = off.
+		uint64_t m_schedLookaheadDspCycles = 0;
 		double   m_schedDspOriginFrame [2]  = { 0.0, 0.0 };		// machine-frame at runnable transition
 		uint64_t m_schedDspOriginCycles[2]  = { 0, 0 };			// getCycles() at that transition
 		uint64_t m_schedDspOriginUcCycles[2] = { 0, 0 };		// exact host clock at that transition
