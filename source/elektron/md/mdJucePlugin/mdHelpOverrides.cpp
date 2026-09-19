@@ -4,7 +4,6 @@
 #include "mdMonomachineHelp.h"
 #include "mdParameterHelp.h"
 
-#include "baseLib/configFile.h"
 #include "baseLib/filesystem.h"
 
 #include <sstream>
@@ -13,6 +12,14 @@ namespace mdJucePlugin
 {
 	namespace
 	{
+		std::string trim(const std::string& _text)
+		{
+			const auto first = _text.find_first_not_of(" \t");
+			if(first == std::string::npos)
+				return {};
+			return _text.substr(first, _text.find_last_not_of(" \t") - first + 1);
+		}
+
 		const char* familyName(const machinedrumHelp::Family _family)
 		{
 			using machinedrumHelp::Family;
@@ -160,19 +167,18 @@ namespace mdJucePlugin
 		return out.str();
 	}
 
-	bool HelpOverrides::writeDefaults(const std::filesystem::path& _path)
+	bool HelpOverrides::writeDefaults(const std::string& _path)
 	{
-		const auto file = _path.u8string();
 		const auto text = defaultsText();
 		std::string existing;
-		if(baseLib::filesystem::readFile(existing, file) && existing == text)
+		if(baseLib::filesystem::readFile(existing, _path) && existing == text)
 			return true;
-		baseLib::filesystem::createDirectory(_path.parent_path().u8string());
+		baseLib::filesystem::createDirectory(baseLib::filesystem::getPath(_path));
 		// Atomic, as the file may be open in an editor while the plug-in starts.
-		return baseLib::filesystem::writeFileAtomic(file, reinterpret_cast<const uint8_t*>(text.data()), text.size());
+		return baseLib::filesystem::writeFileAtomic(_path, reinterpret_cast<const uint8_t*>(text.data()), text.size());
 	}
 
-	void HelpOverrides::setFile(std::filesystem::path _path)
+	void HelpOverrides::setFile(std::string _path)
 	{
 		m_path = std::move(_path);
 		load();
@@ -185,40 +191,49 @@ namespace mdJucePlugin
 			return false;
 		m_lastCheck = now;
 
-		std::error_code ec;
-		const bool exists = !m_path.empty() && std::filesystem::exists(m_path, ec);
-		if(!exists && !m_loadedExists)
+		std::string text;
+		if(!baseLib::filesystem::readFile(text, m_path))
+			text.clear();
+		if(text == m_loadedText)
 			return false;
-		if(exists && m_loadedExists
-			&& std::filesystem::last_write_time(m_path, ec) == m_loadedTime
-			&& std::filesystem::file_size(m_path, ec) == m_loadedSize)
-			return false;
-		load();
+		apply(text);
 		return true;
 	}
 
 	void HelpOverrides::load()
 	{
+		m_lastCheck = std::chrono::steady_clock::now();
+		std::string text;
+		if(!baseLib::filesystem::readFile(text, m_path))
+			text.clear();
+		apply(text);
+	}
+
+	void HelpOverrides::apply(const std::string& _text)
+	{
 		m_texts.clear();
 		m_unknownKeys.clear();
-		m_lastCheck = std::chrono::steady_clock::now();
+		m_loadedText = _text;
 
-		std::error_code ec;
-		m_loadedExists = !m_path.empty() && std::filesystem::exists(m_path, ec);
-		if(!m_loadedExists)
-			return;
-		m_loadedTime = std::filesystem::last_write_time(m_path, ec);
-		m_loadedSize = std::filesystem::file_size(m_path, ec);
-
-		const baseLib::ConfigFile file(m_path.string());
 		const auto& fields = fieldsByKey();
-		for(const auto& [key, text] : file.getArgsWithValues())
+		std::istringstream lines(_text);
+		std::string line;
+		while(std::getline(lines, line))
 		{
+			if(!line.empty() && line.back() == '\r')
+				line.pop_back();
+			const auto equals = line.find('=');
+			if(equals == std::string::npos || line.empty() || line.front() == '#' || line.front() == ';')
+				continue;
+			const auto key = trim(line.substr(0, equals));
+			const auto value = trim(line.substr(equals + 1));
+			if(key.empty())
+				continue;
 			const auto it = fields.find(key);
 			if(it == fields.end())
 				m_unknownKeys.push_back(key);
 			else
-				m_texts[it->second] = text;
+				m_texts[it->second] = value;
 		}
 	}
 

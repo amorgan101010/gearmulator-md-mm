@@ -9,10 +9,10 @@
 #include "../mdJucePlugin/mdParameterHelp.h"
 
 #include "baseLib/configFile.h"
+#include "baseLib/filesystem.h"
 
 #include <cstdio>
 #include <cstring>
-#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <set>
@@ -30,10 +30,9 @@ namespace
 		++g_failures;
 	}
 
-	void writeFile(const std::filesystem::path& _path, const std::string& _text)
+	void writeFile(const std::string& _path, const std::string& _text)
 	{
-		std::ofstream out(_path, std::ios::binary | std::ios::trunc);
-		out << _text;
+		baseLib::filesystem::writeFile(_path, reinterpret_cast<const uint8_t*>(_text.data()), _text.size());
 	}
 }
 
@@ -67,12 +66,13 @@ int main(const int _argc, char** _argv)
 	check(count > 500, "expected several hundred strings, got " + std::to_string(count));
 
 	// The defaults file reads back to exactly the built-in text.
-	const auto dir = std::filesystem::temp_directory_path() / "mdHelpOverridesTest";
-	std::filesystem::create_directories(dir);
-	const auto defaults = dir / "tooltips-defaults.txt";
+	const auto dir = baseLib::filesystem::validatePath(
+		baseLib::filesystem::getCurrentDirectory() + "mdHelpOverridesTest");
+	baseLib::filesystem::createDirectory(dir);
+	const auto defaults = dir + "tooltips-defaults.txt";
 	check(HelpOverrides::writeDefaults(defaults), "writing the defaults file");
 	{
-		const baseLib::ConfigFile file(defaults.string());
+		const baseLib::ConfigFile file(defaults);
 		check(file.getArgsWithValues().size() == count, "defaults file holds every key");
 		HelpOverrides::forEachText([&](const std::string& _key, const char* const& _field)
 		{
@@ -81,8 +81,8 @@ int main(const int _argc, char** _argv)
 	}
 
 	// No file: every string is its default.
-	const auto overridePath = dir / "tooltips.txt";
-	std::filesystem::remove(overridePath);
+	const auto overridePath = dir + "tooltips.txt";
+	std::remove(overridePath.c_str());
 	HelpOverrides help;
 	help.setFile(overridePath);
 	const auto& atk = mdJucePlugin::parameterHelp::g_monomachineAmplification[0];
@@ -117,11 +117,12 @@ int main(const int _argc, char** _argv)
 	check(help.size() == 2, "two overrides held");
 
 	// Deleting the file restores the defaults.
-	std::filesystem::remove(overridePath);
+	std::remove(overridePath.c_str());
 	help.load();
 	check(help(atk.description) == atk.description && help.size() == 0, "deleted file restores defaults");
 
-	std::filesystem::remove_all(dir);
+	std::remove(defaults.c_str());
+	std::remove(overridePath.c_str());
 	if(g_failures)
 	{
 		std::cerr << g_failures << " failure(s)\n";

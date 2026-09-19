@@ -51,7 +51,6 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
-#include <filesystem>
 #include <functional>
 #include <iterator>
 #include <limits>
@@ -3778,9 +3777,9 @@ namespace mdJucePlugin
 
 		// Tooltip wording can be changed without rebuilding: tooltips.txt in the data folder
 		// overrides the built-in text, and tooltips-defaults.txt beside it lists every key.
-		const std::filesystem::path dataFolder = std::filesystem::u8path(getProcessor().getDataFolder());
-		HelpOverrides::writeDefaults(dataFolder / "tooltips-defaults.txt");
-		m_help.setFile(dataFolder / "tooltips.txt");
+		const auto dataFolder = baseLib::filesystem::validatePath(getProcessor().getDataFolder());
+		HelpOverrides::writeDefaults(dataFolder + "tooltips-defaults.txt");
+		m_help.setFile(dataFolder + "tooltips.txt");
 
 		// One tooltip, reparented under whatever it describes so it follows panel scaling.
 		auto tooltip = document->CreateElement("div");

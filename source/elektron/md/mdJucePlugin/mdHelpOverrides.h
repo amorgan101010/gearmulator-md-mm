@@ -2,7 +2,6 @@
 
 #include <chrono>
 #include <cstdint>
-#include <filesystem>
 #include <functional>
 #include <string>
 #include <unordered_map>
@@ -32,16 +31,21 @@ namespace mdJucePlugin
 		static std::string defaultsText();
 
 		// Writes defaultsText() to _path unless the file already holds exactly that.
-		static bool writeDefaults(const std::filesystem::path& _path);
+		static bool writeDefaults(const std::string& _path);
 
-		void setFile(std::filesystem::path _path);
+		void setFile(std::string _path);
 
-		// Re-reads the file when it changed since the last load, checking at most twice a second.
-		// Returns true when the texts changed.
+		// Re-reads the file when its contents changed, checking at most twice a second. Returns true when the
+		// texts changed. std::filesystem would be simpler, but it needs macOS 10.15 and this targets 10.13.
 		bool refresh();
 
 		// Reads the file now. A missing file leaves no overrides.
 		void load();
+
+	private:
+		void apply(const std::string& _text);
+
+	public:
 
 		// The replacement for a table string, or the string itself. Pass the table member, e.g.
 		// help(entry->description), not a copy of the pointer.
@@ -55,12 +59,10 @@ namespace mdJucePlugin
 		size_t size() const { return m_texts.size(); }
 
 	private:
-		std::filesystem::path m_path;
+		std::string m_path;
 		std::unordered_map<const void*, std::string> m_texts;
 		std::vector<std::string> m_unknownKeys;
-		std::filesystem::file_time_type m_loadedTime{};
-		uintmax_t m_loadedSize = 0;
-		bool m_loadedExists = false;
+		std::string m_loadedText;	// the file as last read, to notice an edit
 		std::chrono::steady_clock::time_point m_lastCheck{};
 	};
 }
