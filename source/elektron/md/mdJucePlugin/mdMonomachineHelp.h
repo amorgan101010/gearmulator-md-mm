@@ -9,13 +9,10 @@
 // Plain-language help for Monomachine machines and their SYNTHESIS page parameters.
 // The LCD is identified through lcdText hashes; descriptions are paraphrased from the
 // machine reference (Appendix A) of the owner's manual.
-namespace mdJucePlugin::machineHelp
+namespace mdJucePlugin::monomachineHelp
 {
-	struct LabelHash
-	{
-		uint64_t hash;
-		const char* label;
-	};
+	using parameterHelp::LabelHash;
+	using parameterHelp::ValueHash;
 
 	struct MachineHash
 	{
@@ -361,12 +358,6 @@ namespace mdJucePlugin::machineHelp
 
 	// Values an LFO page shows as text under the knob. Captured with mdmmLcdCapture (mode "values")
 	// and checked against the owner's manual.
-	struct ValueHash
-	{
-		uint64_t hash;
-		const char* text;
-		const char* meaning;
-	};
 	inline constexpr ValueHash g_lfoTrigValues[] =
 	{
 		{ 0xfe136a0581c038a7ull, "FREE", "Runs continuously. Trigs never restart it." },

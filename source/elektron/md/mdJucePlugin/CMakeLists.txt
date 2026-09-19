@@ -23,7 +23,7 @@ set(SOURCES
 	mdLcdViewport.h
 	mdLcdText.h
 	mdParameterHelp.h
-	mdMachineHelp.h
+	mdMonomachineHelp.h
 	mdMachinedrumHelp.h
 	mdHelpOverrides.cpp mdHelpOverrides.h
 	mdPixelPerfectPanel.cpp mdPixelPerfectPanel.h

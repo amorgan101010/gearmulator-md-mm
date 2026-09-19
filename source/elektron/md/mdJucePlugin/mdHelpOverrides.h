@@ -12,7 +12,7 @@ namespace mdJucePlugin
 {
 	// Optional replacements for the hover tooltip text, for tweaking wording without rebuilding.
 	//
-	// The text built into mdParameterHelp.h, mdMachineHelp.h and mdMachinedrumHelp.h is the
+	// The text built into mdParameterHelp.h, mdMonomachineHelp.h and mdMachinedrumHelp.h is the
 	// default. A plain-text file of "key = text" lines replaces individual strings: keys it does not
 	// mention keep their built-in text, and without the file nothing changes. The file is re-read
 	// when it changes, so an edit shows up the next time a tooltip updates.
