@@ -41,6 +41,7 @@
 #include "juceRmlUi/rmlMenu.h"
 
 #include "RmlUi/Core/ComputedValues.h"
+#include "RmlUi/Core/Context.h"
 #include "RmlUi/Core/Element.h"
 #include "RmlUi/Core/ElementDocument.h"
 #include "RmlUi/Core/StringUtilities.h"
@@ -2596,7 +2597,8 @@ namespace mdJucePlugin
 		constexpr double g_keyReleaseGraceMilliseconds = 50.0;	// see Editor::onPanelKey
 		constexpr float g_gamepadTriggerThreshold = 0.5f;
 		constexpr float g_gamepadStickDeadzone = 0.2f;
-		constexpr float g_gamepadStickNavigateThreshold = 0.6f;
+		constexpr float g_gamepadCursorSpeed = 0.6f;	// panel widths per second, right stick fully pushed
+		constexpr double g_gamepadCursorLingerMilliseconds = 1000.0;	// cursor stays this long after the stick is let go
 		constexpr float g_gamepadStickDetentsPerSecond = 30.0f;
 		constexpr float g_gamepadCoarseDetents = 8.0f;
 
@@ -2676,6 +2678,26 @@ namespace mdJucePlugin
 			" border: 3dp #ffc83a; pointer-events: none; z-index: 1000; display: none;");
 		m_gamepadFocusRing = ring.get();
 		m_gamepadTargets.front().element->AppendChild(std::move(ring));
+
+		// The right stick's free cursor. Whatever control it overlaps takes the focus.
+		auto cursor = document->CreateElement("div");
+		cursor->SetAttribute("style",
+			"position: absolute; left: 0px; top: 0px; width: 26dp; height: 26dp; margin-left: -13dp; margin-top: -13dp;"
+			" border: 2dp #ffc83a; border-radius: 13dp; background-color: #ffc83a40;"
+			" pointer-events: none; z-index: 1001; display: none;");
+		m_gamepadCursor = cursor.get();
+		document->AppendChild(std::move(cursor));
+		// The cursor moves once per drawn frame, by the time since the previous frame. Moving it from the
+		// poll timer instead steps unevenly, because that timer and the frame timer drift against each other.
+		if(auto* const rml = getRmlComponent())
+		{
+			m_gamepadCursorFrame.set(rml->evPreUpdate, [this](juceRmlUi::RmlComponent*) { stepGamepadCursor(); });
+			m_gamepadCursorFrameDone.set(rml->evPostUpdate, [this](juceRmlUi::RmlComponent*)
+			{
+				if(m_gamepadCursorLastFrameMilliseconds > 0.0 && m_gamepadCursor)
+					m_gamepadCursor->GetContext()->RequestNextUpdate(0.0f);
+			});
+		}
 
 		m_gamepad = std::make_unique<Gamepad>();
 		m_gamepadFocus = 0;
@@ -2757,6 +2779,92 @@ namespace mdJucePlugin
 			}
 		}
 		if(best)
+		{
+			setGamepadFocus(*best);
+			centreGamepadCursor();
+		}
+	}
+
+	void Editor::placeGamepadCursor(const bool _requestUpdate)
+	{
+		auto* const document = getDocument();
+		if(!m_gamepadCursor || !document)
+			return;
+		const auto size = document->GetBox().GetSize(Rml::BoxArea::Padding);
+		m_gamepadCursor->SetProperty(Rml::PropertyId::Left, Rml::Property(m_gamepadCursorPosition.x * size.x, Rml::Unit::PX));
+		m_gamepadCursor->SetProperty(Rml::PropertyId::Top, Rml::Property(m_gamepadCursorPosition.y * size.y, Rml::Unit::PX));
+		if(_requestUpdate)
+			if(auto* const rml = getRmlComponent())
+				rml->enqueueUpdateOnce();
+	}
+
+	void Editor::stepGamepadCursor()
+	{
+		if(m_gamepadCursorLastFrameMilliseconds <= 0.0)
+			return;
+		const auto now = juce::Time::getMillisecondCounterHiRes();
+		const auto elapsed = std::min(100.0, now - m_gamepadCursorLastFrameMilliseconds);
+		m_gamepadCursorLastFrameMilliseconds = now;
+		moveGamepadCursor(m_gamepadCursorStick.x, m_gamepadCursorStick.y, elapsed);
+	}
+
+	void Editor::centreGamepadCursor()
+	{
+		auto* const document = getDocument();
+		if(!document || m_gamepadFocus >= m_gamepadTargets.size())
+			return;
+		const auto size = document->GetBox().GetSize(Rml::BoxArea::Padding);
+		if(size.x <= 0.0f || size.y <= 0.0f)
+			return;
+		const auto centre = elementCentre(m_gamepadTargets[m_gamepadFocus].element)
+			- document->GetAbsoluteOffset(Rml::BoxArea::Padding);
+		m_gamepadCursorPosition = { centre.x / size.x, centre.y / size.y };
+		placeGamepadCursor();
+	}
+
+	void Editor::moveGamepadCursor(const float _x, const float _y, const double _elapsedMilliseconds)
+	{
+		auto* const document = getDocument();
+		const auto magnitude = std::min(1.0f, std::hypot(_x, _y));
+		if(!m_gamepadCursor || !document || magnitude <= g_gamepadStickDeadzone)
+			return;
+		const auto size = document->GetBox().GetSize(Rml::BoxArea::Padding);
+		if(size.x <= 0.0f || size.y <= 0.0f)
+			return;
+
+		// Squared response: fine placement near the centre of the stick's travel, fast at the edge. The
+		// speed is in panel widths on both axes so a diagonal moves diagonally.
+		const auto push = (magnitude - g_gamepadStickDeadzone) / (1.0f - g_gamepadStickDeadzone);
+		const auto pixels = push * push * g_gamepadCursorSpeed * size.x * static_cast<float>(_elapsedMilliseconds / 1000.0);
+		m_gamepadCursorPosition.x = std::clamp(m_gamepadCursorPosition.x + _x / magnitude * pixels / size.x, 0.0f, 1.0f);
+		m_gamepadCursorPosition.y = std::clamp(m_gamepadCursorPosition.y + _y / magnitude * pixels / size.y, 0.0f, 1.0f);
+		placeGamepadCursor(false);
+
+		// Focus the control the circle overlaps, the one nearest its centre if it overlaps several. Over
+		// empty panel the focus stays where it was.
+		const auto point = document->GetAbsoluteOffset(Rml::BoxArea::Padding)
+			+ Rml::Vector2f(m_gamepadCursorPosition.x * size.x, m_gamepadCursorPosition.y * size.y);
+		const auto radius = m_gamepadCursor->GetBox().GetSize(Rml::BoxArea::Border).x * 0.5f;
+		std::optional<size_t> best;
+		float bestDistance = std::numeric_limits<float>::max();
+		for(size_t i = 0; i < m_gamepadTargets.size(); ++i)
+		{
+			auto* const element = m_gamepadTargets[i].element;
+			const auto origin = element->GetAbsoluteOffset(Rml::BoxArea::Border);
+			const auto extent = element->GetBox().GetSize(Rml::BoxArea::Border);
+			const auto dx = std::max({ origin.x - point.x, 0.0f, point.x - (origin.x + extent.x) });
+			const auto dy = std::max({ origin.y - point.y, 0.0f, point.y - (origin.y + extent.y) });
+			if(std::hypot(dx, dy) > radius)
+				continue;
+			const auto toCentre = elementCentre(element) - point;
+			const auto distance = std::hypot(toCentre.x, toCentre.y);
+			if(distance < bestDistance)
+			{
+				bestDistance = distance;
+				best = i;
+			}
+		}
+		if(best && *best != m_gamepadFocus)
 			setGamepadFocus(*best);
 	}
 
@@ -2848,6 +2956,12 @@ namespace mdJucePlugin
 				cancelPanelInputGestures();
 				if(m_gamepadFocusRing)
 					m_gamepadFocusRing->SetProperty(Rml::PropertyId::Display, Rml::Style::Display::None);
+				if(m_gamepadCursor)
+					m_gamepadCursor->SetProperty(Rml::PropertyId::Display, Rml::Style::Display::None);
+				m_gamepadCursorVisible = false;
+				m_gamepadCursorLastMoveMilliseconds = 0.0;
+				m_gamepadCursorLastFrameMilliseconds = 0.0;
+				m_gamepadCursorStick = {};
 				m_gamepadHighlightVisible = false;
 				m_gamepadLastActivityMilliseconds = 0.0;
 				if(auto* const rml = getRmlComponent())
@@ -2871,7 +2985,10 @@ namespace mdJucePlugin
 			m_gamepadFocusRing->SetProperty(Rml::PropertyId::Display,
 				highlight ? Rml::Style::Display::Block : Rml::Style::Display::None);
 			if(highlight)
+			{
 				setGamepadFocus(m_gamepadFocus);
+				centreGamepadCursor();
+			}
 			else if(auto* const rml = getRmlComponent())
 				rml->enqueueUpdateOnce();
 		}
@@ -2887,10 +3004,9 @@ namespace mdJucePlugin
 		{
 			return m_gamepadFocus < m_gamepadTargets.size() ? m_gamepadTargets[m_gamepadFocus].knob : nullptr;
 		};
-		const auto startRepeat = [&](const GamepadDirection _direction, const bool _fromStick)
+		const auto startRepeat = [&](const GamepadDirection _direction)
 		{
 			m_gamepadRepeatDirection = _direction;
-			m_gamepadRepeatFromStick = _fromStick;
 			m_gamepadRepeatNextMilliseconds = _nowMilliseconds + g_gamepadRepeatDelayMilliseconds;
 		};
 		const auto turnHeldKnob = [&](const GamepadDirection _direction)
@@ -2961,12 +3077,12 @@ namespace mdJucePlugin
 				else if(actKnob())
 				{
 					turnHeldKnob(direction);
-					startRepeat(direction, false);
+					startRepeat(direction);
 				}
 				else if(!m_gamepadActHeld)
 				{
 					moveGamepadFocus(direction);
-					startRepeat(direction, false);
+					startRepeat(direction);
 				}
 			}
 			else if(releasedNow(button))
@@ -2976,40 +3092,49 @@ namespace mdJucePlugin
 					releaseHeldControl(md::PanelControl::DataPageBackward);
 				else if(direction == GamepadDirection::Right)
 					releaseHeldControl(md::PanelControl::DataPageForward);
-				if(m_gamepadRepeatDirection == direction && !m_gamepadRepeatFromStick)
+				if(m_gamepadRepeatDirection == direction)
 					m_gamepadRepeatDirection.reset();
 			}
-		}
-
-		// Right stick moves focus, with the same auto-repeat as the D-pad.
-		std::optional<GamepadDirection> stickDirection;
-		if(std::max(std::abs(state.rightX), std::abs(state.rightY)) > g_gamepadStickNavigateThreshold)
-		{
-			stickDirection = std::abs(state.rightX) > std::abs(state.rightY)
-				? (state.rightX > 0.0f ? GamepadDirection::Right : GamepadDirection::Left)
-				: (state.rightY > 0.0f ? GamepadDirection::Down : GamepadDirection::Up);
-		}
-		if(stickDirection)
-		{
-			if(!(m_gamepadRepeatFromStick && m_gamepadRepeatDirection == stickDirection))
-			{
-				if(!m_gamepadActHeld && !arrowLayer && !pageLayer)
-					moveGamepadFocus(*stickDirection);
-				startRepeat(*stickDirection, true);
-			}
-		}
-		else if(m_gamepadRepeatFromStick)
-		{
-			m_gamepadRepeatDirection.reset();
 		}
 
 		if(m_gamepadRepeatDirection && _nowMilliseconds >= m_gamepadRepeatNextMilliseconds)
 		{
 			m_gamepadRepeatNextMilliseconds = _nowMilliseconds + g_gamepadRepeatIntervalMilliseconds;
-			if(actKnob() && !m_gamepadRepeatFromStick)
+			if(actKnob())
 				turnHeldKnob(*m_gamepadRepeatDirection);
 			else if(!m_gamepadActHeld && !arrowLayer && !pageLayer)
 				moveGamepadFocus(*m_gamepadRepeatDirection);
+		}
+
+		// The right stick moves the cursor, which focuses what it passes over. It stays put while
+		// Cross holds a control, so the held control keeps the focus.
+		const bool cursorPushed = !m_gamepadActHeld && std::hypot(state.rightX, state.rightY) > g_gamepadStickDeadzone;
+		m_gamepadCursorStick = cursorPushed ? Rml::Vector2f(state.rightX, state.rightY) : Rml::Vector2f(0.0f, 0.0f);
+		if(!cursorPushed)
+		{
+			m_gamepadCursorLastFrameMilliseconds = 0.0;
+		}
+		else
+		{
+			m_gamepadCursorLastMoveMilliseconds = _nowMilliseconds;
+			if(m_gamepadCursorLastFrameMilliseconds <= 0.0)
+			{
+				// Start the frame loop: the first frame measures from now, so the cursor doesn't jump.
+				m_gamepadCursorLastFrameMilliseconds = _nowMilliseconds;
+				if(m_gamepadCursor)
+					m_gamepadCursor->GetContext()->RequestNextUpdate(0.0f);
+			}
+		}
+		// The cursor shows only while the stick is in use, and lingers briefly to show where it stopped.
+		const auto showCursor = m_gamepadCursorLastMoveMilliseconds > 0.0
+			&& _nowMilliseconds - m_gamepadCursorLastMoveMilliseconds < g_gamepadCursorLingerMilliseconds;
+		if(showCursor != m_gamepadCursorVisible && m_gamepadCursor)
+		{
+			m_gamepadCursorVisible = showCursor;
+			m_gamepadCursor->SetProperty(Rml::PropertyId::Display,
+				showCursor ? Rml::Style::Display::Block : Rml::Style::Display::None);
+			if(auto* const rml = getRmlComponent())
+				rml->enqueueUpdateOnce();
 		}
 
 		// Cross acts on the focused control: hold a button, or hold a knob to turn it
@@ -3026,8 +3151,7 @@ namespace mdJucePlugin
 		else if(releasedNow(Button::South) && m_gamepadActHeld)
 		{
 			m_gamepadActHeld = false;
-			if(!m_gamepadRepeatFromStick)
-				m_gamepadRepeatDirection.reset();
+			m_gamepadRepeatDirection.reset();
 			const auto& target = m_gamepadTargets[m_gamepadActTarget];
 			if(target.button)
 			{
@@ -3048,12 +3172,16 @@ namespace mdJucePlugin
 		// Stick clicks jump focus to the trig row and to the data-entry knobs.
 		if(!m_gamepadActHeld)
 		{
+			std::optional<size_t> jump;
 			if(pressedNow(Button::LeftStick))
-				if(const auto index = findGamepadTarget(md::PanelControl::Trigger1))
-					setGamepadFocus(*index);
+				jump = findGamepadTarget(md::PanelControl::Trigger1);
 			if(pressedNow(Button::RightStick))
-				if(const auto index = findGamepadTarget(m_encoders[0]))
-					setGamepadFocus(*index);
+				jump = findGamepadTarget(m_encoders[0]);
+			if(jump)
+			{
+				setGamepadFocus(*jump);
+				centreGamepadCursor();
+			}
 		}
 
 		// Touchpad: a 16-step strip, left to right.
