@@ -93,45 +93,45 @@
 	<settingsspacer1/>
 	<h1>Controller</h1>
 	<settingsspacer1/>
-	<label>The touchpad and the gyro (hold the PS button and tilt) each turn two knobs. Choose a knob for each direction. The focused column is the column of the data entry knob that has the controller's focus. Standalone only.</label>
+	<label>The touchpad and the gyro (hold PS and tilt) each turn two knobs. Top and Bottom are the column of the knob the controller has focused. FUNCTION holds FUNCTION while turning; on the Machinedrum that changes the parameter on every track. Absolute makes a touchpad corner or tilt angle set the value; without it, movement nudges the knob.</label>
 	<settingsspacer1/>
-	<label>Face buttons: which one acts on the focus and which exits</label>
+	<label>Face buttons. By position, the bottom button acts. Nintendo: A (right) acts; pick it for an 8BitDo in X-input mode.</label>
 	<table class="settings-table">
 		<tr class="settings-tr">
 			<td class="settings-td">
 				<div id="btPadFaceLayout0" class="settings-checkboxwithlabel">
 					<button id="button" class="settings-checkbox"/>
-					<label>Auto (the controller's labels)</label>
+					<label>Auto</label>
 				</div>
 			</td>
 			<td class="settings-td">
 				<div id="btPadFaceLayout1" class="settings-checkboxwithlabel">
 					<button id="button" class="settings-checkbox"/>
-					<label>By position: bottom acts</label>
+					<label>By position</label>
 				</div>
 			</td>
 			<td class="settings-td">
 				<div id="btPadFaceLayout2" class="settings-checkboxwithlabel">
 					<button id="button" class="settings-checkbox"/>
-					<label>Nintendo labels: A (right) acts</label>
+					<label>Nintendo</label>
 				</div>
 			</td>
 		</tr>
 	</table>
 	<settingsspacer1/>
-	<label>Touchpad, sliding left / right</label>
+	<label>Touchpad left / right</label>
 	<table class="settings-table">
 		<tr class="settings-tr">
 			<td class="settings-td">
 				<div id="btPadTouchXTarget0" class="settings-checkboxwithlabel">
 					<button id="button" class="settings-checkbox"/>
-					<label>Focused column, top</label>
+					<label>Top</label>
 				</div>
 			</td>
 			<td class="settings-td">
 				<div id="btPadTouchXTarget1" class="settings-checkboxwithlabel">
 					<button id="button" class="settings-checkbox"/>
-					<label>Focused column, bottom</label>
+					<label>Bottom</label>
 				</div>
 			</td>
 			<td class="settings-td">
@@ -197,21 +197,26 @@
 				</div>
 			</td>
 		</tr>
-	</table>
-	<div id="btPadTouchXFunction" class="settings-checkboxwithlabel">
-		<button id="button" class="settings-checkbox"/>
-		<label>Hold FUNCTION while turning (Machinedrum: changes that parameter on every track)</label>
-	</div>
-	<div id="btPadTouchXAbsolute" class="settings-checkboxwithlabel">
-		<button id="button" class="settings-checkbox"/>
-		<label>Absolute position (touchpad corner or tilt angle = knob value)</label>
-	</div>
-	<div id="btPadTouchXInvert" class="settings-checkboxwithlabel">
-		<button id="button" class="settings-checkbox"/>
-		<label>Invert direction</label>
-	</div>
-	<label>Speed (for tilt in absolute mode: how far to tilt)</label>
-	<table class="settings-table">
+		<tr class="settings-tr">
+			<td class="settings-td">
+				<div id="btPadTouchXFunction" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>FUNCTION</label>
+				</div>
+			</td>
+			<td class="settings-td">
+				<div id="btPadTouchXAbsolute" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>Absolute</label>
+				</div>
+			</td>
+			<td class="settings-td">
+				<div id="btPadTouchXInvert" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>Invert</label>
+				</div>
+			</td>
+		</tr>
 		<tr class="settings-tr">
 			<td class="settings-td">
 				<div id="btPadTouchXSpeed25" class="settings-checkboxwithlabel">
@@ -246,19 +251,19 @@
 		</tr>
 	</table>
 	<settingsspacer1/>
-	<label>Touchpad, sliding up / down</label>
+	<label>Touchpad up / down</label>
 	<table class="settings-table">
 		<tr class="settings-tr">
 			<td class="settings-td">
 				<div id="btPadTouchYTarget0" class="settings-checkboxwithlabel">
 					<button id="button" class="settings-checkbox"/>
-					<label>Focused column, top</label>
+					<label>Top</label>
 				</div>
 			</td>
 			<td class="settings-td">
 				<div id="btPadTouchYTarget1" class="settings-checkboxwithlabel">
 					<button id="button" class="settings-checkbox"/>
-					<label>Focused column, bottom</label>
+					<label>Bottom</label>
 				</div>
 			</td>
 			<td class="settings-td">
@@ -324,21 +329,26 @@
 				</div>
 			</td>
 		</tr>
-	</table>
-	<div id="btPadTouchYFunction" class="settings-checkboxwithlabel">
-		<button id="button" class="settings-checkbox"/>
-		<label>Hold FUNCTION while turning (Machinedrum: changes that parameter on every track)</label>
-	</div>
-	<div id="btPadTouchYAbsolute" class="settings-checkboxwithlabel">
-		<button id="button" class="settings-checkbox"/>
-		<label>Absolute position (touchpad corner or tilt angle = knob value)</label>
-	</div>
-	<div id="btPadTouchYInvert" class="settings-checkboxwithlabel">
-		<button id="button" class="settings-checkbox"/>
-		<label>Invert direction</label>
-	</div>
-	<label>Speed (for tilt in absolute mode: how far to tilt)</label>
-	<table class="settings-table">
+		<tr class="settings-tr">
+			<td class="settings-td">
+				<div id="btPadTouchYFunction" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>FUNCTION</label>
+				</div>
+			</td>
+			<td class="settings-td">
+				<div id="btPadTouchYAbsolute" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>Absolute</label>
+				</div>
+			</td>
+			<td class="settings-td">
+				<div id="btPadTouchYInvert" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>Invert</label>
+				</div>
+			</td>
+		</tr>
 		<tr class="settings-tr">
 			<td class="settings-td">
 				<div id="btPadTouchYSpeed25" class="settings-checkboxwithlabel">
@@ -373,19 +383,19 @@
 		</tr>
 	</table>
 	<settingsspacer1/>
-	<label>Tilt, rolling left / right</label>
+	<label>Tilt left / right</label>
 	<table class="settings-table">
 		<tr class="settings-tr">
 			<td class="settings-td">
 				<div id="btPadTiltRollTarget0" class="settings-checkboxwithlabel">
 					<button id="button" class="settings-checkbox"/>
-					<label>Focused column, top</label>
+					<label>Top</label>
 				</div>
 			</td>
 			<td class="settings-td">
 				<div id="btPadTiltRollTarget1" class="settings-checkboxwithlabel">
 					<button id="button" class="settings-checkbox"/>
-					<label>Focused column, bottom</label>
+					<label>Bottom</label>
 				</div>
 			</td>
 			<td class="settings-td">
@@ -451,21 +461,26 @@
 				</div>
 			</td>
 		</tr>
-	</table>
-	<div id="btPadTiltRollFunction" class="settings-checkboxwithlabel">
-		<button id="button" class="settings-checkbox"/>
-		<label>Hold FUNCTION while turning (Machinedrum: changes that parameter on every track)</label>
-	</div>
-	<div id="btPadTiltRollAbsolute" class="settings-checkboxwithlabel">
-		<button id="button" class="settings-checkbox"/>
-		<label>Absolute position (touchpad corner or tilt angle = knob value)</label>
-	</div>
-	<div id="btPadTiltRollInvert" class="settings-checkboxwithlabel">
-		<button id="button" class="settings-checkbox"/>
-		<label>Invert direction</label>
-	</div>
-	<label>Speed (for tilt in absolute mode: how far to tilt)</label>
-	<table class="settings-table">
+		<tr class="settings-tr">
+			<td class="settings-td">
+				<div id="btPadTiltRollFunction" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>FUNCTION</label>
+				</div>
+			</td>
+			<td class="settings-td">
+				<div id="btPadTiltRollAbsolute" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>Absolute</label>
+				</div>
+			</td>
+			<td class="settings-td">
+				<div id="btPadTiltRollInvert" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>Invert</label>
+				</div>
+			</td>
+		</tr>
 		<tr class="settings-tr">
 			<td class="settings-td">
 				<div id="btPadTiltRollSpeed25" class="settings-checkboxwithlabel">
@@ -500,19 +515,19 @@
 		</tr>
 	</table>
 	<settingsspacer1/>
-	<label>Tilt, forward / back</label>
+	<label>Tilt forward / back</label>
 	<table class="settings-table">
 		<tr class="settings-tr">
 			<td class="settings-td">
 				<div id="btPadTiltPitchTarget0" class="settings-checkboxwithlabel">
 					<button id="button" class="settings-checkbox"/>
-					<label>Focused column, top</label>
+					<label>Top</label>
 				</div>
 			</td>
 			<td class="settings-td">
 				<div id="btPadTiltPitchTarget1" class="settings-checkboxwithlabel">
 					<button id="button" class="settings-checkbox"/>
-					<label>Focused column, bottom</label>
+					<label>Bottom</label>
 				</div>
 			</td>
 			<td class="settings-td">
@@ -578,21 +593,26 @@
 				</div>
 			</td>
 		</tr>
-	</table>
-	<div id="btPadTiltPitchFunction" class="settings-checkboxwithlabel">
-		<button id="button" class="settings-checkbox"/>
-		<label>Hold FUNCTION while turning (Machinedrum: changes that parameter on every track)</label>
-	</div>
-	<div id="btPadTiltPitchAbsolute" class="settings-checkboxwithlabel">
-		<button id="button" class="settings-checkbox"/>
-		<label>Absolute position (touchpad corner or tilt angle = knob value)</label>
-	</div>
-	<div id="btPadTiltPitchInvert" class="settings-checkboxwithlabel">
-		<button id="button" class="settings-checkbox"/>
-		<label>Invert direction</label>
-	</div>
-	<label>Speed (for tilt in absolute mode: how far to tilt)</label>
-	<table class="settings-table">
+		<tr class="settings-tr">
+			<td class="settings-td">
+				<div id="btPadTiltPitchFunction" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>FUNCTION</label>
+				</div>
+			</td>
+			<td class="settings-td">
+				<div id="btPadTiltPitchAbsolute" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>Absolute</label>
+				</div>
+			</td>
+			<td class="settings-td">
+				<div id="btPadTiltPitchInvert" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>Invert</label>
+				</div>
+			</td>
+		</tr>
 		<tr class="settings-tr">
 			<td class="settings-td">
 				<div id="btPadTiltPitchSpeed25" class="settings-checkboxwithlabel">
@@ -626,7 +646,6 @@
 			</td>
 		</tr>
 	</table>
-
 	<settingsspacer1/>
 	<h1>Machine Storage</h1>
 	<settingsspacer1/>
