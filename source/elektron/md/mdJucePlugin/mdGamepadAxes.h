@@ -31,14 +31,15 @@ namespace mdJucePlugin::gamepadAxes
 		const char* functionKey;
 		const char* invertKey;
 		const char* speedKey;
+		const char* absoluteKey;
 	};
 
 	constexpr AxisInfo g_axes[] =
 	{
-		{ Axis::TouchX,    "btPadTouchX",    "gamepadTouchXTarget",    "gamepadTouchXFunction",    "gamepadTouchXInvert",    "gamepadTouchXSpeed" },
-		{ Axis::TouchY,    "btPadTouchY",    "gamepadTouchYTarget",    "gamepadTouchYFunction",    "gamepadTouchYInvert",    "gamepadTouchYSpeed" },
-		{ Axis::TiltRoll,  "btPadTiltRoll",  "gamepadTiltRollTarget",  "gamepadTiltRollFunction",  "gamepadTiltRollInvert",  "gamepadTiltRollSpeed" },
-		{ Axis::TiltPitch, "btPadTiltPitch", "gamepadTiltPitchTarget", "gamepadTiltPitchFunction", "gamepadTiltPitchInvert", "gamepadTiltPitchSpeed" },
+		{ Axis::TouchX,    "btPadTouchX",    "gamepadTouchXTarget",    "gamepadTouchXFunction",    "gamepadTouchXInvert",    "gamepadTouchXSpeed",    "gamepadTouchXAbsolute" },
+		{ Axis::TouchY,    "btPadTouchY",    "gamepadTouchYTarget",    "gamepadTouchYFunction",    "gamepadTouchYInvert",    "gamepadTouchYSpeed",    "gamepadTouchYAbsolute" },
+		{ Axis::TiltRoll,  "btPadTiltRoll",  "gamepadTiltRollTarget",  "gamepadTiltRollFunction",  "gamepadTiltRollInvert",  "gamepadTiltRollSpeed",  "gamepadTiltRollAbsolute" },
+		{ Axis::TiltPitch, "btPadTiltPitch", "gamepadTiltPitchTarget", "gamepadTiltPitchFunction", "gamepadTiltPitchInvert", "gamepadTiltPitchSpeed", "gamepadTiltPitchAbsolute" },
 	};
 
 	inline bool isTilt(const Axis _axis) { return _axis == Axis::TiltRoll || _axis == Axis::TiltPitch; }
@@ -62,6 +63,9 @@ namespace mdJucePlugin::gamepadAxes
 		bool function = false;
 		bool invert = false;
 		int speedPercent = 100;
+		// Absolute: a touchpad position or tilt angle is a knob value (bottom-left / tilted left and down = 0).
+		// Otherwise movement nudges the knob, as turning it does.
+		bool absolute = true;
 	};
 
 	inline Settings read(juce::PropertiesFile& _config, const AxisInfo& _info, const md::MachineModel _model)
@@ -71,6 +75,7 @@ namespace mdJucePlugin::gamepadAxes
 		s.function = _config.getBoolValue(_info.functionKey, defaultFunction(_info.axis, _model));
 		s.invert = _config.getBoolValue(_info.invertKey, false);
 		s.speedPercent = _config.getIntValue(_info.speedKey, 100);
+		s.absolute = _config.getBoolValue(_info.absoluteKey, true);
 		return s;
 	}
 }

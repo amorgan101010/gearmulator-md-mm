@@ -178,11 +178,15 @@
 		<button id="button" class="settings-checkbox"/>
 		<label>Hold FUNCTION while turning (Machinedrum: changes that parameter on every track)</label>
 	</div>
+	<div id="btPadTouchXAbsolute" class="settings-checkboxwithlabel">
+		<button id="button" class="settings-checkbox"/>
+		<label>Absolute position (touchpad corner or tilt angle = knob value)</label>
+	</div>
 	<div id="btPadTouchXInvert" class="settings-checkboxwithlabel">
 		<button id="button" class="settings-checkbox"/>
 		<label>Invert direction</label>
 	</div>
-	<label>Speed</label>
+	<label>Speed (for tilt in absolute mode: how far to tilt)</label>
 	<table class="settings-table">
 		<tr class="settings-tr">
 			<td class="settings-td">
@@ -301,11 +305,15 @@
 		<button id="button" class="settings-checkbox"/>
 		<label>Hold FUNCTION while turning (Machinedrum: changes that parameter on every track)</label>
 	</div>
+	<div id="btPadTouchYAbsolute" class="settings-checkboxwithlabel">
+		<button id="button" class="settings-checkbox"/>
+		<label>Absolute position (touchpad corner or tilt angle = knob value)</label>
+	</div>
 	<div id="btPadTouchYInvert" class="settings-checkboxwithlabel">
 		<button id="button" class="settings-checkbox"/>
 		<label>Invert direction</label>
 	</div>
-	<label>Speed</label>
+	<label>Speed (for tilt in absolute mode: how far to tilt)</label>
 	<table class="settings-table">
 		<tr class="settings-tr">
 			<td class="settings-td">
@@ -424,11 +432,15 @@
 		<button id="button" class="settings-checkbox"/>
 		<label>Hold FUNCTION while turning (Machinedrum: changes that parameter on every track)</label>
 	</div>
+	<div id="btPadTiltRollAbsolute" class="settings-checkboxwithlabel">
+		<button id="button" class="settings-checkbox"/>
+		<label>Absolute position (touchpad corner or tilt angle = knob value)</label>
+	</div>
 	<div id="btPadTiltRollInvert" class="settings-checkboxwithlabel">
 		<button id="button" class="settings-checkbox"/>
 		<label>Invert direction</label>
 	</div>
-	<label>Speed</label>
+	<label>Speed (for tilt in absolute mode: how far to tilt)</label>
 	<table class="settings-table">
 		<tr class="settings-tr">
 			<td class="settings-td">
@@ -547,11 +559,15 @@
 		<button id="button" class="settings-checkbox"/>
 		<label>Hold FUNCTION while turning (Machinedrum: changes that parameter on every track)</label>
 	</div>
+	<div id="btPadTiltPitchAbsolute" class="settings-checkboxwithlabel">
+		<button id="button" class="settings-checkbox"/>
+		<label>Absolute position (touchpad corner or tilt angle = knob value)</label>
+	</div>
 	<div id="btPadTiltPitchInvert" class="settings-checkboxwithlabel">
 		<button id="button" class="settings-checkbox"/>
 		<label>Invert direction</label>
 	</div>
-	<label>Speed</label>
+	<label>Speed (for tilt in absolute mode: how far to tilt)</label>
 	<table class="settings-table">
 		<tr class="settings-tr">
 			<td class="settings-td">

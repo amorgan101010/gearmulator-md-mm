@@ -46,6 +46,9 @@ namespace mdJucePlugin
 			// Rotation rate in radians per second, as SDL reports it: x pitches forward/back, y yaws, z rolls
 			// left/right. All zero on a controller without a gyro.
 			float gyroX = 0.0f, gyroY = 0.0f, gyroZ = 0.0f;
+			// Acceleration in m/s^2, including gravity: x right, y up, z towards the player. Gives the tilt angle.
+			bool hasAccel = false;
+			float accelX = 0.0f, accelY = 0.0f, accelZ = 0.0f;
 
 			bool pressed(const Button _button) const { return buttons.test(static_cast<size_t>(_button)); }
 		};

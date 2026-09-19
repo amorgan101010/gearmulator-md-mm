@@ -52,6 +52,8 @@ namespace mdJucePlugin
 			jucePluginEditorLib::SettingsPlugin::createToggleButton(_root, std::string(axis.idPrefix) + "Function",
 				m_editor.getProcessor().getConfig(), axis.functionKey, [apply](bool) { apply(); },
 				gamepadAxes::defaultFunction(axis.axis, m_editor.getModel()));
+			jucePluginEditorLib::SettingsPlugin::createToggleButton(_root, std::string(axis.idPrefix) + "Absolute",
+				m_editor.getProcessor().getConfig(), axis.absoluteKey, [apply](bool) { apply(); }, true);
 			jucePluginEditorLib::SettingsPlugin::createToggleButton(_root, std::string(axis.idPrefix) + "Invert",
 				m_editor.getProcessor().getConfig(), axis.invertKey, [apply](bool) { apply(); }, false);
 			bindGroup(_root, (std::string(axis.idPrefix) + "Speed").c_str(), axis.speedKey,

@@ -2336,8 +2336,21 @@ namespace mdJucePlugin
 			return;
 		const auto argument = static_cast<uint8_t>(_steps > 0 ? 0x01 : 0xff);
 		const auto count = std::min(std::abs(_steps), g_encoderBurstCap);
-		for(int step = 0; step < count; ++step)
-			(void)sendPanelEvent(*command, argument);
+		// The whole burst goes in under one device lock. Taking the lock waits for the audio thread to finish its
+		// block, so a lock per step made a burst wait for several blocks when the machine runs close to realtime.
+		auto& plugin = getProcessor().getPlugin();
+		auto& diagnostics = plugin.getRealtimeInstrumentation();
+		const auto model = static_cast<uint32_t>(getModel());
+		plugin.withDeviceLocked([&](synthLib::Device* const _device)
+		{
+			auto* const device = dynamic_cast<md::Device*>(_device);
+			for(int step = 0; step < count; ++step)
+			{
+				const auto token = diagnostics.beginPanelInput(model, *command, argument);
+				const bool accepted = device && device->sendPanelEvent(*command, argument);
+				diagnostics.endPanelInput(token, model, *command, argument, accepted);
+			}
+		});
 	}
 
 	void Editor::createLeds()
@@ -2610,6 +2623,8 @@ namespace mdJucePlugin
 		constexpr float g_gamepadTouchpadAspect = 0.5f;	// height / width, so a step is the same distance both ways
 		constexpr float g_gamepadGyroDetentsPerRadian = 40.0f;	// a 45 degree tilt is about 30 knob steps
 		constexpr float g_gamepadGyroDeadzone = 0.03f;	// rad/s: slower rotation is sensor drift, not a tilt
+		constexpr float g_gamepadTiltRangeRadians = 0.785398f;	// absolute tilt: +-45 degrees covers the knob at 100%
+		constexpr int g_gamepadAxisStepsPerPoll = 8;	// absolute axes glide to their target at most this fast
 
 		struct GamepadDirectButton
 		{
@@ -2987,11 +3002,67 @@ namespace mdJucePlugin
 		return m_encoders[encoder % 4 + (target == gamepadAxes::g_targetFocusedBottom ? 4 : 0)];
 	}
 
-	void Editor::turnGamepadAxis(const gamepadAxes::Axis _axis, const float _detents)
+	void Editor::driveGamepadAxis(const gamepadAxes::Axis _axis, const bool _engaged, const float _position,
+		const float _detents)
 	{
+		auto& run = m_gamepadAxisRuns[static_cast<size_t>(_axis)];
 		const auto& settings = m_gamepadAxes[static_cast<size_t>(_axis)];
-		const auto scale = static_cast<float>(settings.speedPercent) / 100.0f * (settings.invert ? -1.0f : 1.0f);
-		turnGamepadKnob(gamepadAxisKnob(_axis), _detents * scale);
+		auto* const knob = _engaged ? gamepadAxisKnob(_axis) : nullptr;
+		if(!knob)
+		{
+			run = {};
+			return;
+		}
+
+		// Engaging, or the axis now points at another knob: start from that knob's current value, if known.
+		if(knob != run.knob)
+		{
+			run.knob = knob;
+			run.value = settings.absolute && _position >= 0.0f ? currentKnobValue(knob) : -1;
+		}
+
+		if(run.value < 0)
+		{
+			// Relative, or the value is unknown (LEVEL, an LFO window): movement nudges the knob.
+			const auto scale = static_cast<float>(settings.speedPercent) / 100.0f * (settings.invert ? -1.0f : 1.0f);
+			turnGamepadKnob(knob, _detents * scale);
+			return;
+		}
+
+		// Absolute: step towards the value for this position, a few steps per poll so a jump glides.
+		const auto position = settings.invert ? 1.0f - _position : _position;
+		const auto target = static_cast<int>(std::lround(std::clamp(position, 0.0f, 1.0f) * 127.0f));
+		const auto steps = std::clamp(target - run.value, -g_gamepadAxisStepsPerPoll, g_gamepadAxisStepsPerPoll);
+		if(steps == 0)
+			return;
+		emitEncoderSteps(knobEncoder(knob), steps);
+		run.value = std::clamp(run.value + steps, 0, 127);
+	}
+
+	md::PanelEncoder Editor::knobEncoder(const juceRmlUi::ElemKnob* const _knob) const
+	{
+		for(size_t i = 0; i < m_encoders.size(); ++i)
+			if(m_encoders[i] == _knob)
+				return static_cast<md::PanelEncoder>(i);
+		return md::PanelEncoder::Level;
+	}
+
+	int Editor::currentKnobValue(const juceRmlUi::ElemKnob* const _knob) const
+	{
+		// Known for the eight data entry knobs on a data page, from the controller's copy of the kit.
+		const auto encoder = static_cast<size_t>(knobEncoder(_knob));
+		if(encoder >= m_encoders.size() || m_encoders[encoder] != _knob)
+			return -1;
+		std::optional<int> page;
+		if(getModel() == md::MachineModel::Monomachine)
+			page = currentMonomachineDataPage();
+		else if(!m_lcdInteractionState || m_lcdInteractionState->layout == lcdInteraction::LayoutKind::Standard)
+			page = currentMachinedrumDataPage();
+		const auto track = m_controller.getCurrentTrack();
+		if(!page || track < 0)
+			return -1;
+		return m_controller.getTrackParameterValue(static_cast<uint8_t>(track), static_cast<uint8_t>(*page),
+			static_cast<uint8_t>(encoder));
 	}
 
 	void Editor::setGamepadAxisFunction(const bool _held)
@@ -3279,22 +3350,32 @@ namespace mdJucePlugin
 		using gamepadAxes::Axis;
 		setGamepadAxisFunction((touchEngaged && wantsFunction(Axis::TouchX, Axis::TouchY))
 			|| (tiltEngaged && wantsFunction(Axis::TiltRoll, Axis::TiltPitch)));
-		if(touchEngaged)
+		// Touchpad: bottom-left is 0 on both axes, top-right the maximum.
+		driveGamepadAxis(Axis::TouchX, state.touching, state.touchX,
+			touchEngaged ? (state.touchX - previous.touchX) * g_gamepadTouchDetentsPerWidth : 0.0f);
+		driveGamepadAxis(Axis::TouchY, state.touching, 1.0f - state.touchY,
+			touchEngaged ? (previous.touchY - state.touchY) * g_gamepadTouchDetentsPerWidth * g_gamepadTouchpadAspect : 0.0f);
+
+		// Tilt: the angle comes from gravity (accelerometer); relative mode uses the rotation rate (gyro). Held
+		// flat is the middle; rolled left or tipped away from you is 0.
+		const auto seconds = static_cast<float>(elapsedMilliseconds / 1000.0);
+		const auto rate = [](const float _radiansPerSecond)
 		{
-			turnGamepadAxis(Axis::TouchX, (state.touchX - previous.touchX) * g_gamepadTouchDetentsPerWidth);
-			turnGamepadAxis(Axis::TouchY,
-				(previous.touchY - state.touchY) * g_gamepadTouchDetentsPerWidth * g_gamepadTouchpadAspect);
-		}
-		if(tiltEngaged)
+			return std::abs(_radiansPerSecond) > g_gamepadGyroDeadzone ? _radiansPerSecond : 0.0f;
+		};
+		const auto tiltPosition = [&](const float _angle, const gamepadAxes::Axis _axis)
 		{
-			const auto seconds = static_cast<float>(elapsedMilliseconds / 1000.0);
-			const auto rate = [](const float _radiansPerSecond)
-			{
-				return std::abs(_radiansPerSecond) > g_gamepadGyroDeadzone ? _radiansPerSecond : 0.0f;
-			};
-			turnGamepadAxis(Axis::TiltRoll, -rate(state.gyroZ) * g_gamepadGyroDetentsPerRadian * seconds);
-			turnGamepadAxis(Axis::TiltPitch, rate(state.gyroX) * g_gamepadGyroDetentsPerRadian * seconds);
-		}
+			const auto range = g_gamepadTiltRangeRadians * 100.0f
+				/ static_cast<float>(std::max(1, m_gamepadAxes[static_cast<size_t>(_axis)].speedPercent));
+			return std::clamp(0.5f + _angle / (2.0f * range), 0.0f, 1.0f);
+		};
+		const bool tiltKnown = tiltEngaged && state.hasAccel;
+		const auto roll = std::atan2(-state.accelX, state.accelY);	// right side down = positive
+		const auto pitch = std::atan2(-state.accelZ, state.accelY);	// far edge up = positive
+		driveGamepadAxis(Axis::TiltRoll, tiltEngaged, tiltKnown ? tiltPosition(roll, Axis::TiltRoll) : -1.0f,
+			-rate(state.gyroZ) * g_gamepadGyroDetentsPerRadian * seconds);
+		driveGamepadAxis(Axis::TiltPitch, tiltEngaged, tiltKnown ? tiltPosition(pitch, Axis::TiltPitch) : -1.0f,
+			rate(state.gyroX) * g_gamepadGyroDetentsPerRadian * seconds);
 
 		// Right stick turns the focused knob, faster the further it is pushed.
 		if(auto* const knob = focusKnob(); knob && std::abs(state.rightX) > g_gamepadStickDeadzone)

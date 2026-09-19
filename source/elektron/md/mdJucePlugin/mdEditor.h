@@ -203,7 +203,11 @@ namespace mdJucePlugin
 		// Touchpad and gyro axes: the knob an axis turns right now (null for none), turning it, and holding
 		// FUNCTION for the axes that want it.
 		juceRmlUi::ElemKnob* gamepadAxisKnob(gamepadAxes::Axis _axis) const;
-		void turnGamepadAxis(gamepadAxes::Axis _axis, float _detents);
+		// _position 0..1 for absolute mode (negative when unknown); _detents for relative movement.
+		void driveGamepadAxis(gamepadAxes::Axis _axis, bool _engaged, float _position, float _detents);
+		md::PanelEncoder knobEncoder(const juceRmlUi::ElemKnob* _knob) const;
+		// The parameter value under a data entry knob on the current data page and track, or -1 if unknown.
+		int currentKnobValue(const juceRmlUi::ElemKnob* _knob) const;
 		void setGamepadAxisFunction(bool _held);
 		// Cross on a knob: push its switch, and let go of it again.
 		void pushGamepadKnob(const GamepadTarget& _target, double _nowMilliseconds);
@@ -441,6 +445,12 @@ namespace mdJucePlugin
 		int m_gamepadPage = 0;		// Machinedrum data page
 		std::array<gamepadAxes::Settings, std::size(gamepadAxes::g_axes)> m_gamepadAxes{};
 		bool m_gamepadAxisFunctionHeld = false;	// FUNCTION pressed for a touchpad or gyro axis
+		struct GamepadAxisRun
+		{
+			juceRmlUi::ElemKnob* knob = nullptr;	// the knob being driven while engaged
+			int value = -1;							// absolute mode: the knob's value as we have set it
+		};
+		std::array<GamepadAxisRun, std::size(gamepadAxes::g_axes)> m_gamepadAxisRuns{};
 
 		bool m_keyboardControl = false;
 		std::vector<std::pair<int, double>> m_keyboardPendingReleases;	// key, deadline: releases waiting out auto-repeat
