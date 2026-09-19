@@ -125,6 +125,9 @@ namespace md
 		const auto* const boundedJit = std::getenv("GEARMULATOR_MDMM_BOUNDED_JIT");
 		m_schedBoundedJit = boundedJit == nullptr || std::strcmp(boundedJit, "0") != 0;
 		// Threading experiment only: see m_schedLookaheadDspCycles.
+		if(const auto* const writeAhead = std::getenv("GEARMULATOR_MDMM_WRITEAHEAD_US"))
+			m_schedWriteAheadDspCycles = static_cast<uint64_t>(std::max(0.0, std::atof(writeAhead))
+				* static_cast<double>(g_dsp1CyclesPerEsaiFrame) * static_cast<double>(g_samplerate) / 1e6);
 		if(const auto* const lookahead = std::getenv("GEARMULATOR_MDMM_LOOKAHEAD_US"))
 			m_schedLookaheadDspCycles = static_cast<uint64_t>(std::max(0.0, std::atof(lookahead))
 				* static_cast<double>(g_dsp1CyclesPerEsaiFrame) * static_cast<double>(g_samplerate) / 1e6);
@@ -1511,7 +1514,7 @@ namespace md
 			m_schedDspOriginUcCycles[index], _dspCycle - m_schedDspOriginCycles[index]);
 	}
 
-	void Hardware::schedCatchUpDsp(const uint32_t _dspIndex)
+	void Hardware::schedCatchUpDsp(const uint32_t _dspIndex, const HostAccess _access)
 	{
 		// Run the target DSP inline up to the UC's current machine time
 		// (the caller's point in the boot handshake) before a host access. This is what advances the
@@ -1538,7 +1541,9 @@ namespace md
 		const uint64_t exactCyc = dspCatchupDeadline<g_ucClockHz,
 			g_dsp1CyclesPerEsaiFrame * g_samplerate>(m_schedDspOriginCycles[i],
 				m_schedUcCyclesDone - m_schedDspOriginUcCycles[i]);
-		const uint64_t targetCyc = exactCyc > m_schedLookaheadDspCycles ? exactCyc - m_schedLookaheadDspCycles : 0;
+		const uint64_t targetCyc = _access == HostAccess::Write
+			? exactCyc + m_schedWriteAheadDspCycles
+			: (exactCyc > m_schedLookaheadDspCycles ? exactCyc - m_schedLookaheadDspCycles : 0);
 		const uint64_t startCyc = d.dsp().getCycles();
 		if(startCyc >= targetCyc)
 		{

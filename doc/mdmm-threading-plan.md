@@ -108,23 +108,28 @@ separate physical cores of the 5600G (one CCX), 1M round trips. One-way handoff 
 Against the interaction intervals above (MD about 0.8 us, MM about 2.6 us of host time), one round trip per interaction
 costs about 9% on MD and 3% on MM. So cross-core communication isn't the limit. Firmware tolerance of the delay
 (the delay sweep above) decides, and the golden-output tests and `tools/check.sh` now make that sweep decisive.
-**Partial run, 2026-09-19 (half the experiment).** `GEARMULATOR_MDMM_LOOKAHEAD_US` makes `schedCatchUpDsp` stop a
-DSP that many microseconds short of the UC's time, so the UC sees stale DSP state, as a thread running behind would
-be. Writes still land immediately, so this is only the read half; the write-delay queue is not built.
-`tools/perf/lookahead_sweep.sh` ran the 24 behavioural firmware tests (golden hashes excluded) at each delay:
-| delay | failures |
+**Run 2026-09-19: the UC<->DSP channel passes its gate.** `GEARMULATOR_MDMM_LOOKAHEAD_US` makes a UC read see the
+DSP that many microseconds behind (`schedCatchUpDsp` stops short of the UC time); `GEARMULATOR_MDMM_WRITEAHEAD_US`
+makes a UC write land that far into the DSP's future (it runs the DSP past the UC first). Together they model what a
+thread with lookahead L would see, without threads. `tools/perf/lookahead_sweep.sh` ran the 23 behavioural firmware
+tests (golden hashes excluded, since any timing change alters them):
+| delay, both directions | result |
 |---|---|
-| 0 | none (baseline healthy) |
-| 0.5 us | mdBlockSizeTest only |
-| 1 us | mmSine, mmSineMidi, mmDigipro |
-| 2 us | mdBlockSizeTest only |
-| 5 us | mdPanelReadiness, mmSine, mmSineMidi, mmDigiproEnsemble |
-| 10 us | mmSineMidi |
-mdBlockSizeTest is a golden-hash test that the name filter missed; any timing change alters its hashes, so ignore it.
-The MM audio failures are behavioural: at 1 us the Monomachine's output collapsed to RMS 0.0022 after a sample-rate
-change. The failures are intermittent rather than threshold-shaped (1 and 5 fail, 0.5 and 2 pass), which suggests the
-MM audio path is fragile to any lag rather than tolerant up to some value. That is a warning for the whole plan, but
-not the gate: the faithful experiment still needs delayed UC->DSP writes and delayed DSP->UC status.
+| 1 us | mmSine, mmSineMidi, mmDigipro fail |
+| 2 us | mmSineMidi fails |
+| 3, 4, 5, 7 us | all 23 pass |
+| 10, 20 us | mmSine, mmSineMidi fail |
+The same configuration always gives the same result: 5 us passed three runs out of three, and the failing cases
+reproduce. Neither suspect test is flaky, both passing five times out of five at zero delay. So there is a working
+band of roughly 3 to 7 us, not a tolerance threshold. Below it, handshakes interleave badly; above it the Monomachine
+audio path gives up (its sample-rate handshake and host flow control are the likely cause, and they needed work in
+this fork already). Read-only and write-only delays each break tests that the symmetric delay does not, which fits:
+shifting one direction alone leaves the two sides disagreeing about when "now" is.
+**Gate: passed, for this channel.** A lookahead of about 5 us is far above the 0.8 us (MD) and 2.6 us (MM) between
+chip interactions, so threads would rarely wait for each other.
+Not yet tested: the DSP<->DSP link delay and the direct cross-DSP callbacks (rendezvous, ROE, the on-demand idle
+callback), which phase 1 has to convert into timestamped messages anyway. Nobody has listened to the audio at a
+working delay either, and the output hashes change, as expected.
 ### Phase 1: message-passing refactor, still single-threaded (about 3 to 6 days)
 
 1. Give every processor a published time, an atomic cycle count. Give every cross-thread channel a

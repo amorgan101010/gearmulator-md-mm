@@ -295,7 +295,7 @@ namespace md
 	{
 		// Catch the DSP up to the UC's current machine time before the word
 		// lands, so it consumes everything up to "now" first.
-		m_hardware.schedCatchUpDsp(m_index);
+		m_hardware.schedCatchUpDsp(m_index, Hardware::HostAccess::Write);
 
 		// Route ordinary data words through the paced host receive path. Host-command
 		// arbitration keeps each argument with its in-flight command.
@@ -356,7 +356,7 @@ namespace md
 		// Catch the DSP up to the UC's current machine time before the CVR is
 		// dispatched, so HCP is raised at a defined point in DSP time.
 		if(booted())
-			m_hardware.schedCatchUpDsp(m_index);
+			m_hardware.schedCatchUpDsp(m_index, Hardware::HostAccess::Write);
 		// Preserve Monomachine host-command ordering. Data words precede the next
 		// command, so drain the receive path before dispatching that command. Run the DSP
 		// inline until HORX has drained before dispatching the CVR. This is needed
