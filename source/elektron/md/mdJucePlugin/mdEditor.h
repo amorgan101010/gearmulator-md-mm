@@ -10,6 +10,7 @@
 #include "jucePluginEditorLib/pluginEditor.h"
 
 #include "mdFrontPanelPresentation.h"
+#include "mdGamepad.h"
 #include "mdLcdGesture.h"
 #include "mdLcdInteractionModel.h"
 #include "mdPanelAffordances.h"
@@ -136,6 +137,29 @@ namespace mdJucePlugin
 			float& _last, float& _accum);
 		void onEncoderChanged(juceRmlUi::ElemKnob* _knob, md::PanelEncoder _encoder,
 			float& _last, float& _accum);
+		// Standalone game controller: LSDJ-style focus over the panel controls.
+		struct GamepadTarget
+		{
+			Rml::Element* element = nullptr;
+			juceRmlUi::ElemButton* button = nullptr;	// set for a panel button
+			juceRmlUi::ElemKnob* knob = nullptr;		// set for an encoder
+			md::PanelControl control{};
+			md::PanelEncoder encoder{};
+		};
+		enum class GamepadDirection { Up, Down, Left, Right };
+
+		void createGamepad();
+		void serviceGamepad(double _nowMilliseconds);
+		void moveGamepadFocus(GamepadDirection _direction);
+		void setGamepadFocus(size_t _index);
+		std::optional<size_t> findGamepadTarget(md::PanelControl _control) const;
+		std::optional<size_t> findGamepadTarget(const juceRmlUi::ElemKnob* _knob) const;
+		// _latch: hold the key like Shift-click.
+		void pressHeldControl(md::PanelControl _control, bool _latch);
+		void releaseHeldControl(md::PanelControl _control);
+		void turnGamepadKnob(juceRmlUi::ElemKnob* _knob, float _detents);
+		void releaseGamepadInputs();
+
 		void createLeds();
 		bool updateLeds();
 		void paintLcd(const juce::Image& _target, juce::Graphics& _graphics) const;
@@ -261,5 +285,29 @@ namespace mdJucePlugin
 		double m_sysexLastAdvanceMilliseconds = 0.0;
 		bool m_sysexStallWarningShown = false;
 		std::shared_ptr<void> m_lifetimeToken = std::make_shared<int>(0);
+
+		std::unique_ptr<Gamepad> m_gamepad;
+		Gamepad::State m_gamepadPrevious;
+		double m_gamepadLastPollMilliseconds = 0.0;
+		std::vector<GamepadTarget> m_gamepadTargets;
+		size_t m_gamepadFocus = 0;
+		Rml::Element* m_gamepadFocusRing = nullptr;
+		bool m_gamepadLatchHeld = false;				// L1: gamepad equivalent of holding Shift
+		std::vector<md::PanelControl> m_gamepadHeldControls;	// pressed by the pad, awaiting release
+		// Cross held on the focused control. On a knob, a short press without turning is an encoder click.
+		bool m_gamepadActHeld = false;
+		size_t m_gamepadActTarget = 0;
+		double m_gamepadActStartMilliseconds = 0.0;
+		bool m_gamepadActTurned = false;
+		// D-pad / right-stick auto-repeat.
+		std::optional<GamepadDirection> m_gamepadRepeatDirection;
+		double m_gamepadRepeatNextMilliseconds = 0.0;
+		bool m_gamepadRepeatFromStick = false;
+		int m_gamepadTrack = 0;		// 0-5 on the Monomachine, 0-15 on the Machinedrum
+		int m_gamepadPage = 0;		// Machinedrum data page
+		std::optional<md::PanelControl> m_gamepadTouchTrig;
+		// The focus ring shows only after controller input and hides after a quiet spell.
+		double m_gamepadLastActivityMilliseconds = 0.0;
+		bool m_gamepadHighlightVisible = false;
 	};
 }
