@@ -513,6 +513,87 @@ namespace
 		_run.advance(md::g_samplerate * 15);	// let the firmware finish writing the samples to flash
 	}
 
+
+	// A walk through pages, menus and knob turns, the way a user looks around: the LCD after every
+	// step is hashed into one chain, so any change in what the firmware draws on those screens shows.
+	// Controls a model does not have are skipped. The walk must reach enough different screens, or
+	// the panel input is not getting through.
+	void navigateScreens(Runner& _run, md::Hardware& _hw, std::vector<Result>& _results)
+	{
+		const bool mm = _run.model() == md::MachineModel::Monomachine;
+		using C = md::PanelControl;
+		using E = md::PanelEncoder;
+		struct Step
+		{
+			bool encoder;
+			C control;
+			E knob;
+			int delta;
+		};
+		std::vector<Step> steps =
+		{
+			{false, C::DataPageForward, {}, 0}, {false, C::DataPageForward, {}, 0}, {false, C::DataPageBackward, {}, 0},
+			{true, {}, E::DataEntryA, 5}, {true, {}, E::DataEntryB, -3},
+			{false, C::Kit, {}, 0}, {false, C::Down, {}, 0}, {false, C::Exit, {}, 0},
+			{false, C::Tempo, {}, 0}, {false, C::Exit, {}, 0},
+			{false, C::Scale, {}, 0}, {false, C::Right, {}, 0}, {false, C::Exit, {}, 0},
+			{false, C::PatternSong, {}, 0}, {false, C::PatternSong, {}, 0},
+			{false, C::Up, {}, 0}, {false, C::Down, {}, 0}, {false, C::Left, {}, 0}, {false, C::Right, {}, 0},
+			{false, C::Exit, {}, 0},
+		};
+		if(!mm)
+			for(int i = 0; i < 3; ++i)
+				steps.push_back({false, C::SynthesisEffectsRouting, {}, 0});
+
+		Fnv chain;
+		std::set<uint64_t> screens;
+		const auto lcdHash = [&]
+		{
+			const auto panel = _hw.getFrontPanelSnapshot();
+			Fnv h;
+			for(uint32_t half = 0; half < 2; ++half)
+				for(uint32_t page = 0; page < 8; ++page)
+					for(uint32_t col = 0; col < 64; ++col)
+						h.byte(panel.getLcdVram(half, page, col));
+			return h.value;
+		};
+		for(const auto& step : steps)
+		{
+			if(step.encoder)
+			{
+				const auto command = md::panelEncoderCommand(_run.model(), step.knob);
+				if(!command)
+					continue;
+				for(int i = 0; i < std::abs(step.delta); ++i)
+				{
+					if(!_hw.trySendPanelEvent(*command, static_cast<uint8_t>(step.delta > 0 ? 0x01 : 0xff)))
+						throw std::runtime_error("encoder event rejected");
+					_run.advance(2048);
+				}
+			}
+			else
+			{
+				if(!md::panelPacket(_run.model(), step.control))
+					continue;
+				_run.tap(step.control);
+			}
+			_run.advance(md::g_samplerate / 4);
+			const auto screen = lcdHash();
+			screens.insert(screen);
+			for(int b = 0; b < 8; ++b)
+				chain.byte(static_cast<uint8_t>(screen >> (8 * b)));
+		}
+		auto r = _run.render("screen navigation", nullptr, 20 * 512);
+		for(int b = 0; b < 8; ++b)
+			chain.byte(static_cast<uint8_t>(r.lcd >> (8 * b)));
+		r.lcd = chain.value;
+		// Measured: 11 distinct screens on the Monomachine, 13 on the Machinedrum; a dead panel shows one.
+		if(screens.size() < 6)
+			throw std::runtime_error(r.model + ": the navigation walk reached only " + std::to_string(screens.size())
+				+ " different screens; panel input is not getting through");
+		_results.push_back(std::move(r));
+	}
+
 	// Machinedrum: each machine on the first track (BD, note 36) with the companion on the second,
 	// trigged every quarter second
 	// with alternating velocities.
@@ -645,6 +726,7 @@ namespace
 			for(const auto& t : mm ? g_monomachinePattern : g_machinedrumPattern)
 				programTrack(run, *restored, t.select, t.steps, true);
 			playPattern(run, results, "restored pattern");
+			navigateScreens(run, *restored, results);
 			addCounters(*restored);
 		}
 		if(_counters)
