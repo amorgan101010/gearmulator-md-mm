@@ -185,11 +185,11 @@ namespace mdJucePlugin
 		void serviceGamepad(double _nowMilliseconds);
 		void moveGamepadFocus(GamepadDirection _direction);
 		void setGamepadFocus(size_t _index);
-		// The right stick's cursor: _x/_y are the stick, and whatever control it overlaps takes the focus.
+		// The left stick's cursor: _x/_y are the stick, and whatever control it overlaps takes the focus.
 		void moveGamepadCursor(float _x, float _y, double _elapsedMilliseconds);
 		void centreGamepadCursor();		// onto the focused control, after the D-pad moved the focus
 		void placeGamepadCursor(bool _requestUpdate = true);
-		void stepGamepadCursor();		// once per drawn frame while the right stick is pushed
+		void stepGamepadCursor();		// once per drawn frame while the left stick is pushed
 		std::optional<size_t> findGamepadTarget(md::PanelControl _control) const;
 		std::optional<size_t> findGamepadTarget(const juceRmlUi::ElemKnob* _knob) const;
 		// _momentaryBanks: MM bank keys act like any held key instead of toggling the click latch.
@@ -408,8 +408,8 @@ namespace mdJucePlugin
 		Rml::Element* m_gamepadFocusRing = nullptr;
 		Rml::Element* m_gamepadCursor = nullptr;
 		Rml::Vector2f m_gamepadCursorPosition{ 0.5f, 0.5f };	// fraction of the panel, so it survives a resize
-		double m_gamepadCursorLastMoveMilliseconds = 0.0;	// last time the right stick was pushed
-		Rml::Vector2f m_gamepadCursorStick{ 0.0f, 0.0f };	// right stick, zero while it isn't moving the cursor
+		double m_gamepadCursorLastMoveMilliseconds = 0.0;	// last time the left stick was pushed
+		Rml::Vector2f m_gamepadCursorStick{ 0.0f, 0.0f };	// left stick, zero while it isn't moving the cursor
 		double m_gamepadCursorLastFrameMilliseconds = 0.0;	// time of the last cursor frame, 0 while idle
 		baseLib::EventListener<juceRmlUi::RmlComponent*> m_gamepadCursorFrame;
 		baseLib::EventListener<juceRmlUi::RmlComponent*> m_gamepadCursorFrameDone;

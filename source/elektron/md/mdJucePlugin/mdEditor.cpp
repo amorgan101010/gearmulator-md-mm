@@ -2602,7 +2602,7 @@ namespace mdJucePlugin
 		constexpr double g_keyReleaseGraceMilliseconds = 50.0;	// see Editor::onPanelKey
 		constexpr float g_gamepadTriggerThreshold = 0.5f;
 		constexpr float g_gamepadStickDeadzone = 0.2f;
-		constexpr float g_gamepadCursorSpeed = 0.6f;	// panel widths per second, right stick fully pushed
+		constexpr float g_gamepadCursorSpeed = 0.6f;	// panel widths per second, left stick fully pushed
 		constexpr double g_gamepadCursorLingerMilliseconds = 1000.0;	// cursor stays this long after the stick is let go
 		constexpr float g_gamepadStickDetentsPerSecond = 30.0f;
 		constexpr float g_gamepadCoarseDetents = 8.0f;
@@ -2684,7 +2684,7 @@ namespace mdJucePlugin
 		m_gamepadFocusRing = ring.get();
 		m_gamepadTargets.front().element->AppendChild(std::move(ring));
 
-		// The right stick's free cursor. Whatever control it overlaps takes the focus.
+		// The left stick's free cursor. Whatever control it overlaps takes the focus.
 		auto cursor = document->CreateElement("div");
 		cursor->SetAttribute("style",
 			"position: absolute; left: 0px; top: 0px; width: 26dp; height: 26dp; margin-left: -13dp; margin-top: -13dp;"
@@ -3111,10 +3111,10 @@ namespace mdJucePlugin
 				moveGamepadFocus(*m_gamepadRepeatDirection);
 		}
 
-		// The right stick moves the cursor, which focuses what it passes over. It stays put while
+		// The left stick moves the cursor, which focuses what it passes over. It stays put while
 		// Cross holds a control, so the held control keeps the focus.
-		const bool cursorPushed = !m_gamepadActHeld && std::hypot(state.rightX, state.rightY) > g_gamepadStickDeadzone;
-		m_gamepadCursorStick = cursorPushed ? Rml::Vector2f(state.rightX, state.rightY) : Rml::Vector2f(0.0f, 0.0f);
+		const bool cursorPushed = !m_gamepadActHeld && std::hypot(state.leftX, state.leftY) > g_gamepadStickDeadzone;
+		m_gamepadCursorStick = cursorPushed ? Rml::Vector2f(state.leftX, state.leftY) : Rml::Vector2f(0.0f, 0.0f);
 		if(!cursorPushed)
 		{
 			m_gamepadCursorLastFrameMilliseconds = 0.0;
@@ -3203,11 +3203,11 @@ namespace mdJucePlugin
 			m_gamepadTouchTrig.reset();
 		}
 
-		// Left stick turns the focused knob, faster the further it is pushed.
-		if(auto* const knob = focusKnob(); knob && std::abs(state.leftX) > g_gamepadStickDeadzone)
+		// Right stick turns the focused knob, faster the further it is pushed.
+		if(auto* const knob = focusKnob(); knob && std::abs(state.rightX) > g_gamepadStickDeadzone)
 		{
-			const auto magnitude = (std::abs(state.leftX) - g_gamepadStickDeadzone) / (1.0f - g_gamepadStickDeadzone);
-			const auto rate = std::copysign(magnitude * magnitude * g_gamepadStickDetentsPerSecond, state.leftX);
+			const auto magnitude = (std::abs(state.rightX) - g_gamepadStickDeadzone) / (1.0f - g_gamepadStickDeadzone);
+			const auto rate = std::copysign(magnitude * magnitude * g_gamepadStickDetentsPerSecond, state.rightX);
 			turnGamepadKnob(knob, rate * static_cast<float>(elapsedMilliseconds / 1000.0));
 		}
 	}
