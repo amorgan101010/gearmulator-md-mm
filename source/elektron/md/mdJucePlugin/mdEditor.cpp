@@ -2597,7 +2597,8 @@ namespace mdJucePlugin
 	{
 		constexpr double g_gamepadRepeatDelayMilliseconds = 350.0;
 		constexpr double g_gamepadRepeatIntervalMilliseconds = 110.0;
-		constexpr double g_gamepadEncoderClickMilliseconds = 300.0;
+		// A knob push shorter than this is stretched to it, so a quick tap still reaches the firmware as a click.
+		constexpr double g_gamepadMinimumPushMilliseconds = 50.0;
 		constexpr double g_gamepadHighlightTimeoutMilliseconds = 120000.0;	// hide focus after 2 minutes idle
 		constexpr double g_keyReleaseGraceMilliseconds = 50.0;	// see Editor::onPanelKey
 		constexpr float g_gamepadTriggerThreshold = 0.5f;
@@ -2605,7 +2606,8 @@ namespace mdJucePlugin
 		constexpr float g_gamepadCursorSpeed = 0.6f;	// panel widths per second, left stick fully pushed
 		constexpr double g_gamepadCursorLingerMilliseconds = 1000.0;	// cursor stays this long after the stick is let go
 		constexpr float g_gamepadStickDetentsPerSecond = 30.0f;
-		constexpr float g_gamepadCoarseDetents = 8.0f;
+		constexpr float g_gamepadTouchDetentsPerWidth = 48.0f;	// knob steps for a finger across the whole touchpad
+		constexpr float g_gamepadTouchpadAspect = 0.5f;	// height / width, so a step is the same distance both ways
 
 		struct GamepadDirectButton
 		{
@@ -2927,15 +2929,43 @@ namespace mdJucePlugin
 		_knob->setValue(value, true);
 	}
 
+	void Editor::pushGamepadKnob(const GamepadTarget& _target, const double _nowMilliseconds)
+	{
+		releaseGamepadKnob();
+		const auto packet = md::panelEncoderPressPacket(getModel(), _target.encoder);
+		if(!packet)
+			return;
+		const auto combined = m_panelRows.press(*packet);
+		(void)sendPanelEvent(combined.row, combined.mask);
+		m_gamepadPushedKnobPacket = packet;
+		m_gamepadPushedKnob = _target.knob;
+		m_gamepadKnobPushMilliseconds = _nowMilliseconds;
+		m_gamepadKnobReleaseMilliseconds = std::numeric_limits<double>::max();
+		_target.knob->SetClass("encoderPressed", true);
+	}
+
+	void Editor::releaseGamepadKnob()
+	{
+		if(!m_gamepadPushedKnobPacket)
+			return;
+		const auto combined = m_panelRows.release(*m_gamepadPushedKnobPacket);
+		(void)sendPanelEvent(combined.row, combined.mask);
+		if(m_gamepadPushedKnob)
+			m_gamepadPushedKnob->SetClass("encoderPressed", false);
+		m_gamepadPushedKnobPacket.reset();
+		m_gamepadPushedKnob = nullptr;
+	}
+
 	void Editor::releaseGamepadInputs()
 	{
 		const auto held = m_gamepadHeldControls;
 		for(auto it = held.rbegin(); it != held.rend(); ++it)
 			releaseHeldControl(*it);
 		m_gamepadHeldControls.clear();
+		releaseGamepadKnob();
 		m_gamepadActHeld = false;
 		m_gamepadRepeatDirection.reset();
-		m_gamepadTouchTrig.reset();
+		m_gamepadTouchColumn.reset();
 		m_gamepadLatchHeld = false;
 	}
 
@@ -3014,13 +3044,11 @@ namespace mdJucePlugin
 			m_gamepadRepeatDirection = _direction;
 			m_gamepadRepeatNextMilliseconds = _nowMilliseconds + g_gamepadRepeatDelayMilliseconds;
 		};
+		// With Cross holding a knob its switch is pushed, so these are press-turns: the firmware picks the step size.
 		const auto turnHeldKnob = [&](const GamepadDirection _direction)
 		{
-			const float detents = _direction == GamepadDirection::Right ? 1.0f
-				: _direction == GamepadDirection::Left ? -1.0f
-				: _direction == GamepadDirection::Up ? g_gamepadCoarseDetents : -g_gamepadCoarseDetents;
-			turnGamepadKnob(actKnob(), detents);
-			m_gamepadActTurned = true;
+			const bool up = _direction == GamepadDirection::Right || _direction == GamepadDirection::Up;
+			turnGamepadKnob(actKnob(), up ? 1.0f : -1.0f);
 		};
 
 		// L1 holds panel keys like Shift-click; letting go releases everything it held.
@@ -3142,16 +3170,17 @@ namespace mdJucePlugin
 				rml->enqueueUpdateOnce();
 		}
 
-		// Cross acts on the focused control: hold a button, or hold a knob to turn it
-		// with the D-pad. A short Cross on a knob without turning clicks the encoder.
+		// Cross acts on the focused control. On a panel key it holds the key. On a knob it pushes the knob, like
+		// pressing the real one: a tap is a click, and turning while Cross is held is a press-turn.
 		if(pressedNow(Button::South) && m_gamepadFocus < m_gamepadTargets.size())
 		{
 			m_gamepadActHeld = true;
 			m_gamepadActTarget = m_gamepadFocus;
-			m_gamepadActStartMilliseconds = _nowMilliseconds;
-			m_gamepadActTurned = false;
-			if(m_gamepadTargets[m_gamepadFocus].button)
-				pressHeldControl(m_gamepadTargets[m_gamepadFocus].control, m_gamepadLatchHeld);
+			const auto& target = m_gamepadTargets[m_gamepadFocus];
+			if(target.button)
+				pressHeldControl(target.control, m_gamepadLatchHeld);
+			else if(target.knob)
+				pushGamepadKnob(target, _nowMilliseconds);
 		}
 		else if(releasedNow(Button::South) && m_gamepadActHeld)
 		{
@@ -3159,20 +3188,12 @@ namespace mdJucePlugin
 			m_gamepadRepeatDirection.reset();
 			const auto& target = m_gamepadTargets[m_gamepadActTarget];
 			if(target.button)
-			{
 				releaseHeldControl(target.control);
-			}
-			else if(target.knob && !m_gamepadActTurned
-				&& _nowMilliseconds - m_gamepadActStartMilliseconds < g_gamepadEncoderClickMilliseconds)
-			{
-				// One press and one release, a timer tick apart, through the existing panel queue.
-				if(const auto packet = md::panelEncoderPressPacket(getModel(), target.encoder))
-				{
-					m_panelSteps.push_back({ *packet, true });
-					m_panelSteps.push_back({ *packet, false });
-				}
-			}
+			else
+				m_gamepadKnobReleaseMilliseconds = m_gamepadKnobPushMilliseconds + g_gamepadMinimumPushMilliseconds;
 		}
+		if(m_gamepadPushedKnobPacket && !m_gamepadActHeld && _nowMilliseconds >= m_gamepadKnobReleaseMilliseconds)
+			releaseGamepadKnob();
 
 		// Stick clicks jump focus to the trig row and to the data-entry knobs.
 		if(!m_gamepadActHeld)
@@ -3189,18 +3210,23 @@ namespace mdJucePlugin
 			}
 		}
 
-		// Touchpad: a 16-step strip, left to right.
+		// Touchpad: an XY pad over the data-entry knobs, like the remote panel's. Where the finger lands picks a
+		// column (A/E, B/F, C/G, D/H), kept until it lifts. Moving sideways turns the top knob, up and down the
+		// bottom one.
 		if(state.touching && !previous.touching)
 		{
-			const auto step = std::clamp(static_cast<int>(state.touchX * 16.0f), 0, 15);
-			const auto trig = static_cast<md::PanelControl>(static_cast<int>(md::PanelControl::Trigger1) + step);
-			pressHeldControl(trig, m_gamepadLatchHeld);
-			m_gamepadTouchTrig = trig;
+			m_gamepadTouchColumn = std::clamp(static_cast<int>(state.touchX * 4.0f), 0, 3);
 		}
-		else if(!state.touching && previous.touching && m_gamepadTouchTrig)
+		else if(state.touching && m_gamepadTouchColumn)
 		{
-			releaseHeldControl(*m_gamepadTouchTrig);
-			m_gamepadTouchTrig.reset();
+			const auto column = static_cast<size_t>(*m_gamepadTouchColumn);
+			turnGamepadKnob(m_encoders[column], (state.touchX - previous.touchX) * g_gamepadTouchDetentsPerWidth);
+			turnGamepadKnob(m_encoders[column + 4],
+				(previous.touchY - state.touchY) * g_gamepadTouchDetentsPerWidth * g_gamepadTouchpadAspect);
+		}
+		else if(!state.touching)
+		{
+			m_gamepadTouchColumn.reset();
 		}
 
 		// Right stick turns the focused knob, faster the further it is pushed.

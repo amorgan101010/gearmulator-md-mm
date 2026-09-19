@@ -197,6 +197,9 @@ namespace mdJucePlugin
 		void releaseHeldControl(md::PanelControl _control);
 		void turnGamepadKnob(juceRmlUi::ElemKnob* _knob, float _detents);
 		void releaseGamepadInputs();
+		// Cross on a knob: push its switch, and let go of it again.
+		void pushGamepadKnob(const GamepadTarget& _target, double _nowMilliseconds);
+		void releaseGamepadKnob();
 
 		// Standalone computer-keyboard control of the panel.
 		void createKeyboardControl();
@@ -416,17 +419,19 @@ namespace mdJucePlugin
 		bool m_gamepadCursorVisible = false;
 		bool m_gamepadLatchHeld = false;				// L1: gamepad equivalent of holding Shift
 		std::vector<md::PanelControl> m_gamepadHeldControls;	// pressed by the pad, awaiting release
-		// Cross held on the focused control. On a knob, a short press without turning is an encoder click.
+		// Cross held on the focused control. On a knob it holds the knob's switch pushed.
 		bool m_gamepadActHeld = false;
 		size_t m_gamepadActTarget = 0;
-		double m_gamepadActStartMilliseconds = 0.0;
-		bool m_gamepadActTurned = false;
+		std::optional<md::PanelPacket> m_gamepadPushedKnobPacket;
+		juceRmlUi::ElemKnob* m_gamepadPushedKnob = nullptr;
+		double m_gamepadKnobPushMilliseconds = 0.0;
+		double m_gamepadKnobReleaseMilliseconds = 0.0;	// when to let go, once Cross is up
 		// D-pad auto-repeat.
 		std::optional<GamepadDirection> m_gamepadRepeatDirection;
 		double m_gamepadRepeatNextMilliseconds = 0.0;
 		int m_gamepadTrack = 0;		// 0-5 on the Monomachine, 0-15 on the Machinedrum
 		int m_gamepadPage = 0;		// Machinedrum data page
-		std::optional<md::PanelControl> m_gamepadTouchTrig;
+		std::optional<int> m_gamepadTouchColumn;	// touchpad XY: knob column 0-3 (A/E .. D/H) while a finger is down
 
 		bool m_keyboardControl = false;
 		std::vector<std::pair<int, double>> m_keyboardPendingReleases;	// key, deadline: releases waiting out auto-repeat
