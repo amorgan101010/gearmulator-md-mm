@@ -75,6 +75,503 @@
 	</table>
 
 	<settingsspacer1/>
+	<h1>Controller</h1>
+	<settingsspacer1/>
+	<label>The touchpad and the gyro (hold the PS button and tilt) each turn two knobs. Choose a knob for each direction. The focused column is the column of the data entry knob that has the controller's focus. Standalone only.</label>
+	<settingsspacer1/>
+	<label>Touchpad, sliding left / right</label>
+	<table class="settings-table">
+		<tr class="settings-tr">
+			<td class="settings-td">
+				<div id="btPadTouchXTarget0" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>Focused column, top</label>
+				</div>
+			</td>
+			<td class="settings-td">
+				<div id="btPadTouchXTarget1" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>Focused column, bottom</label>
+				</div>
+			</td>
+			<td class="settings-td">
+				<div id="btPadTouchXTarget20" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>LEVEL</label>
+				</div>
+			</td>
+			<td class="settings-td">
+				<div id="btPadTouchXTarget99" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>Off</label>
+				</div>
+			</td>
+		</tr>
+		<tr class="settings-tr">
+			<td class="settings-td">
+				<div id="btPadTouchXTarget10" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>A</label>
+				</div>
+			</td>
+			<td class="settings-td">
+				<div id="btPadTouchXTarget11" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>B</label>
+				</div>
+			</td>
+			<td class="settings-td">
+				<div id="btPadTouchXTarget12" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>C</label>
+				</div>
+			</td>
+			<td class="settings-td">
+				<div id="btPadTouchXTarget13" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>D</label>
+				</div>
+			</td>
+			<td class="settings-td">
+				<div id="btPadTouchXTarget14" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>E</label>
+				</div>
+			</td>
+			<td class="settings-td">
+				<div id="btPadTouchXTarget15" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>F</label>
+				</div>
+			</td>
+			<td class="settings-td">
+				<div id="btPadTouchXTarget16" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>G</label>
+				</div>
+			</td>
+			<td class="settings-td">
+				<div id="btPadTouchXTarget17" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>H</label>
+				</div>
+			</td>
+		</tr>
+	</table>
+	<div id="btPadTouchXFunction" class="settings-checkboxwithlabel">
+		<button id="button" class="settings-checkbox"/>
+		<label>Hold FUNCTION while turning (Machinedrum: changes that parameter on every track)</label>
+	</div>
+	<div id="btPadTouchXInvert" class="settings-checkboxwithlabel">
+		<button id="button" class="settings-checkbox"/>
+		<label>Invert direction</label>
+	</div>
+	<label>Speed</label>
+	<table class="settings-table">
+		<tr class="settings-tr">
+			<td class="settings-td">
+				<div id="btPadTouchXSpeed25" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>25%</label>
+				</div>
+			</td>
+			<td class="settings-td">
+				<div id="btPadTouchXSpeed50" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>50%</label>
+				</div>
+			</td>
+			<td class="settings-td">
+				<div id="btPadTouchXSpeed100" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>100%</label>
+				</div>
+			</td>
+			<td class="settings-td">
+				<div id="btPadTouchXSpeed200" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>200%</label>
+				</div>
+			</td>
+			<td class="settings-td">
+				<div id="btPadTouchXSpeed400" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>400%</label>
+				</div>
+			</td>
+		</tr>
+	</table>
+	<settingsspacer1/>
+	<label>Touchpad, sliding up / down</label>
+	<table class="settings-table">
+		<tr class="settings-tr">
+			<td class="settings-td">
+				<div id="btPadTouchYTarget0" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>Focused column, top</label>
+				</div>
+			</td>
+			<td class="settings-td">
+				<div id="btPadTouchYTarget1" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>Focused column, bottom</label>
+				</div>
+			</td>
+			<td class="settings-td">
+				<div id="btPadTouchYTarget20" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>LEVEL</label>
+				</div>
+			</td>
+			<td class="settings-td">
+				<div id="btPadTouchYTarget99" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>Off</label>
+				</div>
+			</td>
+		</tr>
+		<tr class="settings-tr">
+			<td class="settings-td">
+				<div id="btPadTouchYTarget10" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>A</label>
+				</div>
+			</td>
+			<td class="settings-td">
+				<div id="btPadTouchYTarget11" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>B</label>
+				</div>
+			</td>
+			<td class="settings-td">
+				<div id="btPadTouchYTarget12" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>C</label>
+				</div>
+			</td>
+			<td class="settings-td">
+				<div id="btPadTouchYTarget13" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>D</label>
+				</div>
+			</td>
+			<td class="settings-td">
+				<div id="btPadTouchYTarget14" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>E</label>
+				</div>
+			</td>
+			<td class="settings-td">
+				<div id="btPadTouchYTarget15" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>F</label>
+				</div>
+			</td>
+			<td class="settings-td">
+				<div id="btPadTouchYTarget16" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>G</label>
+				</div>
+			</td>
+			<td class="settings-td">
+				<div id="btPadTouchYTarget17" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>H</label>
+				</div>
+			</td>
+		</tr>
+	</table>
+	<div id="btPadTouchYFunction" class="settings-checkboxwithlabel">
+		<button id="button" class="settings-checkbox"/>
+		<label>Hold FUNCTION while turning (Machinedrum: changes that parameter on every track)</label>
+	</div>
+	<div id="btPadTouchYInvert" class="settings-checkboxwithlabel">
+		<button id="button" class="settings-checkbox"/>
+		<label>Invert direction</label>
+	</div>
+	<label>Speed</label>
+	<table class="settings-table">
+		<tr class="settings-tr">
+			<td class="settings-td">
+				<div id="btPadTouchYSpeed25" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>25%</label>
+				</div>
+			</td>
+			<td class="settings-td">
+				<div id="btPadTouchYSpeed50" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>50%</label>
+				</div>
+			</td>
+			<td class="settings-td">
+				<div id="btPadTouchYSpeed100" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>100%</label>
+				</div>
+			</td>
+			<td class="settings-td">
+				<div id="btPadTouchYSpeed200" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>200%</label>
+				</div>
+			</td>
+			<td class="settings-td">
+				<div id="btPadTouchYSpeed400" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>400%</label>
+				</div>
+			</td>
+		</tr>
+	</table>
+	<settingsspacer1/>
+	<label>Tilt, rolling left / right</label>
+	<table class="settings-table">
+		<tr class="settings-tr">
+			<td class="settings-td">
+				<div id="btPadTiltRollTarget0" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>Focused column, top</label>
+				</div>
+			</td>
+			<td class="settings-td">
+				<div id="btPadTiltRollTarget1" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>Focused column, bottom</label>
+				</div>
+			</td>
+			<td class="settings-td">
+				<div id="btPadTiltRollTarget20" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>LEVEL</label>
+				</div>
+			</td>
+			<td class="settings-td">
+				<div id="btPadTiltRollTarget99" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>Off</label>
+				</div>
+			</td>
+		</tr>
+		<tr class="settings-tr">
+			<td class="settings-td">
+				<div id="btPadTiltRollTarget10" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>A</label>
+				</div>
+			</td>
+			<td class="settings-td">
+				<div id="btPadTiltRollTarget11" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>B</label>
+				</div>
+			</td>
+			<td class="settings-td">
+				<div id="btPadTiltRollTarget12" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>C</label>
+				</div>
+			</td>
+			<td class="settings-td">
+				<div id="btPadTiltRollTarget13" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>D</label>
+				</div>
+			</td>
+			<td class="settings-td">
+				<div id="btPadTiltRollTarget14" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>E</label>
+				</div>
+			</td>
+			<td class="settings-td">
+				<div id="btPadTiltRollTarget15" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>F</label>
+				</div>
+			</td>
+			<td class="settings-td">
+				<div id="btPadTiltRollTarget16" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>G</label>
+				</div>
+			</td>
+			<td class="settings-td">
+				<div id="btPadTiltRollTarget17" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>H</label>
+				</div>
+			</td>
+		</tr>
+	</table>
+	<div id="btPadTiltRollFunction" class="settings-checkboxwithlabel">
+		<button id="button" class="settings-checkbox"/>
+		<label>Hold FUNCTION while turning (Machinedrum: changes that parameter on every track)</label>
+	</div>
+	<div id="btPadTiltRollInvert" class="settings-checkboxwithlabel">
+		<button id="button" class="settings-checkbox"/>
+		<label>Invert direction</label>
+	</div>
+	<label>Speed</label>
+	<table class="settings-table">
+		<tr class="settings-tr">
+			<td class="settings-td">
+				<div id="btPadTiltRollSpeed25" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>25%</label>
+				</div>
+			</td>
+			<td class="settings-td">
+				<div id="btPadTiltRollSpeed50" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>50%</label>
+				</div>
+			</td>
+			<td class="settings-td">
+				<div id="btPadTiltRollSpeed100" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>100%</label>
+				</div>
+			</td>
+			<td class="settings-td">
+				<div id="btPadTiltRollSpeed200" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>200%</label>
+				</div>
+			</td>
+			<td class="settings-td">
+				<div id="btPadTiltRollSpeed400" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>400%</label>
+				</div>
+			</td>
+		</tr>
+	</table>
+	<settingsspacer1/>
+	<label>Tilt, forward / back</label>
+	<table class="settings-table">
+		<tr class="settings-tr">
+			<td class="settings-td">
+				<div id="btPadTiltPitchTarget0" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>Focused column, top</label>
+				</div>
+			</td>
+			<td class="settings-td">
+				<div id="btPadTiltPitchTarget1" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>Focused column, bottom</label>
+				</div>
+			</td>
+			<td class="settings-td">
+				<div id="btPadTiltPitchTarget20" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>LEVEL</label>
+				</div>
+			</td>
+			<td class="settings-td">
+				<div id="btPadTiltPitchTarget99" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>Off</label>
+				</div>
+			</td>
+		</tr>
+		<tr class="settings-tr">
+			<td class="settings-td">
+				<div id="btPadTiltPitchTarget10" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>A</label>
+				</div>
+			</td>
+			<td class="settings-td">
+				<div id="btPadTiltPitchTarget11" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>B</label>
+				</div>
+			</td>
+			<td class="settings-td">
+				<div id="btPadTiltPitchTarget12" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>C</label>
+				</div>
+			</td>
+			<td class="settings-td">
+				<div id="btPadTiltPitchTarget13" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>D</label>
+				</div>
+			</td>
+			<td class="settings-td">
+				<div id="btPadTiltPitchTarget14" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>E</label>
+				</div>
+			</td>
+			<td class="settings-td">
+				<div id="btPadTiltPitchTarget15" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>F</label>
+				</div>
+			</td>
+			<td class="settings-td">
+				<div id="btPadTiltPitchTarget16" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>G</label>
+				</div>
+			</td>
+			<td class="settings-td">
+				<div id="btPadTiltPitchTarget17" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>H</label>
+				</div>
+			</td>
+		</tr>
+	</table>
+	<div id="btPadTiltPitchFunction" class="settings-checkboxwithlabel">
+		<button id="button" class="settings-checkbox"/>
+		<label>Hold FUNCTION while turning (Machinedrum: changes that parameter on every track)</label>
+	</div>
+	<div id="btPadTiltPitchInvert" class="settings-checkboxwithlabel">
+		<button id="button" class="settings-checkbox"/>
+		<label>Invert direction</label>
+	</div>
+	<label>Speed</label>
+	<table class="settings-table">
+		<tr class="settings-tr">
+			<td class="settings-td">
+				<div id="btPadTiltPitchSpeed25" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>25%</label>
+				</div>
+			</td>
+			<td class="settings-td">
+				<div id="btPadTiltPitchSpeed50" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>50%</label>
+				</div>
+			</td>
+			<td class="settings-td">
+				<div id="btPadTiltPitchSpeed100" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>100%</label>
+				</div>
+			</td>
+			<td class="settings-td">
+				<div id="btPadTiltPitchSpeed200" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>200%</label>
+				</div>
+			</td>
+			<td class="settings-td">
+				<div id="btPadTiltPitchSpeed400" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>400%</label>
+				</div>
+			</td>
+		</tr>
+	</table>
+
+	<settingsspacer1/>
 	<h1>RAM Recording</h1>
 	<settingsspacer1/>
 	<div id="btRamRecordingComplete" class="settings-checkboxwithlabel">

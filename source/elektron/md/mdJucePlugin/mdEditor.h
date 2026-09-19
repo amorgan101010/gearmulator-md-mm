@@ -15,6 +15,7 @@
 
 #include "mdFrontPanelPresentation.h"
 #include "mdGamepad.h"
+#include "mdGamepadAxes.h"
 #include "mdHelpOverrides.h"
 #include "mdLcdGesture.h"
 #include "mdLcdInteractionModel.h"
@@ -90,6 +91,9 @@ namespace mdJucePlugin
 		void applyLcdInteraction();
 		// Rereads the tooltip on/off and pop-up delay settings. Called on create and from the settings page.
 		void applyTooltipSettings();
+		// Rereads the touchpad and gyro axis settings. Called on create and from the settings page.
+		void applyGamepadSettings();
+		md::MachineModel getModel() const;
 		void loadInstalledFactoryStorage();
 		void chooseStorageImage();
 		void restorePreviousStorage();
@@ -127,7 +131,6 @@ namespace mdJucePlugin
 		std::shared_ptr<md::FrontPanelPublisher> getFrontPanelPublisher() const;
 		bool sendPanelEvent(uint8_t _command, uint8_t _argument) const;
 		bool refreshFrontPanelState(double _nowMilliseconds);
-		md::MachineModel getModel() const;
 		void createLcd();
 		void updateLcdInteractionState();
 		std::optional<unsigned> lcdTargetAt(const Rml::Event& _event) const;
@@ -197,6 +200,11 @@ namespace mdJucePlugin
 		void releaseHeldControl(md::PanelControl _control);
 		void turnGamepadKnob(juceRmlUi::ElemKnob* _knob, float _detents);
 		void releaseGamepadInputs();
+		// Touchpad and gyro axes: the knob an axis turns right now (null for none), turning it, and holding
+		// FUNCTION for the axes that want it.
+		juceRmlUi::ElemKnob* gamepadAxisKnob(gamepadAxes::Axis _axis) const;
+		void turnGamepadAxis(gamepadAxes::Axis _axis, float _detents);
+		void setGamepadAxisFunction(bool _held);
 		// Cross on a knob: push its switch, and let go of it again.
 		void pushGamepadKnob(const GamepadTarget& _target, double _nowMilliseconds);
 		void releaseGamepadKnob();
@@ -431,7 +439,8 @@ namespace mdJucePlugin
 		double m_gamepadRepeatNextMilliseconds = 0.0;
 		int m_gamepadTrack = 0;		// 0-5 on the Monomachine, 0-15 on the Machinedrum
 		int m_gamepadPage = 0;		// Machinedrum data page
-		std::optional<int> m_gamepadTouchColumn;	// touchpad XY: knob column 0-3 (A/E .. D/H) while a finger is down
+		std::array<gamepadAxes::Settings, std::size(gamepadAxes::g_axes)> m_gamepadAxes{};
+		bool m_gamepadAxisFunctionHeld = false;	// FUNCTION pressed for a touchpad or gyro axis
 
 		bool m_keyboardControl = false;
 		std::vector<std::pair<int, double>> m_keyboardPendingReleases;	// key, deadline: releases waiting out auto-repeat

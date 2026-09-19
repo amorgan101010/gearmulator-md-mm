@@ -1,6 +1,7 @@
 #include "mdSettingsPanelFeel.h"
 
 #include "mdEditor.h"
+#include "mdGamepadAxes.h"
 #include "mdLcdInteractionModel.h"
 #include "mdPixelPerfectPanel.h"
 #include "mdPluginProcessor.h"
@@ -40,6 +41,23 @@ namespace mdJucePlugin
 		bindGroup(_root, "btTooltipDelay", Editor::g_tooltipDelayKey,
 			std::vector<int>(std::begin(Editor::g_tooltipDelaysMs), std::end(Editor::g_tooltipDelaysMs)),
 			Editor::g_defaultTooltipDelayMs, [this] { m_editor.applyTooltipSettings(); });
+
+		// Controller: what each touchpad and gyro axis turns.
+		for(const auto& axis : gamepadAxes::g_axes)
+		{
+			const auto apply = [this] { m_editor.applyGamepadSettings(); };
+			bindGroup(_root, (std::string(axis.idPrefix) + "Target").c_str(), axis.targetKey,
+				std::vector<int>(std::begin(gamepadAxes::g_targets), std::end(gamepadAxes::g_targets)),
+				gamepadAxes::defaultTarget(axis.axis), apply);
+			jucePluginEditorLib::SettingsPlugin::createToggleButton(_root, std::string(axis.idPrefix) + "Function",
+				m_editor.getProcessor().getConfig(), axis.functionKey, [apply](bool) { apply(); },
+				gamepadAxes::defaultFunction(axis.axis, m_editor.getModel()));
+			jucePluginEditorLib::SettingsPlugin::createToggleButton(_root, std::string(axis.idPrefix) + "Invert",
+				m_editor.getProcessor().getConfig(), axis.invertKey, [apply](bool) { apply(); }, false);
+			bindGroup(_root, (std::string(axis.idPrefix) + "Speed").c_str(), axis.speedKey,
+				std::vector<int>(std::begin(gamepadAxes::g_speedPercents), std::end(gamepadAxes::g_speedPercents)),
+				100, apply);
+		}
 
 		m_ramRecordingComplete = juceRmlUi::helper::findChild(
 			_root, "btRamRecordingComplete", false);

@@ -2708,6 +2708,7 @@ namespace mdJucePlugin
 			});
 		}
 
+		applyGamepadSettings();
 		m_gamepad = std::make_unique<Gamepad>();
 		m_gamepadFocus = 0;
 	}
@@ -2958,6 +2959,59 @@ namespace mdJucePlugin
 		m_gamepadPushedKnob = nullptr;
 	}
 
+	void Editor::applyGamepadSettings()
+	{
+		auto& config = getProcessor().getConfig();
+		for(const auto& info : gamepadAxes::g_axes)
+			m_gamepadAxes[static_cast<size_t>(info.axis)] = gamepadAxes::read(config, info, getModel());
+	}
+
+	juceRmlUi::ElemKnob* Editor::gamepadAxisKnob(const gamepadAxes::Axis _axis) const
+	{
+		const auto& settings = m_gamepadAxes[static_cast<size_t>(_axis)];
+		const auto target = settings.target;
+		if(target >= gamepadAxes::g_targetKnobA && target < gamepadAxes::g_targetKnobA + static_cast<int>(m_encoders.size()))
+			return m_encoders[static_cast<size_t>(target - gamepadAxes::g_targetKnobA)];
+		if(target == gamepadAxes::g_targetLevel)
+			return m_levelEncoder;
+		if(target != gamepadAxes::g_targetFocusedTop && target != gamepadAxes::g_targetFocusedBottom)
+			return nullptr;
+
+		// The focused column: only while focus is on one of the eight data entry knobs.
+		if(m_gamepadFocus >= m_gamepadTargets.size())
+			return nullptr;
+		const auto& focused = m_gamepadTargets[m_gamepadFocus];
+		const auto encoder = static_cast<size_t>(focused.encoder);
+		if(!focused.knob || encoder >= m_encoders.size() || focused.knob != m_encoders[encoder])
+			return nullptr;
+		return m_encoders[encoder % 4 + (target == gamepadAxes::g_targetFocusedBottom ? 4 : 0)];
+	}
+
+	void Editor::turnGamepadAxis(const gamepadAxes::Axis _axis, const float _detents)
+	{
+		const auto& settings = m_gamepadAxes[static_cast<size_t>(_axis)];
+		const auto scale = static_cast<float>(settings.speedPercent) / 100.0f * (settings.invert ? -1.0f : 1.0f);
+		turnGamepadKnob(gamepadAxisKnob(_axis), _detents * scale);
+	}
+
+	void Editor::setGamepadAxisFunction(const bool _held)
+	{
+		if(_held == m_gamepadAxisFunctionHeld)
+			return;
+		if(!_held)
+		{
+			releaseHeldControl(md::PanelControl::Function);
+			m_gamepadAxisFunctionHeld = false;
+			return;
+		}
+		// If R1 already holds FUNCTION, leave it to R1; this is tried again every poll.
+		const auto index = findGamepadTarget(md::PanelControl::Function);
+		if(!index || m_gamepadTargets[*index].button->isChecked())
+			return;
+		pressHeldControl(md::PanelControl::Function, false);
+		m_gamepadAxisFunctionHeld = true;
+	}
+
 	void Editor::releaseGamepadInputs()
 	{
 		const auto held = m_gamepadHeldControls;
@@ -2967,7 +3021,7 @@ namespace mdJucePlugin
 		releaseGamepadKnob();
 		m_gamepadActHeld = false;
 		m_gamepadRepeatDirection.reset();
-		m_gamepadTouchColumn.reset();
+		m_gamepadAxisFunctionHeld = false;
 		m_gamepadLatchHeld = false;
 	}
 
@@ -3212,41 +3266,34 @@ namespace mdJucePlugin
 			}
 		}
 
-		// Touchpad: an XY pad over the data-entry knobs, like the remote panel's. Where the finger lands picks a
-		// column (A/E, B/F, C/G, D/H), kept until it lifts. Moving sideways turns the top knob, up and down the
-		// bottom one.
-		if(state.touching && !previous.touching)
+		// Touchpad and gyro: each axis turns the knob chosen for it in the settings. By default both act on the
+		// focused data entry knob's column: sideways turns the top knob, up/down (forward/back) the bottom one.
+		// The touchpad works while a finger slides; the gyro while the PS / Guide button is held, and only
+		// rotation moves the knobs, so holding still changes nothing.
+		const bool touchEngaged = state.touching && previous.touching;
+		const bool tiltEngaged = state.pressed(Button::Guide);
+		const auto wantsFunction = [&](const gamepadAxes::Axis _a, const gamepadAxes::Axis _b)
 		{
-			m_gamepadTouchColumn = std::clamp(static_cast<int>(state.touchX * 4.0f), 0, 3);
-		}
-		else if(state.touching && m_gamepadTouchColumn)
+			return m_gamepadAxes[static_cast<size_t>(_a)].function || m_gamepadAxes[static_cast<size_t>(_b)].function;
+		};
+		using gamepadAxes::Axis;
+		setGamepadAxisFunction((touchEngaged && wantsFunction(Axis::TouchX, Axis::TouchY))
+			|| (tiltEngaged && wantsFunction(Axis::TiltRoll, Axis::TiltPitch)));
+		if(touchEngaged)
 		{
-			const auto column = static_cast<size_t>(*m_gamepadTouchColumn);
-			turnGamepadKnob(m_encoders[column], (state.touchX - previous.touchX) * g_gamepadTouchDetentsPerWidth);
-			turnGamepadKnob(m_encoders[column + 4],
+			turnGamepadAxis(Axis::TouchX, (state.touchX - previous.touchX) * g_gamepadTouchDetentsPerWidth);
+			turnGamepadAxis(Axis::TouchY,
 				(previous.touchY - state.touchY) * g_gamepadTouchDetentsPerWidth * g_gamepadTouchpadAspect);
 		}
-		else if(!state.touching)
+		if(tiltEngaged)
 		{
-			m_gamepadTouchColumn.reset();
-		}
-
-		// Gyro: hold the PS / Guide button and tilt. It turns the column of the focused data-entry knob: rolling
-		// left/right turns the top knob, pitching forward/back the bottom one. Only rotation moves the knobs, so
-		// holding still changes nothing, and nothing happens while focus is on anything else.
-		const auto& focused = m_gamepadFocus < m_gamepadTargets.size() ? m_gamepadTargets[m_gamepadFocus] : GamepadTarget{};
-		const auto focusedEncoder = static_cast<size_t>(focused.encoder);
-		if(state.pressed(Button::Guide) && focused.knob && focusedEncoder < m_encoders.size()
-			&& focused.knob == m_encoders[focusedEncoder])
-		{
-			const auto column = focusedEncoder % 4;
 			const auto seconds = static_cast<float>(elapsedMilliseconds / 1000.0);
 			const auto rate = [](const float _radiansPerSecond)
 			{
 				return std::abs(_radiansPerSecond) > g_gamepadGyroDeadzone ? _radiansPerSecond : 0.0f;
 			};
-			turnGamepadKnob(m_encoders[column], -rate(state.gyroZ) * g_gamepadGyroDetentsPerRadian * seconds);
-			turnGamepadKnob(m_encoders[column + 4], rate(state.gyroX) * g_gamepadGyroDetentsPerRadian * seconds);
+			turnGamepadAxis(Axis::TiltRoll, -rate(state.gyroZ) * g_gamepadGyroDetentsPerRadian * seconds);
+			turnGamepadAxis(Axis::TiltPitch, rate(state.gyroX) * g_gamepadGyroDetentsPerRadian * seconds);
 		}
 
 		// Right stick turns the focused knob, faster the further it is pushed.

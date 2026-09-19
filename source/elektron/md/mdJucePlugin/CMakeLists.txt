@@ -18,6 +18,7 @@ set(SOURCES
 	mdController.cpp mdController.h
 	mdEditor.cpp mdEditor.h
 	mdGamepad.cpp mdGamepad.h
+	mdGamepadAxes.h
 	mdFrontPanelPresentation.h
 	mdLcdGesture.h
 	mdLcdInteractionModel.cpp mdLcdInteractionModel.h
