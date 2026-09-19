@@ -8,7 +8,6 @@
 #include <memory>
 #include <optional>
 #include <string>
-#include <tuple>
 #include <vector>
 
 #include "jucePluginEditorLib/pluginEditor.h"
@@ -53,6 +52,12 @@ namespace mdJucePlugin
 	class Controller;
 	class PixelPerfectPanel;
 	struct EditorIdentityTestAccess;
+
+	namespace parameterHelp
+	{
+		struct Entry;
+		struct ValueHash;
+	}
 
 	class SampleDropTarget;
 	class MachineRack;
@@ -202,13 +207,43 @@ namespace mdJucePlugin
 		std::optional<int> currentMachinedrumDataPage() const;
 
 		// Hover help for parameter abbreviations.
+		struct TooltipText
+		{
+			std::string abbreviation;	// as the LCD shows it, e.g. ATK
+			std::string name;
+			std::string description;
+			std::string footer;			// where it is, e.g. "Amplification page, knob A"
+		};
+		// What the pointer is over: a knob or LCD field (encoder), or the machine name on the LCD.
+		struct TooltipTarget
+		{
+			Rml::Element* anchor = nullptr;	// the tooltip is shown under this; null for nothing
+			std::optional<unsigned> encoder;
+			bool machineName = false;
+
+			bool operator==(const TooltipTarget& _other) const
+			{
+				return anchor == _other.anchor && encoder == _other.encoder && machineName == _other.machineName;
+			}
+			bool operator!=(const TooltipTarget& _other) const { return !(*this == _other); }
+		};
 		void createParameterTooltip();
 		void updateParameterTooltip();
-		// Machinedrum help for knob _encoder on the current screen. False if nothing is recognised.
-		bool describeMachinedrumEncoder(unsigned _encoder, std::string& _abbreviation, std::string& _name,
-			std::string& _description, std::string& _footer) const;
-		// On an LFO page: " Now: ..." text for PAGE (encoder 0) or DEST (encoder 1), read off the LCD.
+		void hideParameterTooltip();
+		TooltipTarget tooltipTarget() const;
+		// The help for _target on the current screen, or nothing if it isn't recognised.
+		std::optional<TooltipText> describe(const TooltipTarget& _target) const;
+		std::optional<TooltipText> describeMachineName() const;
+		std::optional<TooltipText> describeMachinedrumEncoder(unsigned _encoder) const;
+		std::optional<TooltipText> describeMonomachineEncoder(unsigned _encoder) const;
+		// Appends ", value N" on data pages, the knob's value on the current track.
+		void appendCurrentValue(TooltipText& _text, unsigned _encoder) const;
+		// On a Monomachine LFO page: " Now: ..." text for PAGE (encoder 0) or DEST (encoder 1).
 		std::string lfoTargetDescription(unsigned _encoder) const;
+		// A table entry with any user overrides of its text applied.
+		TooltipText tooltipFor(const parameterHelp::Entry& _entry, std::string _footer) const;
+		// " Now: <value>. <what it means>" for a setting whose value the LCD prints as text.
+		std::string nowText(const parameterHelp::ValueHash& _value) const;
 
 		void createLeds();
 		bool updateLeds();
@@ -390,7 +425,6 @@ namespace mdJucePlugin
 		Rml::Element* m_parameterTooltip = nullptr;
 		Rml::Element* m_lcdArea = nullptr;
 		std::optional<unsigned> m_tooltipHoverKnob;		// mouse over encoder A-H
-		std::optional<unsigned> m_tooltipLcdEncoder;	// mouse over a recognised LCD field
 		bool m_tooltipLcdMachineName = false;			// mouse over the machine name on the LCD
 		// The gamepad focus highlight shows only after controller input and hides after a quiet spell.
 		double m_gamepadLastActivityMilliseconds = 0.0;
@@ -399,7 +433,7 @@ namespace mdJucePlugin
 		bool m_tooltipsEnabled = true;
 		int m_tooltipDelayMs = g_defaultTooltipDelayMs;
 		// What the pointer rests on (anchor, knob, machine name) and since when, for the pop-up delay.
-		std::tuple<const void*, int, bool> m_tooltipRestTarget{nullptr, -1, false};
+		TooltipTarget m_tooltipRestTarget;
 		std::chrono::steady_clock::time_point m_tooltipRestSince{};
 		std::string m_parameterTooltipContent;
 	};

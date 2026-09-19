@@ -40,13 +40,14 @@ namespace mdJucePlugin
 		// Returns true when the texts changed.
 		bool refresh();
 
-		// Reads the file now. Returns false if it could not be read (a missing file is not an error
-		// and leaves no overrides).
-		bool load();
+		// Reads the file now. A missing file leaves no overrides.
+		void load();
 
 		// The replacement for a table string, or the string itself. Pass the table member, e.g.
 		// help(entry->description), not a copy of the pointer.
 		const char* operator()(const char* const& _field) const;
+		// A temporary pointer has no stable address to look up, so it could never be overridden.
+		const char* operator()(const char* const&& _field) const = delete;
 
 		// Keys in the file that name no tooltip string, typically typos. Refreshed on every load.
 		const std::vector<std::string>& unknownKeys() const { return m_unknownKeys; }

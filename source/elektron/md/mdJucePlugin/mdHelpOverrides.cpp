@@ -5,8 +5,8 @@
 #include "mdParameterHelp.h"
 
 #include "baseLib/configFile.h"
+#include "baseLib/filesystem.h"
 
-#include <fstream>
 #include <sstream>
 
 namespace mdJucePlugin
@@ -162,32 +162,19 @@ namespace mdJucePlugin
 
 	bool HelpOverrides::writeDefaults(const std::filesystem::path& _path)
 	{
+		const auto file = _path.u8string();
 		const auto text = defaultsText();
-		{
-			std::ifstream in(_path, std::ios::binary);
-			if(in)
-			{
-				std::ostringstream existing;
-				existing << in.rdbuf();
-				if(existing.str() == text)
-					return true;
-			}
-		}
-		std::error_code ec;
-		std::filesystem::create_directories(_path.parent_path(), ec);
-		std::ofstream out(_path, std::ios::binary | std::ios::trunc);
-		out << text;
-		return static_cast<bool>(out);
+		std::string existing;
+		if(baseLib::filesystem::readFile(existing, file) && existing == text)
+			return true;
+		baseLib::filesystem::createDirectory(_path.parent_path().u8string());
+		// Atomic, as the file may be open in an editor while the plug-in starts.
+		return baseLib::filesystem::writeFileAtomic(file, reinterpret_cast<const uint8_t*>(text.data()), text.size());
 	}
 
 	void HelpOverrides::setFile(std::filesystem::path _path)
 	{
 		m_path = std::move(_path);
-		m_loadedExists = false;
-		m_loadedSize = 0;
-		m_loadedTime = {};
-		m_texts.clear();
-		m_unknownKeys.clear();
 		load();
 	}
 
@@ -210,7 +197,7 @@ namespace mdJucePlugin
 		return true;
 	}
 
-	bool HelpOverrides::load()
+	void HelpOverrides::load()
 	{
 		m_texts.clear();
 		m_unknownKeys.clear();
@@ -219,7 +206,7 @@ namespace mdJucePlugin
 		std::error_code ec;
 		m_loadedExists = !m_path.empty() && std::filesystem::exists(m_path, ec);
 		if(!m_loadedExists)
-			return true;
+			return;
 		m_loadedTime = std::filesystem::last_write_time(m_path, ec);
 		m_loadedSize = std::filesystem::file_size(m_path, ec);
 
@@ -233,7 +220,6 @@ namespace mdJucePlugin
 			else
 				m_texts[it->second] = text;
 		}
-		return true;
 	}
 
 	const char* HelpOverrides::operator()(const char* const& _field) const

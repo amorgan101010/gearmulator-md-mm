@@ -3,6 +3,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 
 namespace mdJucePlugin::parameterHelp
 {
@@ -22,6 +23,24 @@ namespace mdJucePlugin::parameterHelp
 		const char* text;
 		const char* meaning;
 	};
+
+	// The row of _table whose hash is _hash, or nullptr.
+	template<typename T, size_t N>
+	const T* findByHash(const T (&_table)[N], const uint64_t _hash)
+	{
+		for(const auto& row : _table)
+			if(row.hash == _hash)
+				return &row;
+		return nullptr;
+	}
+
+	// The LCD text of _hash in _table, or nullptr.
+	template<size_t N>
+	const char* labelForHash(const LabelHash (&_table)[N], const uint64_t _hash)
+	{
+		const auto* const row = findByHash(_table, _hash);
+		return row ? row->label : nullptr;
+	}
 
 	// Plain-language help for the Monomachine DATA ENTRY knobs, shown as hover tooltips.
 	// Abbreviations are the labels the firmware draws on the LCD. Knob order matches
@@ -85,18 +104,32 @@ namespace mdJucePlugin::parameterHelp
 	}};
 
 	// _page follows the DATA PAGE LEDs: 0 SYNTHESIS, 1 AMP, 2 FILTER, 3 EFFECTS, 4-6 LFO 1-3.
-	inline constexpr const Entry* monomachineEntry(const int _page, const size_t _encoder)
+	// SYNTHESIS depends on the machine, so it has no fixed page.
+	inline constexpr const Page* monomachinePage(const int _page)
 	{
-		if(_encoder >= 8)
-			return nullptr;
 		switch(_page)
 		{
-		case 1: return &g_monomachineAmplification[_encoder];
-		case 2: return &g_monomachineFilter[_encoder];
-		case 3: return &g_monomachineEffects[_encoder];
-		case 4: case 5: case 6: return &g_monomachineLfo[_encoder];
+		case 1: return &g_monomachineAmplification;
+		case 2: return &g_monomachineFilter;
+		case 3: return &g_monomachineEffects;
+		case 4: case 5: case 6: return &g_monomachineLfo;
 		default: return nullptr;
 		}
+	}
+
+	inline constexpr const Entry* monomachineEntry(const int _page, const size_t _encoder)
+	{
+		const auto* const page = monomachinePage(_page);
+		return page && _encoder < page->size() ? &(*page)[_encoder] : nullptr;
+	}
+
+	// The entry of _page whose LCD label is _label, or nullptr.
+	inline const Entry* entryForLabel(const Page& _page, const char* const _label)
+	{
+		for(const auto& entry : _page)
+			if(std::strcmp(entry.abbreviation, _label) == 0)
+				return &entry;
+		return nullptr;
 	}
 
 	inline constexpr const char* g_monomachinePageNames[] =
