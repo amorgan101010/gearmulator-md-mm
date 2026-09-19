@@ -23,6 +23,12 @@ namespace mdJucePlugin::gamepadAxes
 		10, 11, 12, 13, 14, 15, 16, 17, g_targetLevel, g_targetOff };
 	constexpr int g_speedPercents[] = { 25, 50, 100, 200, 400 };
 
+	// Face buttons: 0 follows the controller's own labels when it reports them, 1 goes by position (bottom
+	// button acts, like Cross), 2 by Nintendo labels (A on the right acts). X-input controllers such as an
+	// 8BitDo in Xbox mode report Xbox labels whatever is printed on them, so they need 2.
+	constexpr const char* g_faceLayoutKey = "gamepadFaceLayout";
+	constexpr int g_faceLayouts[] = { 0, 1, 2 };
+
 	struct AxisInfo
 	{
 		Axis axis;

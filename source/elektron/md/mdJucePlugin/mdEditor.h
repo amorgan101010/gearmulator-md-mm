@@ -445,6 +445,7 @@ namespace mdJucePlugin
 		int m_gamepadPage = 0;		// Machinedrum data page
 		std::array<gamepadAxes::Settings, std::size(gamepadAxes::g_axes)> m_gamepadAxes{};
 		bool m_gamepadAxisFunctionHeld = false;	// FUNCTION pressed for a touchpad or gyro axis
+		int m_gamepadFaceLayout = 0;			// 0 auto, 1 by position, 2 Nintendo labels
 		struct GamepadAxisRun
 		{
 			juceRmlUi::ElemKnob* knob = nullptr;	// the knob being driven while engaged

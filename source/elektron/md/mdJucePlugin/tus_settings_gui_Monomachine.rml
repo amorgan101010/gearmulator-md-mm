@@ -95,6 +95,30 @@
 	<settingsspacer1/>
 	<label>The touchpad and the gyro (hold the PS button and tilt) each turn two knobs. Choose a knob for each direction. The focused column is the column of the data entry knob that has the controller's focus. Standalone only.</label>
 	<settingsspacer1/>
+	<label>Face buttons: which one acts on the focus and which exits</label>
+	<table class="settings-table">
+		<tr class="settings-tr">
+			<td class="settings-td">
+				<div id="btPadFaceLayout0" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>Auto (the controller's labels)</label>
+				</div>
+			</td>
+			<td class="settings-td">
+				<div id="btPadFaceLayout1" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>By position: bottom acts</label>
+				</div>
+			</td>
+			<td class="settings-td">
+				<div id="btPadFaceLayout2" class="settings-checkboxwithlabel">
+					<button id="button" class="settings-checkbox"/>
+					<label>Nintendo labels: A (right) acts</label>
+				</div>
+			</td>
+		</tr>
+	</table>
+	<settingsspacer1/>
 	<label>Touchpad, sliding left / right</label>
 	<table class="settings-table">
 		<tr class="settings-tr">

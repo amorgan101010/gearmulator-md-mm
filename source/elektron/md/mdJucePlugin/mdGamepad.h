@@ -37,6 +37,8 @@ namespace mdJucePlugin
 		struct State
 		{
 			bool connected = false;
+			uint32_t padId = 0;				// which controller this is; changes when another one is used
+			bool nintendoLabels = false;	// the controller reports A on the right (Switch Pro and alike)
 			std::bitset<static_cast<size_t>(Button::Count)> buttons;
 			float leftX = 0.0f, leftY = 0.0f;
 			float rightX = 0.0f, rightY = 0.0f;
@@ -62,8 +64,8 @@ namespace mdJucePlugin
 		// False when SDL could not initialise its gamepad subsystem.
 		bool isAvailable() const;
 
-		// Updates controller state on the calling thread. Opens the first connected
-		// controller and closes it again when it disappears.
+		// Updates controller state on the calling thread. Opens every connected controller, closes those that
+		// disappear, and returns the state of the one used most recently.
 		State poll();
 
 	private:

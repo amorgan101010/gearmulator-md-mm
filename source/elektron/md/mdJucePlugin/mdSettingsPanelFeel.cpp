@@ -42,7 +42,10 @@ namespace mdJucePlugin
 			std::vector<int>(std::begin(Editor::g_tooltipDelaysMs), std::end(Editor::g_tooltipDelaysMs)),
 			Editor::g_defaultTooltipDelayMs, [this] { m_editor.applyTooltipSettings(); });
 
-		// Controller: what each touchpad and gyro axis turns.
+		// Controller: face button layout, then what each touchpad and gyro axis turns.
+		bindGroup(_root, "btPadFaceLayout", gamepadAxes::g_faceLayoutKey,
+			std::vector<int>(std::begin(gamepadAxes::g_faceLayouts), std::end(gamepadAxes::g_faceLayouts)), 0,
+			[this] { m_editor.applyGamepadSettings(); });
 		for(const auto& axis : gamepadAxes::g_axes)
 		{
 			const auto apply = [this] { m_editor.applyGamepadSettings(); };

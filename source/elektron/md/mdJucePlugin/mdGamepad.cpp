@@ -1,6 +1,9 @@
 #include "mdGamepad.h"
 
+#include <algorithm>
+#include <cmath>
 #include <iterator>
+#include <vector>
 
 #if MD_GAMEPAD_SDL3
 #include <SDL3/SDL.h>
@@ -19,22 +22,125 @@ namespace mdJucePlugin
 
 	struct Gamepad::Impl
 	{
-		bool initialised = false;
-		SDL_Gamepad* pad = nullptr;
+		struct Pad
+		{
+			SDL_Gamepad* gamepad = nullptr;
+			SDL_JoystickID id = 0;
+			Gamepad::State last;
+		};
 
-		void openFirst()
+		bool initialised = false;
+		std::vector<Pad> pads;
+		SDL_JoystickID active = 0;
+
+		void openNew()
 		{
 			int count = 0;
 			SDL_JoystickID* const ids = SDL_GetGamepads(&count);
-			if(ids && count > 0)
-				pad = SDL_OpenGamepad(ids[0]);
+			for(int i = 0; ids && i < count; ++i)
+			{
+				const auto open = std::find_if(pads.begin(), pads.end(), [&](const Pad& _p) { return _p.id == ids[i]; });
+				if(open != pads.end())
+					continue;
+				if(auto* const gamepad = SDL_OpenGamepad(ids[i]))
+				{
+					for(const auto sensor : { SDL_SENSOR_GYRO, SDL_SENSOR_ACCEL })
+						if(SDL_GamepadHasSensor(gamepad, sensor))
+							SDL_SetGamepadSensorEnabled(gamepad, sensor, true);
+					pads.push_back({ gamepad, ids[i], {} });
+				}
+			}
 			SDL_free(ids);
-			if(pad && SDL_GamepadHasSensor(pad, SDL_SENSOR_GYRO))
-				SDL_SetGamepadSensorEnabled(pad, SDL_SENSOR_GYRO, true);
-			if(pad && SDL_GamepadHasSensor(pad, SDL_SENSOR_ACCEL))
-				SDL_SetGamepadSensorEnabled(pad, SDL_SENSOR_ACCEL, true);
+		}
+
+		void closeGone()
+		{
+			for(auto it = pads.begin(); it != pads.end();)
+			{
+				if(SDL_GamepadConnected(it->gamepad))
+				{
+					++it;
+					continue;
+				}
+				SDL_CloseGamepad(it->gamepad);
+				it = pads.erase(it);
+			}
 		}
 	};
+
+	namespace
+	{
+		Gamepad::State readPad(SDL_Gamepad* const _pad, const SDL_JoystickID _id)
+		{
+			auto* const pad = _pad;
+			Gamepad::State state;
+			static constexpr SDL_GamepadButton g_buttons[] =
+			{
+				SDL_GAMEPAD_BUTTON_SOUTH, SDL_GAMEPAD_BUTTON_EAST, SDL_GAMEPAD_BUTTON_WEST, SDL_GAMEPAD_BUTTON_NORTH,
+				SDL_GAMEPAD_BUTTON_BACK, SDL_GAMEPAD_BUTTON_GUIDE, SDL_GAMEPAD_BUTTON_START,
+				SDL_GAMEPAD_BUTTON_LEFT_STICK, SDL_GAMEPAD_BUTTON_RIGHT_STICK,
+				SDL_GAMEPAD_BUTTON_LEFT_SHOULDER, SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER,
+				SDL_GAMEPAD_BUTTON_DPAD_UP, SDL_GAMEPAD_BUTTON_DPAD_DOWN,
+				SDL_GAMEPAD_BUTTON_DPAD_LEFT, SDL_GAMEPAD_BUTTON_DPAD_RIGHT,
+				SDL_GAMEPAD_BUTTON_TOUCHPAD
+			};
+
+			state.connected = true;
+			state.padId = static_cast<uint32_t>(_id);
+			state.nintendoLabels = SDL_GetGamepadButtonLabel(pad, SDL_GAMEPAD_BUTTON_EAST) == SDL_GAMEPAD_BUTTON_LABEL_A;
+			for(size_t i = 0; i < std::size(g_buttons); ++i)
+				state.buttons.set(i, SDL_GetGamepadButton(pad, g_buttons[i]));
+
+			state.leftX = axis(pad, SDL_GAMEPAD_AXIS_LEFTX);
+			state.leftY = axis(pad, SDL_GAMEPAD_AXIS_LEFTY);
+			state.rightX = axis(pad, SDL_GAMEPAD_AXIS_RIGHTX);
+			state.rightY = axis(pad, SDL_GAMEPAD_AXIS_RIGHTY);
+			state.leftTrigger = axis(pad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER);
+			state.rightTrigger = axis(pad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER);
+
+			if(SDL_GetNumGamepadTouchpads(pad) > 0)
+			{
+				bool down = false;
+				float x = 0.0f, y = 0.0f, pressure = 0.0f;
+				if(SDL_GetGamepadTouchpadFinger(pad, 0, 0, &down, &x, &y, &pressure))
+				{
+					state.touching = down;
+					state.touchX = x;
+					state.touchY = y;
+				}
+			}
+
+			float gyro[3] = {};
+			if(SDL_GamepadSensorEnabled(pad, SDL_SENSOR_GYRO)
+				&& SDL_GetGamepadSensorData(pad, SDL_SENSOR_GYRO, gyro, 3))
+			{
+				state.gyroX = gyro[0];
+				state.gyroY = gyro[1];
+				state.gyroZ = gyro[2];
+			}
+
+			float accel[3] = {};
+			if(SDL_GamepadSensorEnabled(pad, SDL_SENSOR_ACCEL)
+				&& SDL_GetGamepadSensorData(pad, SDL_SENSOR_ACCEL, accel, 3))
+			{
+				state.hasAccel = true;
+				state.accelX = accel[0];
+				state.accelY = accel[1];
+				state.accelZ = accel[2];
+			}
+			return state;
+		}
+
+		// Any input that means someone is using this controller, rather than it lying on the desk.
+		bool inUse(const Gamepad::State& _now, const Gamepad::State& _before)
+		{
+			const auto moved = [](const float _a, const float _b) { return std::abs(_a - _b) > 0.25f; };
+			return _now.buttons != _before.buttons || _now.touching
+				|| moved(_now.leftX, _before.leftX) || moved(_now.leftY, _before.leftY)
+				|| moved(_now.rightX, _before.rightX) || moved(_now.rightY, _before.rightY)
+				|| moved(_now.leftTrigger, _before.leftTrigger) || moved(_now.rightTrigger, _before.rightTrigger);
+		}
+	}
 
 	Gamepad::Gamepad() : m_impl(std::make_unique<Impl>())
 	{
@@ -48,8 +154,8 @@ namespace mdJucePlugin
 
 	Gamepad::~Gamepad()
 	{
-		if(m_impl->pad)
-			SDL_CloseGamepad(m_impl->pad);
+		for(const auto& pad : m_impl->pads)
+			SDL_CloseGamepad(pad.gamepad);
 		if(m_impl->initialised)
 			SDL_QuitSubSystem(SDL_INIT_GAMEPAD);
 	}
@@ -67,72 +173,22 @@ namespace mdJucePlugin
 
 		// Pumps device add/remove and input without draining SDL's event queue.
 		SDL_UpdateGamepads();
-
-		if(m_impl->pad && !SDL_GamepadConnected(m_impl->pad))
-		{
-			SDL_CloseGamepad(m_impl->pad);
-			m_impl->pad = nullptr;
-		}
-		if(!m_impl->pad)
-			m_impl->openFirst();
-
-		auto* const pad = m_impl->pad;
-		if(!pad)
+		m_impl->closeGone();
+		m_impl->openNew();
+		if(m_impl->pads.empty())
 			return state;
 
-		static constexpr SDL_GamepadButton g_buttons[] =
+		// Follow whichever controller was used last.
+		for(auto& pad : m_impl->pads)
 		{
-			SDL_GAMEPAD_BUTTON_SOUTH, SDL_GAMEPAD_BUTTON_EAST, SDL_GAMEPAD_BUTTON_WEST, SDL_GAMEPAD_BUTTON_NORTH,
-			SDL_GAMEPAD_BUTTON_BACK, SDL_GAMEPAD_BUTTON_GUIDE, SDL_GAMEPAD_BUTTON_START,
-			SDL_GAMEPAD_BUTTON_LEFT_STICK, SDL_GAMEPAD_BUTTON_RIGHT_STICK,
-			SDL_GAMEPAD_BUTTON_LEFT_SHOULDER, SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER,
-			SDL_GAMEPAD_BUTTON_DPAD_UP, SDL_GAMEPAD_BUTTON_DPAD_DOWN,
-			SDL_GAMEPAD_BUTTON_DPAD_LEFT, SDL_GAMEPAD_BUTTON_DPAD_RIGHT,
-			SDL_GAMEPAD_BUTTON_TOUCHPAD
-		};
-
-		state.connected = true;
-		for(size_t i = 0; i < std::size(g_buttons); ++i)
-			state.buttons.set(i, SDL_GetGamepadButton(pad, g_buttons[i]));
-
-		state.leftX = axis(pad, SDL_GAMEPAD_AXIS_LEFTX);
-		state.leftY = axis(pad, SDL_GAMEPAD_AXIS_LEFTY);
-		state.rightX = axis(pad, SDL_GAMEPAD_AXIS_RIGHTX);
-		state.rightY = axis(pad, SDL_GAMEPAD_AXIS_RIGHTY);
-		state.leftTrigger = axis(pad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER);
-		state.rightTrigger = axis(pad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER);
-
-		if(SDL_GetNumGamepadTouchpads(pad) > 0)
-		{
-			bool down = false;
-			float x = 0.0f, y = 0.0f, pressure = 0.0f;
-			if(SDL_GetGamepadTouchpadFinger(pad, 0, 0, &down, &x, &y, &pressure))
-			{
-				state.touching = down;
-				state.touchX = x;
-				state.touchY = y;
-			}
+			const auto now = readPad(pad.gamepad, pad.id);
+			if(inUse(now, pad.last))
+				m_impl->active = pad.id;
+			pad.last = now;
 		}
-
-		float gyro[3] = {};
-		if(SDL_GamepadSensorEnabled(pad, SDL_SENSOR_GYRO)
-			&& SDL_GetGamepadSensorData(pad, SDL_SENSOR_GYRO, gyro, 3))
-		{
-			state.gyroX = gyro[0];
-			state.gyroY = gyro[1];
-			state.gyroZ = gyro[2];
-		}
-
-		float accel[3] = {};
-		if(SDL_GamepadSensorEnabled(pad, SDL_SENSOR_ACCEL)
-			&& SDL_GetGamepadSensorData(pad, SDL_SENSOR_ACCEL, accel, 3))
-		{
-			state.hasAccel = true;
-			state.accelX = accel[0];
-			state.accelY = accel[1];
-			state.accelZ = accel[2];
-		}
-		return state;
+		const auto active = std::find_if(m_impl->pads.begin(), m_impl->pads.end(),
+			[&](const Impl::Pad& _p) { return _p.id == m_impl->active; });
+		return active != m_impl->pads.end() ? active->last : m_impl->pads.front().last;
 	}
 #else
 	struct Gamepad::Impl {};

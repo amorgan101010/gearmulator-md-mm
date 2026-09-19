@@ -2980,6 +2980,7 @@ namespace mdJucePlugin
 		auto& config = getProcessor().getConfig();
 		for(const auto& info : gamepadAxes::g_axes)
 			m_gamepadAxes[static_cast<size_t>(info.axis)] = gamepadAxes::read(config, info, getModel());
+		m_gamepadFaceLayout = config.getIntValue(gamepadAxes::g_faceLayoutKey, 0);
 	}
 
 	juceRmlUi::ElemKnob* Editor::gamepadAxisKnob(const gamepadAxes::Axis _axis) const
@@ -3135,9 +3136,29 @@ namespace mdJucePlugin
 			return;
 
 		using Button = Gamepad::Button;
-		const auto state = m_gamepad->poll();
-		const auto previous = m_gamepadPrevious;
+		auto state = m_gamepad->poll();
+		// Nintendo layout: A (right) acts and B (bottom) exits, so swap the face buttons' roles.
+		const bool nintendo = m_gamepadFaceLayout == 2 || (m_gamepadFaceLayout == 0 && state.nintendoLabels);
+		if(nintendo)
+		{
+			const auto swap = [&](const Button _a, const Button _b)
+			{
+				const bool a = state.pressed(_a);
+				state.buttons.set(static_cast<size_t>(_a), state.pressed(_b));
+				state.buttons.set(static_cast<size_t>(_b), a);
+			};
+			swap(Button::South, Button::East);
+			swap(Button::West, Button::North);
+		}
+		auto previous = m_gamepadPrevious;
 		m_gamepadPrevious = state;
+		// Another controller took over: let go of whatever the previous one held, and start this one fresh.
+		if(state.connected && previous.connected && state.padId != previous.padId)
+		{
+			releaseGamepadInputs();
+			cancelPanelInputGestures();
+			previous = state;
+		}
 		const auto elapsedMilliseconds = m_gamepadLastPollMilliseconds > 0.0
 			? std::min(100.0, _nowMilliseconds - m_gamepadLastPollMilliseconds) : 0.0;
 		m_gamepadLastPollMilliseconds = _nowMilliseconds;
