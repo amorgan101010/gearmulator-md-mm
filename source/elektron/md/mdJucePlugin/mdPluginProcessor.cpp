@@ -372,14 +372,15 @@ namespace mdJucePlugin
 	AudioPluginAudioProcessor::AudioPluginAudioProcessor(const md::MachineModel _model,
 		EphemeralConfig _config, const bool _allowMcpServer) :
 		AudioPluginAudioProcessor(_model, std::vector<uint8_t>{}, _allowMcpServer, true,
-			std::move(_config.deviceHomePath))
+			std::move(_config.deviceHomePath), std::move(_config.rescueFolder))
 	{
 	}
 
 	AudioPluginAudioProcessor::AudioPluginAudioProcessor(const md::MachineModel _model,
 		std::vector<uint8_t> _initialPatchRam, const bool _allowMcpServer,
 		const bool _ephemeralConfig,
-		std::optional<std::string> _deviceHomePath) :
+		std::optional<std::string> _deviceHomePath,
+		std::optional<std::string> _rescueFolder) :
 		Processor(createBusesProperties(),
 			getOptions(_model, _ephemeralConfig), makeProcessorProperties(_model),
 			_allowMcpServer, _ephemeralConfig
@@ -389,6 +390,8 @@ namespace mdJucePlugin
 		, m_initialPatchRam(std::move(_initialPatchRam))
 		, m_deviceHomePath(std::move(_deviceHomePath))
 		, m_ephemeralConfig(_ephemeralConfig)
+		, m_rescueFolder(_ephemeralConfig ? std::move(_rescueFolder)
+			: std::optional<std::string>(getDataFolder() + "rescued-projects"))
 		, m_firmwareImagePath(_ephemeralConfig ? std::string{} : initialFirmwareImagePath(getConfig(), _model))
 	{
 		if(m_model == md::MachineModel::Machinedrum)
@@ -874,8 +877,96 @@ namespace mdJucePlugin
 		if(error.empty() || generation == m_reportedRestoreFailureGeneration)
 			return false;
 		m_reportedRestoreFailureGeneration = generation;
+		if(std::string rescued; rescueUnloadedState(generation, rescued))
+			error += "\n\nThe project that could not be loaded was kept in " + rescued + ", so it is not lost.";
 		reportProjectStateRestoreFailure(error);
 		return true;
+	}
+
+	bool AudioPluginAudioProcessor::rescueUnloadedState(const uint64_t _generation, std::string& _path)
+	{
+		const std::lock_guard lock(m_incomingStateMutex);
+		if(m_rescuedGeneration == _generation)
+		{
+			_path = m_rescuedProjectPath;
+			return !_path.empty();
+		}
+		if(m_incomingState.empty() || !m_rescueFolder)
+			return false;
+		const auto folder = juce::File(juce::String::fromUTF8(m_rescueFolder->c_str()));
+		if(!folder.createDirectory())
+			return false;
+		// Written in the format getStateInformation produces, so it can be loaded back as a project.
+		const auto file = folder.getChildFile(juce::String(std::string(productName(m_model)))
+			+ " " + juce::Time::getCurrentTime().formatted("%Y-%m-%d %H-%M-%S") + ".state")
+			.getNonexistentSibling();
+		if(!file.replaceWithData(m_incomingState.data(), m_incomingState.size()))
+			return false;
+		m_rescuedGeneration = _generation;
+		m_rescuedProjectPath = file.getFullPathName().toStdString();
+		_path = m_rescuedProjectPath;
+		std::fprintf(stderr, "[MD] kept the project that failed to load in %s\n", _path.c_str());
+		return true;
+	}
+
+	std::string AudioPluginAudioProcessor::getRescuedProjectPath() const
+	{
+		const std::lock_guard lock(m_incomingStateMutex);
+		return m_rescuedProjectPath;
+	}
+
+	void AudioPluginAudioProcessor::setStateInformation(const void* const _data, const int _sizeInBytes)
+	{
+		if(_data && _sizeInBytes > 0)
+		{
+			const std::lock_guard lock(m_incomingStateMutex);
+			const auto* const bytes = static_cast<const uint8_t*>(_data);
+			m_incomingState.assign(bytes, bytes + _sizeInBytes);
+		}
+		Processor::setStateInformation(_data, _sizeInBytes);
+	}
+
+	void AudioPluginAudioProcessor::getStateInformation(juce::MemoryBlock& _destData)
+	{
+		bool running = false;
+		bool loaded = false;
+		std::optional<uint64_t> failedGeneration;
+		getPlugin().withDeviceLocked([&](synthLib::Device* const _device)
+		{
+			auto* const device = dynamic_cast<md::Device*>(_device);
+			running = device && device->isValid();
+			if(!running)
+				return;
+			const auto status = device->projectStateRestoreStatus();
+			loaded = status == md::Device::ProjectStateRestoreStatus::Idle;
+			if(status == md::Device::ProjectStateRestoreStatus::Failed)
+				failedGeneration = device->deferredStateGeneration();
+		});
+		// Once the project is running, what the machine holds is newer than the copy handed in.
+		if(loaded)
+		{
+			const std::lock_guard lock(m_incomingStateMutex);
+			m_incomingState.clear();
+			m_incomingState.shrink_to_fit();
+		}
+
+		// A failed project is kept before this save replaces it with what is running now, even if the
+		// window closes before the error message had a chance to appear.
+		if(failedGeneration)
+		{
+			std::string rescued;
+			rescueUnloadedState(*failedGeneration, rescued);
+		}
+		if(!running)
+		{
+			const std::lock_guard lock(m_incomingStateMutex);
+			if(!m_incomingState.empty())
+			{
+				_destData.append(m_incomingState.data(), m_incomingState.size());
+				return;
+			}
+		}
+		Processor::getStateInformation(_destData);
 	}
 
 	bool AudioPluginAudioProcessor::serviceProjectStateRestore()
