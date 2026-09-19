@@ -83,6 +83,7 @@ namespace md
 			bool m_committed = false;
 		};
 
+		~Device() override;
 		Device(const synthLib::DeviceCreateParams& _params,
 			const std::vector<uint8_t>& _initialPatchRam = {});
 

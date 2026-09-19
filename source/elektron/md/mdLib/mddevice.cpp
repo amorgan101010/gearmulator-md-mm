@@ -147,6 +147,11 @@ namespace md
 			initialFlash.flash, initialFlash.cache);
 	}
 
+	Device::~Device()
+	{
+		m_frontPanelPublisher->retire();
+	}
+
 	bool Device::captureFactoryFlashCachePersistence(std::string& _filename,
 		FactoryFlashSnapshot& _snapshot, std::string& _error)
 	{

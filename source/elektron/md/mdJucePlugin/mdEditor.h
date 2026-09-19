@@ -294,6 +294,8 @@ namespace mdJucePlugin
 		std::unique_ptr<PixelPerfectPanel> m_pixelPerfectPanel;
 		md::FrontPanel m_frontPanelSnapshot;
 		bool m_frontPanelSnapshotValid = false;
+		// Kept between frames: fetching it takes the device lock, which waits for the audio block to finish.
+		std::shared_ptr<md::FrontPanelPublisher> m_frontPanelPublisher;
 		bool m_lcdChanged = true;
 		bool m_lcdInteractionInputChanged = true;
 		std::optional<lcdInteraction::State> m_lcdInteractionState;
