@@ -40,6 +40,7 @@
 #include "RmlUi/Core/ComputedValues.h"
 #include "RmlUi/Core/Element.h"
 #include "RmlUi/Core/ElementDocument.h"
+#include "RmlUi/Core/StringUtilities.h"
 
 #include <algorithm>
 #include <chrono>
@@ -47,7 +48,6 @@
 #include <filesystem>
 #include <functional>
 #include <string>
-#include <tuple>
 #include <vector>
 
 namespace mdJucePlugin
@@ -478,16 +478,14 @@ namespace mdJucePlugin
 
 	void Editor::updateLcdHover(const Rml::Event& _event)
 	{
-		const auto target = lcdTargetAt(_event);
 		const auto point = lcdNativePointAt(_event);
-		// Tooltip sources: a field of a screen the classifier recognises, or the machine name.
-		m_tooltipLcdEncoder.reset();
-		if(target && m_lcdInteractionState)
-			m_tooltipLcdEncoder = target;
+		const auto target = point && m_lcdInteractionState
+			? lcdInteraction::hitTest(*m_lcdInteractionState, point->first, point->second) : std::nullopt;
+		// The machine name is a tooltip source too. Allow a pixel of slack above and below the 7 px text.
 		const auto& name = getModel() == md::MachineModel::Machinedrum ? lcdText::g_mdMachineName : lcdText::g_machineName;
-		m_tooltipLcdMachineName = point
-			&& point->first >= static_cast<int>(name.x) && point->first < static_cast<int>(name.x + name.width)
-			&& point->second >= static_cast<int>(name.y) - 1 && point->second <= static_cast<int>(name.y + name.height);
+		const lcdInteraction::NativeRect nameArea{ static_cast<int>(name.x), static_cast<int>(name.y) - 1,
+			static_cast<int>(name.width), static_cast<int>(name.height) + 2 };
+		m_tooltipLcdMachineName = point && nameArea.contains(point->first, point->second);
 		if(target == m_lcdHoverEncoder)
 			return;
 		m_lcdHoverEncoder = target;
@@ -504,7 +502,6 @@ namespace mdJucePlugin
 
 	void Editor::clearLcdHover()
 	{
-		m_tooltipLcdEncoder.reset();
 		m_tooltipLcdMachineName = false;
 		if(!m_lcdHoverEncoder && !m_lcdWheelEncoder)
 			return;
@@ -983,17 +980,7 @@ namespace mdJucePlugin
 			if(!target)
 				return;
 
-			constexpr md::FrontPanel::StatusLed pages[] =
-			{
-				md::FrontPanel::StatusLed::Synthesis,
-				md::FrontPanel::StatusLed::Effects,
-				md::FrontPanel::StatusLed::Routing,
-			};
-			std::array<bool, panelAffordances::g_machinedrumDataPages.size()> active{};
-			for(size_t page = 0; page < active.size(); ++page)
-				active[page] = frontPanel.getStatusLed(pages[page]);
-
-			const auto current = panelAffordances::singleActiveIndex(active);
+			const auto current = currentMachinedrumDataPage();
 			if(!current || m_machinedrumDataPageTarget.completeIfAt(*current))
 				return;
 
@@ -1006,16 +993,7 @@ namespace mdJucePlugin
 		const auto dataTarget = m_monomachineDataPageTarget.target();
 		if(dataTarget)
 		{
-			constexpr uint8_t banks[] = { 0x25, 0x25, 0x25, 0x25, 0x26, 0x26, 0x26 };
-			constexpr uint8_t bits[] = { 4, 5, 6, 7, 0, 1, 2 };
-			std::array<bool, panelAffordances::g_monomachineDataPages.size()> active{};
-			for(size_t page = 0; page < active.size(); ++page)
-			{
-				const auto raw = frontPanel.getLedBankRaw(banks[page]);
-				active[page] = (raw & static_cast<uint8_t>(1u << bits[page])) == 0;
-			}
-
-			const auto current = panelAffordances::singleActiveIndex(active);
+			const auto current = currentMonomachineDataPage();
 			if(current && !m_monomachineDataPageTarget.completeIfAt(*current))
 			{
 				const auto plan = panelAffordances::monomachineDataPagePlan(*current, *dataTarget);
@@ -2203,20 +2181,56 @@ namespace mdJucePlugin
 		}
 	}
 
-	bool Editor::describeMachinedrumEncoder(const unsigned _encoder, std::string& _abbreviation, std::string& _name,
-		std::string& _description, std::string& _footer) const
+	namespace
 	{
-		if(getModel() != md::MachineModel::Machinedrum || !m_frontPanelSnapshotValid || _encoder >= 8)
-			return false;
-		const auto knob = std::string(1, static_cast<char>('A' + _encoder));
-		const auto set = [&](const parameterHelp::Entry& _entry, const std::string& _footerText)
+		// ", knob A" .. ", knob H", the tail of a tooltip footer.
+		std::string knobSuffix(const unsigned _encoder)
 		{
-			_abbreviation = _entry.abbreviation;
-			_name = m_help(_entry.name);
-			_description = m_help(_entry.description);
-			_footer = _footerText + ", knob " + knob;
-			return true;
-		};
+			return std::string(", knob ") + static_cast<char>('A' + _encoder);
+		}
+	}
+
+	Editor::TooltipText Editor::tooltipFor(const parameterHelp::Entry& _entry, std::string _footer) const
+	{
+		return { _entry.abbreviation, m_help(_entry.name), m_help(_entry.description), std::move(_footer) };
+	}
+
+	std::string Editor::nowText(const parameterHelp::ValueHash& _value) const
+	{
+		return std::string(" Now: ") + _value.text + ". " + m_help(_value.meaning);
+	}
+
+	std::optional<Editor::TooltipText> Editor::describeMachineName() const
+	{
+		if(getModel() == md::MachineModel::Machinedrum)
+		{
+			uint16_t key = 0;
+			const auto* const machine = machinedrumHelp::machineForHash(
+				lcdText::hash(m_frontPanelSnapshot, lcdText::g_mdMachineName), key);
+			if(!machine)
+				return std::nullopt;
+			TooltipText text{ machine->lcdName, m_help(machine->name), m_help(machine->description), "Machine on the active track" };
+			// Numbered machines (e.g. TRX-B2) show their two-digit number on the LCD.
+			if(machine->number)
+			{
+				const auto number = machine->number + (key - machine->first);
+				text.abbreviation += static_cast<char>('0' + number / 10);
+				text.abbreviation += static_cast<char>('0' + number % 10);
+			}
+			return text;
+		}
+
+		const auto* const machine = monomachineHelp::machineForHash(lcdText::hash(m_frontPanelSnapshot, lcdText::g_machineName));
+		if(!machine)
+			return std::nullopt;
+		return TooltipText{ machine->lcdName, m_help(machine->name), m_help(machine->description), "Machine on the active track" };
+	}
+
+	std::optional<Editor::TooltipText> Editor::describeMachinedrumEncoder(const unsigned _encoder) const
+	{
+		if(_encoder >= 8)
+			return std::nullopt;
+		const auto knob = knobSuffix(_encoder);
 
 		// LFO and master FX windows are recognised by the fork's classifier.
 		if(m_lcdInteractionState)
@@ -2225,72 +2239,115 @@ namespace mdJucePlugin
 			const auto surface = m_lcdInteractionState->surface;
 			if(m_lcdInteractionState->layout == lcdInteraction::LayoutKind::Lfo && surface == SurfaceKind::Lfo)
 			{
-				set(machinedrumHelp::g_lfo[_encoder], "LFO window");
+				auto text = tooltipFor(machinedrumHelp::g_lfo[_encoder], "LFO window" + knob);
 				// UPDTE and PARAM print their value; say what the LFO is currently doing and aimed at.
 				if(_encoder == 4)
 				{
 					if(const auto* const value = machinedrumHelp::lfoUpdateForHash(
 						lcdText::hash(m_frontPanelSnapshot, lcdText::mdLfoValue(4))))
-						_description += std::string(" Now: ") + value->text + ". " + m_help(value->meaning);
+						text.description += nowText(*value);
 				}
 				else if(_encoder == 1)
 				{
 					if(const auto* const label = machinedrumHelp::labelForHash(
 						lcdText::inkHash(m_frontPanelSnapshot, lcdText::mdLfoValue(1))))
 					{
-						_description += std::string(" Now: ") + label + ".";
-						bool allTracks = false;
-						const auto* entry = machinedrumHelp::entry(1, nullptr, label, allTracks);
+						text.description += std::string(" Now: ") + label + ".";
+						// Describe the target too if it is an EFFECTS or ROUTING parameter.
+						const auto* entry = parameterHelp::entryForLabel(machinedrumHelp::g_effects, label);
 						if(!entry)
-							entry = machinedrumHelp::entry(2, nullptr, label, allTracks);
+							entry = parameterHelp::entryForLabel(machinedrumHelp::g_routing, label);
 						if(entry)
-							_description += std::string(" ") + m_help(entry->name) + ": " + m_help(entry->description);
+							text.description += std::string(" ") + m_help(entry->name) + ": " + m_help(entry->description);
 					}
 				}
-				return true;
+				return text;
 			}
 			if(m_lcdInteractionState->layout == lcdInteraction::LayoutKind::MasterFx)
 			{
 				const auto index = static_cast<size_t>(surface) - static_cast<size_t>(SurfaceKind::MasterFxEcho);
-				if(index < 4)
-				{
-					if(const auto* const e = machinedrumHelp::parameter(machinedrumHelp::g_masterFxFamilies[index],
-						machinedrumHelp::g_masterFxLabels[index][_encoder]))
-						return set(*e, std::string("Master FX, ") + machinedrumHelp::g_masterFxNames[index]);
-				}
-				return false;
+				if(index >= 4)
+					return std::nullopt;
+				const auto* const entry = machinedrumHelp::parameter(machinedrumHelp::g_masterFxFamilies[index],
+					machinedrumHelp::g_masterFxLabels[index][_encoder]);
+				if(!entry)
+					return std::nullopt;
+				return tooltipFor(*entry, std::string("Master FX, ") + machinedrumHelp::g_masterFxNames[index] + knob);
 			}
 		}
 
 		// Data pages: read the field label and the machine name off the LCD.
 		const auto page = currentMachinedrumDataPage();
 		if(!page)
-			return false;
+			return std::nullopt;
 		uint16_t key = 0;
 		const auto* const machine = machinedrumHelp::machineForHash(
 			lcdText::hash(m_frontPanelSnapshot, lcdText::g_mdMachineName), key);
 		bool allTracks = false;
-		const auto* const e = machinedrumHelp::entry(*page, machine, machinedrumHelp::labelForHash(
+		const auto* const entry = machinedrumHelp::entry(*page, machine, machinedrumHelp::labelForHash(
 			lcdText::inkHash(m_frontPanelSnapshot, lcdText::fieldLabel(_encoder))), allTracks);
-		if(!e)
-			return false;
+		if(!entry)
+			return std::nullopt;
 		constexpr const char* pageNames[] = { "synthesis", "Effects page", "Routing page" };
-		std::string footer = pageNames[*page];
-		if(*page == 0)
-			footer = std::string(m_help(machine->name)) + " synthesis";
-		set(*e, footer);
+		// SYNTHESIS entries only resolve with a known machine, so machine is set on page 0.
+		const auto where = *page == 0 ? std::string(m_help(machine->name)) + " synthesis" : std::string(pageNames[*page]);
+		auto text = tooltipFor(*entry, where + knob);
 		if(allTracks)
 		{
-			_name += ", all tracks";
-			_description += " CTR-AL applies it to all 16 tracks.";
+			text.name += ", all tracks";
+			text.description += " CTR-AL applies it to all 16 tracks.";
 		}
-		return true;
+		return text;
+	}
+
+	std::optional<Editor::TooltipText> Editor::describeMonomachineEncoder(const unsigned _encoder) const
+	{
+		const auto page = currentMonomachineDataPage();
+		if(!page)
+			return std::nullopt;
+		const auto knob = knobSuffix(_encoder);
+
+		if(*page == 0)
+		{
+			// SYNTHESIS depends on the machine: read both the field label and the machine
+			// name off the LCD. Anything unrecognised (a menu, an overlay) shows nothing.
+			const auto* const label = monomachineHelp::labelForHash(
+				lcdText::hash(m_frontPanelSnapshot, lcdText::fieldLabel(_encoder)));
+			const auto* const machine = monomachineHelp::machineForHash(
+				lcdText::hash(m_frontPanelSnapshot, lcdText::g_machineName));
+			const auto* const entry = label && machine ? monomachineHelp::parameter(machine->id, label) : nullptr;
+			if(!entry)
+				return std::nullopt;
+			auto text = tooltipFor(*entry, std::string(m_help(machine->name)) + " synthesis" + knob);
+			// Settings print their value under the knob; say what it is set to.
+			if(const auto* const value = monomachineHelp::machineValueForHash(machine->id, label,
+				lcdText::hash(m_frontPanelSnapshot, lcdText::lfoValue(_encoder))))
+				text.description += nowText(*value);
+			return text;
+		}
+
+		const auto* const entry = parameterHelp::monomachineEntry(*page, _encoder);
+		if(!entry)
+			return std::nullopt;
+		auto text = tooltipFor(*entry, std::string(parameterHelp::g_monomachinePageNames[*page]) + " page" + knob);
+
+		// On an LFO page, say what the knob is currently set to, read off the LCD.
+		const bool lfoPage = *page >= 4;
+		if(lfoPage && _encoder <= 1)
+		{
+			text.description += lfoTargetDescription(_encoder);
+		}
+		else if(lfoPage)
+		{
+			if(const auto* const value = monomachineHelp::lfoValueForHash(_encoder,
+				lcdText::hash(m_frontPanelSnapshot, lcdText::lfoValue(_encoder))))
+				text.description += nowText(*value);
+		}
+		return text;
 	}
 
 	std::string Editor::lfoTargetDescription(const unsigned _encoder) const
 	{
-		if(!m_frontPanelSnapshotValid)
-			return {};
 		const auto* const target = monomachineHelp::lfoPageForHash(lcdText::hash(m_frontPanelSnapshot, lcdText::lfoValue(0)));
 		if(!target)
 			return {};
@@ -2322,159 +2379,72 @@ namespace mdJucePlugin
 			+ m_help(target->name) + " page. " + m_help(destination->description);
 	}
 
+	Editor::TooltipTarget Editor::tooltipTarget() const
+	{
+		// In priority order: the mouse over a knob, or over the LCD (the machine name or a field of
+		// a recognised screen).
+		if(m_tooltipHoverKnob && m_encoders[*m_tooltipHoverKnob])
+			return { m_encoders[*m_tooltipHoverKnob], m_tooltipHoverKnob, false };
+		if(!m_lcdArea)
+			return {};
+		if(m_tooltipLcdMachineName)
+			return { m_lcdArea, std::nullopt, true };
+		if(m_lcdHoverEncoder)
+			return { m_lcdArea, m_lcdHoverEncoder, false };
+		return {};
+	}
+
+	std::optional<Editor::TooltipText> Editor::describe(const TooltipTarget& _target) const
+	{
+		if(!m_frontPanelSnapshotValid)
+			return std::nullopt;
+		if(_target.machineName)
+			return describeMachineName();
+		if(!_target.encoder)
+			return std::nullopt;
+		return getModel() == md::MachineModel::Machinedrum
+			? describeMachinedrumEncoder(*_target.encoder)
+			: describeMonomachineEncoder(*_target.encoder);
+	}
+
 	void Editor::updateParameterTooltip()
 	{
 		if(!m_parameterTooltip)
 			return;
-		m_help.refresh();
-
-		// What to describe, in priority order: the mouse over a knob, or over the LCD (the machine
-		// name or a field of a recognised screen).
-		std::optional<unsigned> encoder;
-		bool machineName = false;
-		Rml::Element* anchor = nullptr;
-		if(m_tooltipHoverKnob && m_encoders[*m_tooltipHoverKnob])
-		{
-			encoder = m_tooltipHoverKnob;
-			anchor = m_encoders[*encoder];
-		}
-		else if(m_tooltipLcdMachineName && m_lcdArea)
-		{
-			machineName = true;
-			anchor = m_lcdArea;
-		}
-		else if(m_tooltipLcdEncoder && m_lcdArea)
-		{
-			encoder = m_tooltipLcdEncoder;
-			anchor = m_lcdArea;
-		}
 
 		// Wait until the pointer has rested on the same thing for the configured delay. This runs on
 		// every UI tick, so the tooltip appears once the delay has passed.
-		const std::tuple<const void*, int, bool> restTarget{anchor, encoder ? static_cast<int>(*encoder) : -1, machineName};
+		const auto target = tooltipTarget();
 		const auto now = std::chrono::steady_clock::now();
-		if(restTarget != m_tooltipRestTarget)
+		if(target != m_tooltipRestTarget)
 		{
-			m_tooltipRestTarget = restTarget;
+			m_tooltipRestTarget = target;
 			m_tooltipRestSince = now;
 		}
-		if(!m_tooltipsEnabled || now - m_tooltipRestSince < std::chrono::milliseconds(m_tooltipDelayMs))
-			anchor = nullptr;
+		const bool rested = now - m_tooltipRestSince >= std::chrono::milliseconds(m_tooltipDelayMs);
 
-		std::string abbreviation, name, description, footer;
-		const auto page = currentMonomachineDataPage();
-		if(getModel() == md::MachineModel::Machinedrum)
+		std::optional<TooltipText> text;
+		if(target.anchor && m_tooltipsEnabled && rested)
 		{
-			if(machineName && m_frontPanelSnapshotValid)
-			{
-				uint16_t key = 0;
-				if(const auto* const machine = machinedrumHelp::machineForHash(
-					lcdText::hash(m_frontPanelSnapshot, lcdText::g_mdMachineName), key))
-				{
-					abbreviation = machine->lcdName;
-					if(machine->number)
-					{
-						const auto number = machine->number + (key - machine->first);
-						abbreviation += std::string(1, static_cast<char>('0' + number / 10)) + static_cast<char>('0' + number % 10);
-					}
-					name = m_help(machine->name);
-					description = m_help(machine->description);
-					footer = "Machine on the active track";
-				}
-			}
-			else if(encoder)
-			{
-				describeMachinedrumEncoder(*encoder, abbreviation, name, description, footer);
-			}
+			m_help.refresh();
+			text = describe(target);
 		}
-		else if(machineName && m_frontPanelSnapshotValid)
+		if(!text)
 		{
-			if(const auto* const machine = monomachineHelp::machineForHash(
-				lcdText::hash(m_frontPanelSnapshot, lcdText::g_machineName)))
-			{
-				abbreviation = machine->lcdName;
-				name = m_help(machine->name);
-				description = m_help(machine->description);
-				footer = "Machine on the active track";
-			}
-		}
-		else if(encoder && page)
-		{
-			const auto knob = std::string(1, static_cast<char>('A' + *encoder));
-			if(*page == 0)
-			{
-				// SYNTHESIS depends on the machine: read both the field label and the machine
-				// name off the LCD. Anything unrecognised (a menu, an overlay) shows nothing.
-				const auto* const label = m_frontPanelSnapshotValid ? monomachineHelp::labelForHash(
-					lcdText::hash(m_frontPanelSnapshot, lcdText::fieldLabel(*encoder))) : nullptr;
-				const auto* const machine = m_frontPanelSnapshotValid ? monomachineHelp::machineForHash(
-					lcdText::hash(m_frontPanelSnapshot, lcdText::g_machineName)) : nullptr;
-				if(const auto* const entry = label && machine ? monomachineHelp::parameter(machine->id, label) : nullptr)
-				{
-					abbreviation = entry->abbreviation;
-					name = m_help(entry->name);
-					description = m_help(entry->description);
-					footer = std::string(m_help(machine->name)) + " synthesis, knob " + knob;
-					// Settings print their value under the knob; say what it is set to.
-					if(const auto* const value = monomachineHelp::machineValueForHash(machine->id, label,
-						lcdText::hash(m_frontPanelSnapshot, lcdText::lfoValue(*encoder))))
-						description += std::string(" Now: ") + value->text + ". " + m_help(value->meaning);
-				}
-			}
-			else if(const auto* const entry = parameterHelp::monomachineEntry(*page, *encoder))
-			{
-				abbreviation = entry->abbreviation;
-				name = m_help(entry->name);
-				description = m_help(entry->description);
-				footer = std::string(parameterHelp::g_monomachinePageNames[*page]) + " page, knob " + knob;
-
-				// On an LFO page, say what the knob is currently set to, read off the LCD.
-				if(*page >= 4 && *page <= 6 && *encoder <= 1)
-					description += lfoTargetDescription(*encoder);
-				else if(*page >= 4 && *page <= 6 && m_frontPanelSnapshotValid)
-				{
-					if(const auto* const value = monomachineHelp::lfoValueForHash(*encoder,
-						lcdText::hash(m_frontPanelSnapshot, lcdText::lfoValue(*encoder))))
-						description += std::string(" Now: ") + value->text + ". " + m_help(value->meaning);
-				}
-			}
-		}
-
-		if(abbreviation.empty() || !anchor)
-		{
-			if(!m_parameterTooltipContent.empty())
-			{
-				m_parameterTooltip->SetProperty(Rml::PropertyId::Display, Rml::Style::Display::None);
-				m_parameterTooltipContent.clear();
-				if(auto* const rml = getRmlComponent())
-					rml->enqueueUpdateOnce();
-			}
+			hideParameterTooltip();
 			return;
 		}
 
-		const auto escape = [](const std::string& _text)
-		{
-			std::string result;
-			for(const auto c : _text)
-			{
-				switch(c)
-				{
-				case '&': result += "&amp;"; break;
-				case '<': result += "&lt;"; break;
-				case '>': result += "&gt;"; break;
-				default: result += c; break;
-				}
-			}
-			return result;
-		};
-		const auto content = "<span style=\"color: #ffc83a;\">" + escape(abbreviation) + "</span>  "
-			+ escape(name) + "<br/><span style=\"color: #b3bdb0;\">" + escape(description) + "</span><br/>"
-			+ "<span style=\"color: #7f8a82; font-size: 9dp;\">" + escape(footer) + "</span>";
-		const auto key = content + '@' + std::to_string(reinterpret_cast<uintptr_t>(anchor));
-		if(key == m_parameterTooltipContent)
+		using Rml::StringUtilities::EncodeRml;
+		const auto content = "<span style=\"color: #ffc83a;\">" + EncodeRml(text->abbreviation) + "</span>  "
+			+ EncodeRml(text->name) + "<br/><span style=\"color: #b3bdb0;\">" + EncodeRml(text->description) + "</span><br/>"
+			+ "<span style=\"color: #7f8a82; font-size: 9dp;\">" + EncodeRml(text->footer) + "</span>";
+		if(content == m_parameterTooltipContent && m_parameterTooltip->GetParentNode() == target.anchor)
 			return;
-		m_parameterTooltipContent = key;
+		m_parameterTooltipContent = content;
 
+		// Move the tooltip under its anchor, which must be positioned for top: 100% to work.
+		auto* const anchor = target.anchor;
 		if(m_parameterTooltip->GetParentNode() != anchor)
 		{
 			if(anchor->GetComputedValues().position() == Rml::Style::Position::Static)
@@ -2488,6 +2458,17 @@ namespace mdJucePlugin
 		if(auto* const rml = getRmlComponent())
 			rml->enqueueUpdateOnce();
 	}
+
+	void Editor::hideParameterTooltip()
+	{
+		if(m_parameterTooltipContent.empty())
+			return;
+		m_parameterTooltip->SetProperty(Rml::PropertyId::Display, Rml::Style::Display::None);
+		m_parameterTooltipContent.clear();
+		if(auto* const rml = getRmlComponent())
+			rml->enqueueUpdateOnce();
+	}
+
 	std::pair<std::string, std::string> Editor::getDemoRestrictionText() const
 	{
 		return {};

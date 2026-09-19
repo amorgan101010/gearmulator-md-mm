@@ -393,19 +393,13 @@ namespace mdJucePlugin::monomachineHelp
 	// The value shown by LFO knob _encoder (2 TRIG, 3 WAVE, 4 MULT), or nullptr.
 	inline const ValueHash* lfoValueForHash(const unsigned _encoder, const uint64_t _hash)
 	{
-		const ValueHash* table = nullptr;
-		size_t count = 0;
 		switch(_encoder)
 		{
-		case 2: table = g_lfoTrigValues; count = std::size(g_lfoTrigValues); break;
-		case 3: table = g_lfoWaveValues; count = std::size(g_lfoWaveValues); break;
-		case 4: table = g_lfoMultValues; count = std::size(g_lfoMultValues); break;
+		case 2: return parameterHelp::findByHash(g_lfoTrigValues, _hash);
+		case 3: return parameterHelp::findByHash(g_lfoWaveValues, _hash);
+		case 4: return parameterHelp::findByHash(g_lfoMultValues, _hash);
 		default: return nullptr;
 		}
-		for(size_t i = 0; i < count; ++i)
-			if(table[i].hash == _hash)
-				return &table[i];
-		return nullptr;
 	}
 	// Values a machine shows as text under a SYNTHESIS knob (numeric parameters leave that line
 	// blank). Captured with mdmmLcdCapture (mode "enums") and checked against the owner's manual.
@@ -459,10 +453,7 @@ namespace mdJucePlugin::monomachineHelp
 	}
 	inline const char* labelForHash(const uint64_t _hash)
 	{
-		for(const auto& entry : g_labelHashes)
-			if(entry.hash == _hash)
-				return entry.label;
-		return nullptr;
+		return parameterHelp::labelForHash(g_labelHashes, _hash);
 	}
 
 	inline const Machine* machineForHash(const uint64_t _hash)
@@ -488,10 +479,7 @@ namespace mdJucePlugin::monomachineHelp
 
 	inline const LfoPage* lfoPageForHash(const uint64_t _hash)
 	{
-		for(const auto& page : g_lfoPages)
-			if(page.hash == _hash)
-				return &page;
-		return nullptr;
+		return parameterHelp::findByHash(g_lfoPages, _hash);
 	}
 
 	inline const parameterHelp::Entry* lfoSpecialDestinationForHash(const uint64_t _hash)
@@ -510,10 +498,7 @@ namespace mdJucePlugin::monomachineHelp
 	// The fixed-page help entry whose LCD label is _label, if _dataPage is AMP..LFO 3.
 	inline const parameterHelp::Entry* fixedPageEntry(const int _dataPage, const char* const _label)
 	{
-		for(size_t encoder = 0; encoder < 8; ++encoder)
-			if(const auto* const entry = parameterHelp::monomachineEntry(_dataPage, encoder))
-				if(std::strcmp(entry->abbreviation, _label) == 0)
-					return entry;
-		return nullptr;
+		const auto* const page = parameterHelp::monomachinePage(_dataPage);
+		return page ? parameterHelp::entryForLabel(*page, _label) : nullptr;
 	}
 }

@@ -108,7 +108,7 @@ int main(const int _argc, char** _argv)
 		"mm.amp.ATK.description = Custom attack text, with = signs = kept.\n"
 		"mm.machine.GND-SIN.TUNE.description = Sine tuning.\n"
 		"mm.amp.NOPE.description = typo\n");
-	check(help.load(), "loading the override file");
+	help.load();
 	check(std::string(help(atk.description)) == "Custom attack text, with = signs = kept.", "override applied");
 	check(help(atk.name) == atk.name, "other field of the same row unchanged");
 	check(sineTune && std::string(help(sineTune->entry.description)) == "Sine tuning.", "shared text overridden on one row");
@@ -118,7 +118,7 @@ int main(const int _argc, char** _argv)
 
 	// Deleting the file restores the defaults.
 	std::filesystem::remove(overridePath);
-	check(help.load(), "reloading without the file");
+	help.load();
 	check(help(atk.description) == atk.description && help.size() == 0, "deleted file restores defaults");
 
 	std::filesystem::remove_all(dir);

@@ -756,17 +756,11 @@ namespace mdJucePlugin::machinedrumHelp
 	};
 	inline const parameterHelp::ValueHash* lfoUpdateForHash(const uint64_t _hash)
 	{
-		for(const auto& entry : g_lfoUpdateValues)
-			if(entry.hash == _hash)
-				return &entry;
-		return nullptr;
+		return parameterHelp::findByHash(g_lfoUpdateValues, _hash);
 	}
 	inline const char* labelForHash(const uint64_t _hash)
 	{
-		for(const auto& entry : g_labelHashes)
-			if(entry.hash == _hash)
-				return entry.label;
-		return nullptr;
+		return parameterHelp::labelForHash(g_labelHashes, _hash);
 	}
 
 	// The machine and its key, or nullptr.
@@ -796,14 +790,6 @@ namespace mdJucePlugin::machinedrumHelp
 		return nullptr;
 	}
 
-	inline const Entry* fixedPageEntry(const parameterHelp::Page& _page, const char* _label)
-	{
-		for(const auto& entry : _page)
-			if(std::strcmp(entry.abbreviation, _label) == 0)
-				return &entry;
-		return nullptr;
-	}
-
 	// _page follows the LEDs: 0 SYNTHESIS, 1 EFFECTS, 2 ROUTING. _machine may be null (unknown).
 	// _allTracks is set for CTR-AL's inverted copies of the EFFECTS/ROUTING labels.
 	inline const Entry* entry(const int _page, const Machine* _machine, const char* _label, bool& _allTracks)
@@ -814,12 +800,12 @@ namespace mdJucePlugin::machinedrumHelp
 		if(_page > 0)
 		{
 			const auto& page = _page == 1 ? g_effects : g_routing;
-			if(const auto* const fixed = fixedPageEntry(page, _label))
+			if(const auto* const fixed = parameterHelp::entryForLabel(page, _label))
 				return fixed;
 			if(_machine && _machine->family == Family::ControlAll && _label[0] == '[')
 			{
 				const std::string inner(_label + 1, std::strlen(_label) - 2);
-				if(const auto* const fixed = fixedPageEntry(page, inner.c_str()))
+				if(const auto* const fixed = parameterHelp::entryForLabel(page, inner.c_str()))
 				{
 					_allTracks = true;
 					return fixed;
