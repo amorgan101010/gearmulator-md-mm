@@ -3781,10 +3781,12 @@ namespace mdJucePlugin
 		HelpOverrides::writeDefaults(dataFolder + "tooltips-defaults.txt");
 		m_help.setFile(dataFolder + "tooltips.txt");
 
-		// One tooltip, reparented under whatever it describes so it follows panel scaling.
+		// One tooltip, reparented into whatever it is placed against so it follows panel scaling. It hangs above
+		// the LCD with its bottom edge pinned, so a long description grows up over the faceplate rather than
+		// down over the controls.
 		auto tooltip = document->CreateElement("div");
 		tooltip->SetAttribute("style",
-			"position: absolute; top: 100%; left: 50%; width: 250dp; margin-left: -125dp; margin-top: 6dp;"
+			"position: absolute; bottom: 100%; left: 0; right: 0; margin-bottom: 6dp;"
 			" padding: 6dp 8dp; background-color: #1b221dee; border: 1dp #56635a; color: #e6ebe2;"
 			" font-size: 11dp; line-height: 14dp; text-align: left; white-space: normal;"
 			" pointer-events: none; z-index: 2000; display: none;");
@@ -4015,8 +4017,11 @@ namespace mdJucePlugin
 	{
 		// In priority order: mouse over a knob, mouse over the LCD (the machine name or a recognised
 		// field), a held keyboard knob key, then the gamepad's focused knob.
+		// Every tooltip hangs under the LCD, which is always well inside the window. Hanging one under the
+		// control it describes pushed it off the right edge on the right-hand knobs.
+		const auto place = [this](Rml::Element* const _control) { return m_lcdArea ? m_lcdArea : _control; };
 		if(m_tooltipHoverKnob && m_encoders[*m_tooltipHoverKnob])
-			return { m_encoders[*m_tooltipHoverKnob], m_tooltipHoverKnob, false };
+			return { place(m_encoders[*m_tooltipHoverKnob]), m_tooltipHoverKnob, false };
 		if(m_lcdArea && m_tooltipLcdMachineName)
 			return { m_lcdArea, std::nullopt, true };
 		if(m_lcdArea && m_lcdHoverEncoder)
@@ -4024,13 +4029,13 @@ namespace mdJucePlugin
 		if(m_keyboardEncoder && *m_keyboardEncoder < m_encoders.size() && m_encoders[*m_keyboardEncoder])
 		{
 			const auto encoder = static_cast<unsigned>(*m_keyboardEncoder);
-			return { m_encoders[encoder], encoder, false };
+			return { place(m_encoders[encoder]), encoder, false };
 		}
 		if(m_gamepadHighlightVisible && m_gamepadFocus < m_gamepadTargets.size() && m_gamepadTargets[m_gamepadFocus].knob)
 		{
 			const auto encoder = static_cast<unsigned>(m_gamepadTargets[m_gamepadFocus].encoder);
 			if(encoder < m_encoders.size())
-				return { m_gamepadTargets[m_gamepadFocus].knob, encoder, false };
+				return { place(m_gamepadTargets[m_gamepadFocus].knob), encoder, false };
 		}
 		return {};
 	}
