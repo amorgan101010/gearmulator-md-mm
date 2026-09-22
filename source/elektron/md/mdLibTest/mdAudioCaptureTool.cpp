@@ -18,12 +18,17 @@
 #include "baseLib/filesystem.h"
 
 #include <chrono>
+#include <array>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace
@@ -83,7 +88,8 @@ int main(const int argc, char* argv[])
 			std::cerr << "factory cache does not match this firmware, booting without it\n";
 	}
 
-	const int pattern = argc > 6 ? std::atoi(argv[6]) : -1;
+	const bool scanFactoryPatterns = argc > 6 && std::string_view(argv[6]) == "--scan-factory";
+	const int pattern = !scanFactoryPatterns && argc > 6 ? std::atoi(argv[6]) : -1;
 	auto publisher = std::make_shared<md::FrontPanelPublisher>();
 	auto hardwareStorage = std::make_unique<md::Hardware>(rom, firmwarePath, model, patchRam,
 		publisher, flash, cache);
@@ -103,6 +109,63 @@ int main(const int argc, char* argv[])
 	advance(hardware, md::g_samplerate * 20);
 	std::cerr << "audio ready " << hardware.isAudioReady() << " midi ready " << hardware.isFirmwareMidiReady() << "\n";
 	advance(hardware, md::g_samplerate * 5);
+
+	if(scanFactoryPatterns)
+	{
+		// This is deliberately a fast screening pass. A pair of independently
+		// booted scans can establish that every selected pattern follows the same
+		// state trajectory; a final benchmark still boots fresh and compares its
+		// complete output hash for the chosen slots.
+		constexpr uint32_t block = 256;
+		constexpr uint32_t scanFrames = 345 * block; // just over two seconds, whole host blocks
+		std::array<std::vector<float>, 6> channels;
+		synthLib::TAudioOutputs outputs{};
+		for(size_t c = 0; c < channels.size(); ++c)
+		{
+			channels[c].resize(block);
+			outputs[c] = channels[c].data();
+		}
+		for(int slot = 0; slot < 64; ++slot)
+		{
+			const auto body = md::midiProtocol::selectPattern(model, slot);
+			synthLib::SMidiEvent event(synthLib::MidiEventSource::Host);
+			event.sysex = {0xf0};
+			event.sysex.insert(event.sysex.end(), body.begin(), body.end());
+			event.sysex.push_back(0xf7);
+			if(!hardware.sendMidi(event))
+				return 1;
+			advance(hardware, md::g_samplerate);
+			if(!tap(hardware, model, md::PanelControl::Play))
+				return 1;
+
+			uint64_t hash = 1469598103934665603ull;
+			double energy = 0;
+			for(uint32_t frames = 0; frames < scanFrames; frames += block)
+			{
+				hardware.processAudio(outputs, block, 0);
+				for(const auto& channel : channels)
+					for(const auto sample : channel)
+					{
+						energy += static_cast<double>(sample) * sample;
+						uint32_t bits = 0;
+						std::memcpy(&bits, &sample, sizeof(bits));
+						for(int byte = 0; byte < 4; ++byte)
+						{
+							hash ^= (bits >> (8 * byte)) & 0xff;
+							hash *= 1099511628211ull;
+						}
+					}
+			}
+			tap(hardware, model, md::PanelControl::Stop);
+			const char bank = static_cast<char>('A' + slot / 16);
+			const auto number = slot % 16 + 1;
+			std::cout << "factory-pattern " << bank << std::setw(2) << std::setfill('0') << number
+				<< std::setfill(' ') << " slot=" << slot
+				<< " rms=" << std::scientific << std::sqrt(energy / (scanFrames * channels.size()))
+				<< " hash=" << std::hex << hash << std::dec << '\n';
+		}
+		return 0;
+	}
 
 	if(pattern >= 0)
 	{

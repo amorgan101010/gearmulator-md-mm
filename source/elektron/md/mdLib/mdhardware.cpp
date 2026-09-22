@@ -508,9 +508,20 @@ namespace md
 		// feeding silence there left their FX THRU machines disconnected.
 		m_dspProducer.getPeriph().getEssi1().setReadRxCallback(codecInput(1));
 
-		// Each mixer ESSI1 output frame advances the codec frame counter used by
-		// the audio plumbing.
-		m_dspMixer.getPeriph().getEssi1().setCallback([this](dsp56k::Audio*){ onEssiCallbackMixer(); });
+		// The default Audio TX callback writes the frame, advances its frame index,
+		// then dispatches a second type-erased callback to drain the mixer codec
+		// queue. This is the only ESSI1 owner here, so retain those exact actions
+		// in its write callback and avoid that second per-frame dispatch.
+		auto& mixerEssi1 = m_dspMixer.getPeriph().getEssi1();
+		mixerEssi1.setWriteTxCallback([this, &mixerEssi1](uint64_t& _frameIndex,
+			const dsp56k::Audio::TxFrame& _frame)
+		{
+			auto& output = mixerEssi1.getAudioOutputs();
+			output.waitNotFull();
+			output.push_back(_frame);
+			++_frameIndex;
+			onEssiCallbackMixer();
+		});
 
 		// Inter-DSP clock wiring. Each DSP runs the same program, which probes its ESSI1
 		// pins (Port D bits 2/3 = SC12 frame sync / SCK1 bit clock, read as GPIO) to decide

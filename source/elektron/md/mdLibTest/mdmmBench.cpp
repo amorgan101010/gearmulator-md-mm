@@ -6,9 +6,12 @@
 // the plug-in's performance-capture histogram.
 //
 //   GEARMULATOR_MM_FIRMWARE_BIN=/path/mm.bin mdmmBench mm [seconds] [block]
-//   GEARMULATOR_MD_FIRMWARE_BIN=/path/md.bin mdmmBench md [seconds] [block]
+//   GEARMULATOR_MD_FIRMWARE_BIN=/path/md.bin mdmmBench md [seconds] [block] [pattern:A01]
+//   GEARMULATOR_MM_FIRMWARE_BIN=/path/mm.bin mdmmBench mm [seconds] [block] [pattern:A01]
 
 #include "mdLib/mdhardware.h"
+#include "mdLib/mdmidiprotocol.h"
+#include "mdLib/mdpanel.h"
 #include "mdLib/mdromloader.h"
 #include "baseLib/filesystem.h"
 
@@ -105,6 +108,44 @@ namespace
 			_frames -= chunk;
 		}
 	}
+
+	bool tap(md::Hardware& _hardware, const md::MachineModel _model, const md::PanelControl _control)
+	{
+		const auto packet = md::panelPacket(_model, _control);
+		if(!packet)
+			return false;
+		_hardware.sendPanelEvent(packet->row, packet->mask);
+		advance(_hardware, 2048);
+		_hardware.sendPanelEvent(packet->row, 0);
+		advance(_hardware, 4096);
+		return true;
+	}
+
+	// Factory banks A--D contain slots 0--63. Accept both the firmware slot
+	// number and the panel spelling (for example pattern:0 or pattern:C07).
+	int factoryPatternSlot(const std::string_view _mode)
+	{
+		constexpr std::string_view prefix = "pattern:";
+		if(_mode.size() < prefix.size() || _mode.substr(0, prefix.size()) != prefix)
+			return -1;
+		const auto value = _mode.substr(prefix.size());
+		if(value.size() == 3 && value[0] >= 'A' && value[0] <= 'D'
+			&& value[1] >= '0' && value[1] <= '1' && value[2] >= '0' && value[2] <= '9')
+		{
+			const auto withinBank = static_cast<int>((value[1] - '0') * 10 + value[2] - '0');
+			return withinBank >= 1 && withinBank <= 16 ? (value[0] - 'A') * 16 + withinBank - 1 : -2;
+		}
+		if(value.empty())
+			return -2;
+		int slot = 0;
+		for(const char c : value)
+		{
+			if(c < '0' || c > '9')
+				return -2;
+			slot = slot * 10 + c - '0';
+		}
+		return slot < 64 ? slot : -2;
+	}
 }
 
 int main(int argc, char** argv)
@@ -152,6 +193,12 @@ int main(int argc, char** argv)
 	// "machine:<id>" does the same with any machine, which measures what poly mode costs:
 	// six engines playing one sound. Chords play a note per track, as poly mode does.
 	const std::string_view mode = argc >= 5 ? std::string_view(argv[4]) : std::string_view();
+	const auto patternSlot = factoryPatternSlot(mode);
+	if(patternSlot == -2)
+	{
+		std::cerr << "factory pattern must be A01 through D16, or slot 0 through 63\n";
+		return 2;
+	}
 	const bool sine = mm && (mode == "sine" || mode.rfind("machine:", 0) == 0);
 	const auto machine = static_cast<uint8_t>(mode.rfind("machine:", 0) == 0
 		? std::atoi(std::string(mode.substr(8)).c_str()) : 1);
@@ -166,6 +213,20 @@ int main(int argc, char** argv)
 			hardware->sendMidi(assign);
 			advance(*hardware, md::g_samplerate);
 		}
+	}
+	if(patternSlot >= 0)
+	{
+		const auto body = md::midiProtocol::selectPattern(model, patternSlot);
+		synthLib::SMidiEvent select(synthLib::MidiEventSource::Host);
+		select.sysex = {0xf0};
+		select.sysex.insert(select.sysex.end(), body.begin(), body.end());
+		select.sysex.push_back(0xf7);
+		if(!hardware->sendMidi(select) || !tap(*hardware, model, md::PanelControl::Play))
+		{
+			std::cerr << "could not select or start factory pattern\n";
+			return 1;
+		}
+		advance(*hardware, md::g_samplerate);
 	}
 
 	// PGO training: boot and setup above are most of the run, so without this the profile mostly
@@ -253,6 +314,7 @@ int main(int argc, char** argv)
 
 	std::cout << std::fixed << std::setprecision(3)
 		<< (mm ? "MM" : "MD") << " block=" << block << " blocks=" << blocks
+		<< " mode=" << (mode.empty() ? "idle" : mode)
 		<< " mean=" << (wallNs / blocks / budgetNs)
 		<< " p50=" << pct(0.5) << " p90=" << pct(0.9) << " p99=" << pct(0.99)
 		<< " max=" << load.back()
