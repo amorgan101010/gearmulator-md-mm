@@ -67,7 +67,7 @@ int main(const int _argc, char** _argv)
 
 	// The defaults file reads back to exactly the built-in text.
 	const auto dir = baseLib::filesystem::validatePath(
-		baseLib::filesystem::getCurrentDirectory() + "mdHelpOverridesTest");
+		baseLib::filesystem::getCurrentDirectory() + "mdHelpOverridesTest-data");
 	baseLib::filesystem::createDirectory(dir);
 	const auto defaults = dir + "tooltips-defaults.txt";
 	check(HelpOverrides::writeDefaults(defaults), "writing the defaults file");

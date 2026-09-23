@@ -15,7 +15,9 @@
 # GEARMULATOR_ROMS (a folder holding elektron_sfx6-60_os1.32b.bin and elektron_sps1-1uw_os1.63.bin).
 # Without --no-firmware, missing firmware is an error, not a silent skip.
 #
-# Builds with one job under a memory cap, so the machine stays usable. Exits non-zero if anything fails.
+# Builds with one job under a memory/CPU cap; tests are low priority and heavy checks are serialized.
+# --full keeps three concurrent instances per model for the block-size check, running MD and MM separately.
+# Exits non-zero if anything fails.
 set -uo pipefail
 
 full=0; firmware=1; build=""
@@ -72,7 +74,8 @@ if "dsp56kDisassembleZeroWords" in {t["name"] for t in d["tests"]}:
 print(" ".join(sorted(wanted)))
 ')
 echo "== building: $targets"
-if setsid systemd-run --user --scope -q -p MemoryMax=3G -p MemorySwapMax=2G nice -n19 ionice -c3 \
+if setsid systemd-run --user --scope -q -p MemoryHigh=1500M -p MemoryMax=3G -p MemorySwapMax=256M \
+	-p CPUQuota=75% -p IOWeight=10 nice -n19 ionice -c3 \
 	env CMAKE_BUILD_PARALLEL_LEVEL=1 ninja -C "$build" -j1 $targets > "$log/build.log" 2>&1; then
 	record "build" PASS
 else
@@ -82,7 +85,10 @@ fi
 
 run_ctest() {	# name, ctest args...
 	local name=$1; shift
-	if ctest --test-dir "$build" --output-on-failure --no-tests=error "$@" > "$log/$name.log" 2>&1; then
+	local memory=3G
+	[[ $name == "block sizes "* ]] && memory=4G
+	if systemd-run --user --scope -q -p MemoryMax="$memory" -p MemorySwapMax=256M -p IOWeight=10 \
+		nice -n19 ionice -c3 ctest --test-dir "$build" --output-on-failure --no-tests=error "$@" > "$log/$name.log" 2>&1; then
 		record "$name" "PASS ($(grep -oE 'out of [0-9]+' "$log/$name.log" | tail -1 | grep -oE '[0-9]+') tests)"
 	else
 		record "$name" "FAIL (see $log/$name.log)"
@@ -91,22 +97,22 @@ run_ctest() {	# name, ctest args...
 }
 
 echo "== unit tests"
-run_ctest "unit tests" -L UnitTest -j2
+run_ctest "unit tests" -L UnitTest -j1
 echo "== DSP emulator tests"
 run_ctest "DSP emulator tests" -R dsp56
 
 if (( firmware )); then
-	echo "== golden output and sensitivity (in parallel)"
-	run_ctest "golden output" -R '^mdGoldenOutputTest$' &
-	gold=$!
-	run_ctest "golden sensitivity" -R '^mdGoldenSensitivityTest$' > /dev/null
-	wait $gold
-	# run_ctest in a background subshell cannot record into this shell's arrays; re-read its log
-	if grep -q "100% tests passed" "$log/golden output.log"; then record "golden output" "PASS (163 scenarios)"
-	else record "golden output" "FAIL (see $log/golden output.log)"; fi
+	# Each golden process runs both models and uses about 2 GB. Serializing the two checks avoids
+	# doubling that footprint on a desktop which is also running the user's applications.
+	echo "== golden output and sensitivity (sequential)"
+	run_ctest "golden output" -R '^mdGoldenOutputTest$'
+	run_ctest "golden sensitivity" -R '^mdGoldenSensitivityTest$'
 	if (( full )); then
 		echo "== block sizes"
-		run_ctest "block sizes" -R '^mdBlockSizeTest$'
+		# Preserve simultaneous 512/128/32-frame instances without running both models (six
+		# emulated units) together. Each invocation still checks all scenarios for its model.
+		GEARMULATOR_MM_FIRMWARE_BIN= run_ctest "block sizes MD" -R '^mdBlockSizeTest$'
+		GEARMULATOR_MD_FIRMWARE_BIN= run_ctest "block sizes MM" -R '^mdBlockSizeTest$'
 		# The plugin-level tests find firmware like the plug-in, next to the program, and ignore
 		# the environment. Link it there (the build directory is not tracked) and require it.
 		plugin_dir="$build/source/elektron/md/mdJucePlugin"
