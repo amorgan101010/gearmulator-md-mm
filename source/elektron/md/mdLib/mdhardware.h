@@ -189,7 +189,10 @@ namespace md
 		// before a host (HI08) access. Called from the DSP-side HI08
 		// bridge so that every ColdFire read/write/CVR sees the target DSP at the same machine time,
 		// which is what makes the boot handshake (UC poll <-> DSP reply) converge deterministically.
-		void schedCatchUpDsp(uint32_t _dspIndex);
+		// Threading experiment: a UC read sees the DSP as it was (it may stop short of the UC's time), a UC write
+		// lands in the DSP's future (it may run past). See m_schedLookaheadDspCycles.
+		enum class HostAccess { Read, Write };
+		void schedCatchUpDsp(uint32_t _dspIndex, HostAccess _access = HostAccess::Read);
 		void notifyHostPumpStateChanged();
 		uint64_t hostRxReadyCycle(uint32_t _dspIndex, uint64_t _dspCycle) const;
 		uint64_t hostCurrentCycle() const { return m_schedUcCyclesDone; }
@@ -389,6 +392,10 @@ namespace md
 		std::atomic<uint64_t> m_mmLinkStrobeEpoch{0};	// cancels delivery after nested catch-up
 		uint32_t m_mmLinkStrobeLevel = 2;		// mixer-context edge detector; 2 = no level observed yet
 		bool     m_schedDspOriginLatched[2] = { false, false };	// [0]=mixer/DSP1, [1]=producer/DSP2
+		// Threading experiment (doc/mdmm-threading-plan.md, phase 0): catch a DSP up to this many cycles BEFORE the
+		// UC's time instead of exactly to it, as a thread running behind would be. From GEARMULATOR_MDMM_LOOKAHEAD_US; 0 = off.
+		uint64_t m_schedLookaheadDspCycles = 0;
+		uint64_t m_schedWriteAheadDspCycles = 0;	// GEARMULATOR_MDMM_WRITEAHEAD_US; 0 = off
 		double   m_schedDspOriginFrame [2]  = { 0.0, 0.0 };		// machine-frame at runnable transition
 		uint64_t m_schedDspOriginCycles[2]  = { 0, 0 };			// getCycles() at that transition
 		uint64_t m_schedDspOriginUcCycles[2] = { 0, 0 };		// exact host clock at that transition

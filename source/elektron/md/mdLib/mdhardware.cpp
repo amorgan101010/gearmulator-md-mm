@@ -124,6 +124,13 @@ namespace md
 		// established path as a field fallback and exact A/B control.
 		const auto* const boundedJit = std::getenv("GEARMULATOR_MDMM_BOUNDED_JIT");
 		m_schedBoundedJit = boundedJit == nullptr || std::strcmp(boundedJit, "0") != 0;
+		// Threading experiment only: see m_schedLookaheadDspCycles.
+		if(const auto* const writeAhead = std::getenv("GEARMULATOR_MDMM_WRITEAHEAD_US"))
+			m_schedWriteAheadDspCycles = static_cast<uint64_t>(std::max(0.0, std::atof(writeAhead))
+				* static_cast<double>(g_dsp1CyclesPerEsaiFrame) * static_cast<double>(g_samplerate) / 1e6);
+		if(const auto* const lookahead = std::getenv("GEARMULATOR_MDMM_LOOKAHEAD_US"))
+			m_schedLookaheadDspCycles = static_cast<uint64_t>(std::max(0.0, std::atof(lookahead))
+				* static_cast<double>(g_dsp1CyclesPerEsaiFrame) * static_cast<double>(g_samplerate) / 1e6);
 
 		if(!m_rom.isValid())
 			return;
@@ -1482,13 +1489,12 @@ namespace md
 			m_schedDspOriginUcCycles[index], _dspCycle - m_schedDspOriginCycles[index]);
 	}
 
-	void Hardware::schedCatchUpDsp(const uint32_t _dspIndex)
+	void Hardware::schedCatchUpDsp(const uint32_t _dspIndex, const HostAccess _access)
 	{
-		// Run the target DSP inline up to the UC's current machine time
-		// (the caller's point in the boot handshake) before a host access. This is what advances the
-		// DSP in fine lockstep with the UC's poll loops, so the UC's ISR/reply polls converge instead
-		// of spinning while the DSP is frozen for the UC's whole background quantum. Bounded by the
-		// catch-up clamp; monotone (never runs the DSP backwards or past the UC).
+		// Run the target DSP inline before a host access. Normally it catches up to the UC's
+		// current machine time so the UC's ISR/reply polls converge. The opt-in threading
+		// experiment stops reads short and advances writes past that time. Execution remains
+		// monotone and bounded by the catch-up clamp.
 		const uint32_t i = _dspIndex & 1;
 #if MD_TRANSPORT_DIAGNOSTICS
 		auto& score = m_transportScorecard.coldFireToDsp[i];
@@ -1506,9 +1512,12 @@ namespace md
 			MD_TRANSPORT_RECORD(++score.timeUnavailable;);
 			return;
 		}
-		const uint64_t targetCyc = dspCatchupDeadline<g_ucClockHz,
+		const uint64_t exactCyc = dspCatchupDeadline<g_ucClockHz,
 			g_dsp1CyclesPerEsaiFrame * g_samplerate>(m_schedDspOriginCycles[i],
 				m_schedUcCyclesDone - m_schedDspOriginUcCycles[i]);
+		const uint64_t targetCyc = _access == HostAccess::Write
+			? exactCyc + m_schedWriteAheadDspCycles
+			: (exactCyc > m_schedLookaheadDspCycles ? exactCyc - m_schedLookaheadDspCycles : 0);
 		const uint64_t startCyc = d.dsp().getCycles();
 		if(startCyc >= targetCyc)
 		{
