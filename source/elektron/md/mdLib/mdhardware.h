@@ -205,6 +205,10 @@ namespace md
 		// Diagnostic snapshot. The caller must serialize with the machine thread,
 		// as Device does for its other control-plane observations.
 		TransportScorecard getTransportScorecard() noexcept;
+		// Current ESSI1 output-ring depths: index 0 is the mixer/DSP1 and index 1
+		// is the producer/DSP2. The scheduler thread owns these rings; callers
+		// must sample this from the emulation thread.
+		std::array<uint32_t, 2> getEssi1OutputQueueDepths();
 		void recordInlineHdi08Run(uint32_t _dspIndex, uint64_t _startCycle,
 			uint64_t _clampCycle, bool _workComplete) noexcept;
 		void recordMdLinkPurge(size_t _purgedFrames) noexcept;

@@ -120,6 +120,12 @@ namespace md
 		, m_dspMixer(*this, m_uc.getHdi08Dsp1(), 0)		// DSP1, mixer/main
 		, m_dspProducer(*this, m_uc.getHdi08Dsp2(), 1)	// DSP2, producer
 	{
+		// Keep the audio callback from allocating when the first block arrives.
+		// Normal hosts stay well below this bound; larger blocks still use the
+		// existing resize path rather than silently truncating audio.
+		for(auto& output : m_audioOutputs)
+			output.reserve(16384);
+
 		// Ship the validated bounded dispatcher by default while retaining the
 		// established path as a field fallback and exact A/B control.
 		const auto* const boundedJit = std::getenv("GEARMULATOR_MDMM_BOUNDED_JIT");
@@ -1134,6 +1140,14 @@ namespace md
 		// The callback runs inside the mixer on the scheduler thread. Drain the
 		// codec ring immediately so its blocking producer can never park that thread.
 		schedDrainCodecOutput();
+	}
+
+	std::array<uint32_t, 2> Hardware::getEssi1OutputQueueDepths()
+	{
+		return {
+			static_cast<uint32_t>(m_dspMixer.getPeriph().getEssi1().getAudioOutputs().size()),
+			static_cast<uint32_t>(m_dspProducer.getPeriph().getEssi1().getAudioOutputs().size()),
+		};
 	}
 
 	void Hardware::ensureBufferSize(const uint32_t _frames)

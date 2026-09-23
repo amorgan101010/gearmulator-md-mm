@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
@@ -15,6 +16,12 @@
 
 namespace
 {
+	bool profileEnabled()
+	{
+		const auto* value = std::getenv("GEARMULATOR_MDMM_PROFILE");
+		return value != nullptr && std::string_view(value) != "0";
+	}
+
 	void require(bool condition, const char* message)
 	{
 		if(!condition)
@@ -50,6 +57,7 @@ namespace
 	double render(md::Hardware& hardware, double* roughness = nullptr, unsigned blocks = 64,
 		bool reportIdle = false)
 	{
+		const bool reportProfile = profileEnabled();
 		std::array<std::array<float, 256>, 2> samples{};
 		synthLib::TAudioOutputs outputs{};
 		outputs[0] = samples[0].data();
@@ -58,9 +66,24 @@ namespace
 		std::array<DifferenceEnergy, 2> energy{};
 		std::array<double, 2> windowSum{}, windowPower{}, windowPeak{};
 		unsigned windowFrames = 0;
+		double blockMsSum = 0;
+		double blockMsMax = 0;
+		std::array<uint32_t, 2> essi1QueueMax{};
 		for(unsigned block = 0; block < blocks; ++block)
 		{
+			const auto blockStart = reportProfile ? std::chrono::steady_clock::now()
+				: std::chrono::steady_clock::time_point{};
 			hardware.processAudio(outputs, 256, 0);
+			if(reportProfile)
+			{
+				const auto elapsed = std::chrono::duration<double, std::milli>(
+					std::chrono::steady_clock::now() - blockStart).count();
+				blockMsSum += elapsed;
+				blockMsMax = std::max(blockMsMax, elapsed);
+				const auto queueDepths = hardware.getEssi1OutputQueueDepths();
+				for(size_t dsp = 0; dsp < queueDepths.size(); ++dsp)
+					essi1QueueMax[dsp] = std::max(essi1QueueMax[dsp], queueDepths[dsp]);
+			}
 			for(size_t channel = 0; channel < samples.size(); ++channel)
 				for(const auto sample : samples[channel])
 				{
@@ -93,6 +116,11 @@ namespace
 				windowFrames = 0;
 			}
 		}
+		if(reportProfile)
+			std::cout << "PROFILE 256-frame block: avg " << blockMsSum / blocks
+				<< " ms, max " << blockMsMax
+				<< " ms (realtime budget 5.805 ms); ESSI1 queue peak mixer="
+				<< essi1QueueMax[0] << " producer=" << essi1QueueMax[1] << '\n';
 		if(roughness)
 		{
 			const auto power = energy[0].power + energy[1].power;

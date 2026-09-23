@@ -199,6 +199,9 @@ namespace md
 		};
 
 		Region resolve(uint32_t _addr);
+		// Fast-lane backing for side-effect-free RAM windows. Peripheral, flash and
+		// patch-RAM accesses continue through resolve() and their existing locks.
+		uint8_t* fastRamData(uint32_t _addr, uint32_t& _offset, uint32_t& _size);
 		void logPeripheral(uint32_t _addr, uint32_t _value, uint8_t _size, bool _write);
 		void onPanelTransmit(uint8_t _byte);	// minimal response from the absent panel controller
 
