@@ -12,10 +12,11 @@ the original gate. On 2026-09-23, Linux GCC Release builds of `mdLib` and `mmAud
 passed, and `mmSineFirmwareTest` passed at both zero delay and symmetric 5 µs delay using MM OS
 1.32b. The complete sweep and DSP↔DSP channel still need validation on this base.
 
-The existing shareable test suite is on Aileen's `fix/mdmm-test-suite` branch at `103f0524`.
+The existing shareable test suite is on Aileen's `fix/mdmm-test-suite` branch at `b3b01eb4`.
 It adds golden output and sensitivity checks, block-size and audio-queue tests, and firmware
-deadlines. That branch starts from Joe's alpha.13 commit `ab69ad00`; it is not included in this
-threading branch or Joe's alpha.14 release.
+deadlines. That branch now starts from Joe's alpha.14 commit `8cea0524`; it is not included in
+this threading branch or Joe's release branch. Its golden output and sensitivity tests passed
+after the rebase with both firmware images.
 
 ## Why
 
@@ -205,7 +206,7 @@ block 256.
   and timed host receive to get correct audio and SysEx. Introduced latency may break exactly those
   cases. Phase 0 exists to find this out first.
 - **Timing changes invalidate current output hashes.** The registered golden output and sensitivity tests
-  are available on `fix/mdmm-test-suite`. Port that suite onto Joe's current release before Phase 1,
+  are available on `fix/mdmm-test-suite`. Bring that suite into the Phase 1 work,
   adopt new reference hashes deliberately after the timing refactor, then require invariance across
   scheduling orders and quanta.
 - **Contention in a DAW.** The ceiling assumes a free core. In a busy DAW project the worker may
