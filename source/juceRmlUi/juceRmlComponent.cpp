@@ -199,6 +199,16 @@ namespace juceRmlUi
 		deleteAllChildren();
 	}
 
+	void RmlComponent::detachRenderer()
+	{
+#ifdef RMLUI_METAL_RENDERER
+		if (m_metalContext)
+			m_metalContext->detach();
+#endif
+		if (m_openGLContext)
+			m_openGLContext->detach();
+	}
+
 	void RmlComponent::newOpenGLContextCreated()
 	{
 		RmlInterfaces::ScopedAccess access(*this);

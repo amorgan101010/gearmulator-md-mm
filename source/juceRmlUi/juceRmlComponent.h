@@ -142,6 +142,10 @@ namespace juceRmlUi
 
 		bool takeScreenshot(const ScreenshotCallback& _callback);
 
+		// Wait for the OpenGL renderer to stop without destroying the Rml document.
+		// Used while replacing an editor whose derived callbacks may be in flight.
+		void detachRenderer();
+
 		bool supportsPowerOfTwo() const;
 		uint32_t getMaximumTextureSize() const;
 		uint32_t getValidTextureSize(uint32_t _size) const;
