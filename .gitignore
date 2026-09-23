@@ -10,6 +10,9 @@
 /build_win64_VS2019.bat
 /out/
 /build/
+# Out-of-source CMake builds and local command output at the repository root.
+/build-*/
+/*.log
 *atom*.sh
 *debug.sh
 CMakeUserPresets.json
