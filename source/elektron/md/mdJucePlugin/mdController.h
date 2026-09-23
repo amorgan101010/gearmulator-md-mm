@@ -180,6 +180,8 @@ namespace mdJucePlugin
 		uint64_t m_lastTrackPollMs = 0;
 		std::atomic<uint64_t> m_kitDumpRequestRevision{0};
 		std::atomic<bool> m_forceApplyRequestedKitDump{false};
+		// Unfulfilled baseline/reload intent survives retry status barriers and
+		// is consumed only by an accepted Kit dump. False means inspection only.
 		std::atomic<bool> m_applyRequestedKitDump{true};
 		// The timer/offline consumer is serialized by pluginLib::Controller, but
 		// explicit state loads and program changes may request a resync from another
