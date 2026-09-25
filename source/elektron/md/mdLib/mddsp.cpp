@@ -61,6 +61,10 @@ namespace md
 		if(const char* ipr = std::getenv("GEARMULATOR_MDMM_IPR_MODEL"))
 			m_dsp.setIprInterruptModel(std::strcmp(ipr, "0") != 0);
 
+		if(m_hardware.isMonomachine())
+			if(const char* guard = std::getenv("GEARMULATOR_MM_TRIGGER_GUARD"); guard && std::strcmp(guard, "0") != 0)
+				enableMmTriggerGuard();
+
 		// Clock the serial ports from DSP cycles. At 101.6064 MHz, the 1152-cycle
 		// codec slot and two slots per frame produce exactly 44.1 kHz; the firmware's
 		// ESSI0 divider derives the 96-cycle inter-DSP link slot.
@@ -212,6 +216,56 @@ namespace md
 			m_hdiUC.isr(m_hdiUC.isr() | mc68k::Hdi08::IsrBits::Txde | mc68k::Hdi08::IsrBits::Trdy);
 		});
 
+	}
+
+	void Dsp::enableMmTriggerGuard()
+	{
+		// WORKAROUND, not a hardware model. The Monomachine DSP program reads each voice's trigger word
+		// (frame word 40, Y:$528/$628/$728 for voices 1-3) at P:$e1 and clears it at P:$143-$148 at the end
+		// of that voice's processing. A host frame whose DMA lands in between is wiped unseen and the note
+		// is lost. On silicon the frames never land there; under emulated timing they occasionally do.
+		// Hold the voice's frame host command (0x10/0x12/0x14) while that voice is inside its window. The
+		// host keeps seeing HC and waits, as it would for a slow DSP. The hold is capped so a missed clear
+		// cannot stall the host.
+		constexpr dsp56k::TWord readPc = 0xe1;
+		constexpr dsp56k::TWord clearPc = 0x143;
+		constexpr uint64_t maxHoldCycles = 12000;	// the window is about 9,400 cycles
+
+		const auto voiceOfTriggerWord = [](const dsp56k::TWord _addr) -> int
+		{
+			switch(_addr)
+			{
+			case 0x528: return 0;
+			case 0x628: return 1;
+			case 0x728: return 2;
+			default:	return -1;
+			}
+		};
+
+		m_dsp.setPcWatch(readPc, clearPc, [this, voiceOfTriggerWord](const dsp56k::TWord _pc)
+		{
+			if(_pc == readPc)
+			{
+				const auto v = voiceOfTriggerWord(m_dsp.regs().r[6].var);
+				if(v >= 0)
+					m_mmVoiceWindowStart[v] = m_dsp.getCycles() + 1;
+			}
+			else
+			{
+				const auto v = voiceOfTriggerWord(m_memory.get(dsp56k::MemArea_Y, 0x123));
+				if(v >= 0)
+					m_mmVoiceWindowStart[v] = 0;
+			}
+		});
+
+		hdi08().setHostCommandHoldPredicate([this](const dsp56k::TWord _vba)
+		{
+			const int v = _vba == 0x10 ? 0 : _vba == 0x12 ? 1 : _vba == 0x14 ? 2 : -1;
+			if(v < 0)
+				return false;
+			const auto start = m_mmVoiceWindowStart[v];
+			return start != 0 && m_dsp.getCycles() + 1 - start < maxHoldCycles;
+		});
 	}
 
 	void Dsp::onDspBootFinished()

@@ -139,6 +139,10 @@ namespace md
 		// established path as a field fallback and exact A/B control.
 		const auto* const boundedJit = std::getenv("GEARMULATOR_MDMM_BOUNDED_JIT");
 		m_schedBoundedJit = boundedJit == nullptr || std::strcmp(boundedJit, "0") != 0;
+		// The Monomachine trigger guard watches block PCs, which only the per-block dispatcher reports.
+		if(isMonomachine())
+			if(const char* guard = std::getenv("GEARMULATOR_MM_TRIGGER_GUARD"); guard && std::strcmp(guard, "0") != 0)
+				m_schedBoundedJit = false;
 		// Threading experiment only: see m_schedLookaheadDspCycles.
 		if(const auto* const writeAhead = std::getenv("GEARMULATOR_MDMM_WRITEAHEAD_US"))
 			m_schedWriteAheadDspCycles = static_cast<uint64_t>(std::max(0.0, std::atof(writeAhead))
