@@ -3,10 +3,10 @@
 Status: phase 0 UC↔DSP timing experiment implemented and measured; no MD/MM DSP worker thread yet.
 Written 2026-09-18; phase 0 updated 2026-09-23.
 
-This branch starts at Joe's `release/md-mm-alpha` commit `8cea0524`. It carries the opt-in phase 0
+This branch starts at upstream's `release/md-mm-alpha` commit `8cea0524`. It carries the opt-in phase 0
 scheduler experiment and its sweep and handoff tools. The measurements below were made on Aileen's
 fork at commit `377d0062`, which also has a larger firmware/golden test suite and `mdmmBench`.
-They are evidence for trying this design, not a complete validation of the port on Joe's release.
+They are evidence for trying this design, not a complete validation of the port.
 This baseline registers fewer firmware tests, so matching pass percentages alone will not reproduce
 the original gate. On 2026-09-23, Linux GCC Release builds of `mdLib` and `mmAudioFirmwareTest`
 passed, and `mmSineFirmwareTest` passed at both zero delay and symmetric 5 µs delay using MM OS
@@ -14,8 +14,8 @@ passed, and `mmSineFirmwareTest` passed at both zero delay and symmetric 5 µs d
 
 The existing shareable test suite is on Aileen's `fix/mdmm-test-suite` branch at `b3b01eb4`.
 It adds golden output and sensitivity checks, block-size and audio-queue tests, and firmware
-deadlines. That branch now starts from Joe's alpha.14 commit `8cea0524`; it is not included in
-this threading branch or Joe's release branch. Its golden output and sensitivity tests passed
+deadlines. That branch now starts from upstreams's alpha.14 commit `8cea0524`; it is not included in
+this threading branch or upstream's release branch. Its golden output and sensitivity tests passed
 after the rebase with both firmware images.
 
 ## Why
