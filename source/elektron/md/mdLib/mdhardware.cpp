@@ -141,7 +141,7 @@ namespace md
 		m_schedBoundedJit = boundedJit == nullptr || std::strcmp(boundedJit, "0") != 0;
 		// The Monomachine trigger guard watches block PCs, which only the per-block dispatcher reports.
 		if(isMonomachine())
-			if(const char* guard = std::getenv("GEARMULATOR_MM_TRIGGER_GUARD"); guard && std::strcmp(guard, "0") != 0)
+			if(const char* guard = std::getenv("GEARMULATOR_MM_TRIGGER_GUARD"); !guard || std::strcmp(guard, "0") != 0)
 				m_schedBoundedJit = false;
 		// Threading experiment only: see m_schedLookaheadDspCycles.
 		if(const auto* const writeAhead = std::getenv("GEARMULATOR_MDMM_WRITEAHEAD_US"))

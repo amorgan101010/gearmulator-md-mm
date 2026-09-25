@@ -61,8 +61,9 @@ namespace md
 		if(const char* ipr = std::getenv("GEARMULATOR_MDMM_IPR_MODEL"))
 			m_dsp.setIprInterruptModel(std::strcmp(ipr, "0") != 0);
 
+		// Daily builds: on unless GEARMULATOR_MM_TRIGGER_GUARD=0.
 		if(m_hardware.isMonomachine())
-			if(const char* guard = std::getenv("GEARMULATOR_MM_TRIGGER_GUARD"); guard && std::strcmp(guard, "0") != 0)
+			if(const char* guard = std::getenv("GEARMULATOR_MM_TRIGGER_GUARD"); !guard || std::strcmp(guard, "0") != 0)
 				enableMmTriggerGuard();
 
 		// Clock the serial ports from DSP cycles. At 101.6064 MHz, the 1152-cycle
