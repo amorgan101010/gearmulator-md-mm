@@ -303,3 +303,7 @@ if(BUILD_TESTING)
 	set_tests_properties(mdTurboMidiUnitTest mdSdsTransferTest PROPERTIES FIXTURES_SETUP MdSysexTransport)
 	set_property(TEST mdLibTests mdAudioQueueTest APPEND PROPERTY FIXTURES_REQUIRED MdSysexTransport)
 endif()
+
+# Local headless render benchmark (not upstream). Same compile flags as mdLib, no test registration.
+add_executable(mdmmBench mdmmBench.cpp)
+target_link_libraries(mdmmBench PRIVATE mdLib)
