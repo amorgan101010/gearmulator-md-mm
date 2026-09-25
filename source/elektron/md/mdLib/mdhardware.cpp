@@ -1,4 +1,13 @@
 #include "mdhardware.h"
+
+#include <cstdio>
+namespace dsp56k
+{
+	extern FILE* g_hostLog;	// TEMPORARY host-port/link trace (dsp56300 hdi08.cpp)
+	extern bool g_hostLogOn;
+	void hostLogRotate();
+}
+#define MM_LINKLOG(...) do { if(dsp56k::g_hostLog && dsp56k::g_hostLogOn) { dsp56k::hostLogRotate(); if(dsp56k::g_hostLog) std::fprintf(dsp56k::g_hostLog, __VA_ARGS__); } } while(0)
 #include "mdhostclock.h"
 #include "mdrampacking.h"
 #include "mdtransportpolicy.h"
@@ -297,6 +306,7 @@ namespace md
 					{
 						MD_TRANSPORT_RECORD(++m_transportScorecard.link[_selfDsp]
 							.mmStrobeChangedDuringCatchUpDrops;);
+						MM_LINKLOG("LK strobeCU mix=%llu prod=%llu\n", (unsigned long long)m_dspMixer.dsp().getCycles(), (unsigned long long)m_dspProducer.dsp().getCycles());
 						++_frameIndex;
 						return;
 					}
@@ -357,7 +367,10 @@ namespace md
 							score.maximumRingDepth = std::max(score.maximumRingDepth, ring.size()););
 					}
 					else
+					{
 						MD_TRANSPORT_RECORD(++m_transportScorecard.link[_selfDsp].ringFullDrops;);
+						MM_LINKLOG("LK ringFull dir=%u mix=%llu\n", _selfDsp, (unsigned long long)m_dspMixer.dsp().getCycles());
+					}
 				++_frameIndex;
 			};
 		};
@@ -401,6 +414,7 @@ namespace md
 							MD_TRANSPORT_RECORD(m_transportScorecard.link[1u - _selfDsp]
 								.stallPurgedFrames += ring.size();
 								m_transportScorecard.link[1u - _selfDsp].currentRingDepth = 0;);
+							MM_LINKLOG("LK stallPurge dir=%u n=%zu mix=%llu\n", _selfDsp, ring.size(), (unsigned long long)m_dspMixer.dsp().getCycles());
 							while(!ring.empty())
 								ring.pop_front();
 							lastShallow = esaiNow;	// ring is now empty (shallow)
@@ -481,6 +495,8 @@ namespace md
 							m_dspProducer.getPeriph().getEssi0().getLastTxWrittenMask();
 						if(!dma4Active || !dma1Active || writtenMask == 0)
 						{
+								MM_LINKLOG("LK prefixDrop dma4=%d dma1=%d mask=%x mix=%llu prod=%llu\n", dma4Active ? 1 : 0, dma1Active ? 1 : 0, (unsigned)writtenMask,
+									(unsigned long long)m_dspMixer.dsp().getCycles(), (unsigned long long)m_dspProducer.dsp().getCycles());
 							MD_TRANSPORT_RECORD(++m_transportScorecard.link[1].transmitFrames;);
 							if(!dma4Active)
 								MD_TRANSPORT_RECORD(++m_transportScorecard.link[1]
@@ -574,6 +590,11 @@ namespace md
 				if(isMonomachine() && strobeLevel != m_mmLinkStrobeLevel)
 				{
 					m_mmLinkStrobeLevel = strobeLevel;
+						MM_LINKLOG("LK strobe level=%u ring=%zu dma4=%d dma1=%d mix=%llu prod=%llu\n", strobeLevel,
+							m_dspMixer.getPeriph().getEssi0().getAudioInputs().size(),
+							(m_dspMixer.getPeriph().getDMA().getDCR(4) & (1u << dsp56k::DmaChannel::De)) ? 1 : 0,
+							(m_dspProducer.getPeriph().getDMA().getDCR(1) & (1u << dsp56k::DmaChannel::De)) ? 1 : 0,
+							(unsigned long long)m_dspMixer.dsp().getCycles(), (unsigned long long)m_dspProducer.dsp().getCycles());
 					const bool dma4Idle =
 						(m_dspMixer.getPeriph().getDMA().getDCR(4) &
 							(1u << dsp56k::DmaChannel::De)) == 0;
@@ -590,6 +611,7 @@ namespace md
 						MD_TRANSPORT_RECORD(m_transportScorecard.link[1]
 							.mmStrobePurgedFrames += ring.size();
 							m_transportScorecard.link[1].currentRingDepth = 0;);
+							MM_LINKLOG("LK strobePurge n=%zu mix=%llu\n", ring.size(), (unsigned long long)m_dspMixer.dsp().getCycles());
 						while(!ring.empty())
 							ring.pop_front();
 						m_mmLinkAwaitFresh.store(true, std::memory_order_release);

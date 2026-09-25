@@ -4,6 +4,22 @@
 #include "mdtransportpolicy.h"
 
 #include "mc68k/hdi08.h"
+
+#include <cstdio>
+#include <cstdlib>
+
+namespace dsp56k
+{
+	extern FILE* g_hostLog;	// TEMPORARY host-port trace (dsp56300 hdi08.cpp)
+	void hostLogRotate();
+	extern bool g_hostLogOn;
+	inline void hostLogWindow(const unsigned long long _uc)
+	{
+		static const unsigned long long from = std::getenv("OCTFIX_HOSTLOG_FROM") ? std::strtoull(std::getenv("OCTFIX_HOSTLOG_FROM"), nullptr, 10) : 0;
+		static const unsigned long long to = std::getenv("OCTFIX_HOSTLOG_TO") ? std::strtoull(std::getenv("OCTFIX_HOSTLOG_TO"), nullptr, 10) : ~0ull;
+		g_hostLogOn = _uc >= from && _uc <= to;
+	}
+}
 #include "synthLib/realtimeInstrumentation.h"
 
 namespace md
@@ -297,6 +313,11 @@ namespace md
 		// lands, so it consumes everything up to "now" first.
 		m_hardware.schedCatchUpDsp(m_index, Hardware::HostAccess::Write);
 
+		if(dsp56k::g_hostLog)
+			dsp56k::hostLogWindow(m_hardware.hostCurrentCycle()); dsp56k::hostLogRotate(); if(dsp56k::g_hostLog && dsp56k::g_hostLogOn) std::fprintf(dsp56k::g_hostLog, "UW %u %p uc=%llu dsp=%llu word=%06x rxq=%zu busy=%d\n", m_index, static_cast<void*>(&m_dsp),
+				static_cast<unsigned long long>(m_hardware.hostCurrentCycle()), static_cast<unsigned long long>(m_dsp.getCycles()),
+				_word & 0xffffff, hdi08().rxData().size(), hdi08().hostCommandBusy() ? 1 : 0);
+
 		// Route ordinary data words through the paced host receive path. Host-command
 		// arbitration keeps each argument with its in-flight command.
 		writeWordToDsp(_word);
@@ -357,6 +378,10 @@ namespace md
 		// dispatched, so HCP is raised at a defined point in DSP time.
 		if(booted())
 			m_hardware.schedCatchUpDsp(m_index, Hardware::HostAccess::Write);
+		if(dsp56k::g_hostLog)
+			dsp56k::hostLogWindow(m_hardware.hostCurrentCycle()); dsp56k::hostLogRotate(); if(dsp56k::g_hostLog && dsp56k::g_hostLogOn) std::fprintf(dsp56k::g_hostLog, "UC %u %p uc=%llu dsp=%llu irq=%02x rxq=%zu busy=%d\n", m_index, static_cast<void*>(&m_dsp),
+				static_cast<unsigned long long>(m_hardware.hostCurrentCycle()), static_cast<unsigned long long>(m_dsp.getCycles()),
+				_irq, hdi08().rxData().size(), hdi08().hostCommandBusy() ? 1 : 0);
 		// Preserve Monomachine host-command ordering. Data words precede the next
 		// command, so drain the receive path before dispatching that command. Run the DSP
 		// inline until HORX has drained before dispatching the CVR. This is needed
