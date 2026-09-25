@@ -149,8 +149,17 @@ Fix candidate (opt-in, `GEARMULATOR_MM_TIMED_SYNC`): queue each edge with the DS
 write (shared frame timebase); DSP2's Port C read applies edges its clock has reached (mode 1); mode 2 also
 catches DSP1 up to DSP2's time before each read. Seed sweep (E12, 16 fuzz seeds x 30 s, guard off, Linux
 Release at f19467fe): off 5 missing kicks (seeds 4, 8, 9 x2, 14, the same seeds macOS reported); mode 1 0;
-mode 2 0. Mode 1 suffices. Still to do before making it the default: hashes and firmware tests, cost, a
-300 s run, and whether the guard is still needed.
+mode 2 0. Mode 1 suffices.
+Validation of mode 1 (Linux Release):
+- Nothing set: MD C04 and MM B15 hashes unchanged. MD ignores the option. MM B15 with it: new hash, same RMS.
+- Cost: within run-to-run noise (about 2% either way); no per-block dispatcher needed, unlike the guard.
+- 300 s E12, guard off: no gaps, plain and with fuzz seed 99 (baseline plain: 3 missing).
+- Firmware tests: 17/18 pass; mdBlockSizeTest fails only on MM reference hashes, as any MM timing change does.
+- Golden MM scenarios FX-DYNAMIX and FX-RINGMOD render silence with it (the reference has sound). This is
+  not specific to the fix: with the trigger guard, FX-CHORUS, FX-DYNAMIX and FX-RINGMOD all render silence.
+  Disabling the strobe purge does not change it. Why these FX scenarios depend on timing is still open;
+  check before making either option the default. `GEARMULATOR_MM_TIMED_SYNC_DEBUG=1` reports edges queued far
+  ahead of DSP2 (in the golden runner DSP1 often runs about 11 passes ahead).
 The macOS session independently traced the controller side: the IRQ4 handler at 0x247dba dispatches on
 DSP2's step word (see doc/mac-claude-brief.md).
 

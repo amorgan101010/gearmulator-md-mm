@@ -625,6 +625,17 @@ namespace md
 				if(isMonomachine() && m_mmTimedSync)
 				{
 					m_mmSyncEdges.emplace_back(mmProducerCycleAtMixerNow(), level);
+					static const bool dbg = std::getenv("GEARMULATOR_MM_TIMED_SYNC_DEBUG") != nullptr;
+					if(dbg)
+					{
+						const auto now = m_dspProducer.dsp().getCycles();
+						const auto t = m_mmSyncEdges.back().first;
+						if(t > now + 2 * 36864 || m_mmSyncEdges.size() > 4)
+							std::fprintf(stderr, "TIMED_SYNC edge target=%llu dsp2=%llu ahead=%lld queued=%zu mixer=%llu\n",
+								static_cast<unsigned long long>(t), static_cast<unsigned long long>(now),
+								static_cast<long long>(t - now), m_mmSyncEdges.size(),
+								static_cast<unsigned long long>(m_dspMixer.dsp().getCycles()));
+					}
 					return;
 				}
 				m_dspProducer.getPeriph().getPortC().hostWrite(level);
