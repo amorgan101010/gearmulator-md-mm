@@ -38,7 +38,11 @@ namespace
 	{
 		static const bool census = std::getenv("MM_REPRO_VECCENSUS") != nullptr;
 		if(census && _pc < 0x80 && !(_pc & 1))
-			++g_vectorEntries[_dsp == g_pcDsp ? 0 : 1][_pc];
+			++g_vectorEntries[_dsp == g_pcDsp ? 0 : 1][_pc];		// MM_REPRO_P2FROM/_P2TO (producer DSP cycles): print every producer block start PC in that window.
+		static const uint64_t p2From = std::getenv("MM_REPRO_P2FROM") ? std::strtoull(std::getenv("MM_REPRO_P2FROM"), nullptr, 10) : ~0ull;
+		static const uint64_t p2To = std::getenv("MM_REPRO_P2TO") ? std::strtoull(std::getenv("MM_REPRO_P2TO"), nullptr, 10) : 0;
+		if(_dsp == g_pcDsp2 && _dsp->getCycles() >= p2From && _dsp->getCycles() <= p2To)
+			std::printf("P2 %06x %llu\n", _pc, static_cast<unsigned long long>(_dsp->getCycles()));
 		if(_dsp != g_pcDsp)
 			return;
 		const auto c = _dsp->getCycles();

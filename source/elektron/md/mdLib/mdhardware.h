@@ -403,6 +403,12 @@ namespace md
 		std::atomic<bool> m_mmLinkAwaitFresh{false};	// PDRC edge awaits DSP2's DMA reply
 		std::atomic<uint64_t> m_mmLinkStrobeEpoch{0};	// cancels delivery after nested catch-up
 		uint32_t m_mmLinkStrobeLevel = 2;		// mixer-context edge detector; 2 = no level observed yet
+		// Timed block sync (GEARMULATOR_MM_TIMED_SYNC=1|2): DSP1's Port C bit 1 edges reach DSP2 at the DSP2
+		// cycle matching DSP1's write, not at whatever cycle DSP2 has reached when the scheduler runs the write.
+		int m_mmTimedSync = 0;
+		std::vector<std::pair<uint64_t, dsp56k::TWord>> m_mmSyncEdges;	// (DSP2 cycle, level), oldest first
+		dsp56k::TWord m_mmSyncLevel = 0;
+		uint64_t mmProducerCycleAtMixerNow();
 		bool     m_schedDspOriginLatched[2] = { false, false };	// [0]=mixer/DSP1, [1]=producer/DSP2
 		// Threading experiment (doc/mdmm-threading-plan.md, phase 0): catch a DSP up to this many cycles BEFORE the
 		// UC's time instead of exactly to it, as a thread running behind would be. From GEARMULATOR_MDMM_LOOKAHEAD_US; 0 = off.

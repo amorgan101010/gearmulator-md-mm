@@ -129,7 +129,27 @@ Validation (Linux, plain Release):
 - Cost, 4 alternating pairs: MM B15 +1.5% host cycles, MM machine:32 x6 +3.6%; p99 needs a proper A/B.
 - With nothing set, output equals upstream bit for bit (MD C04 b8e0c7d9d71809bc, MM B15 ed4758a81d23aedd).
 
-## Still open
+## Root cause found (2026-09-25 evening): the DSP1 to DSP2 block sync edge is not time-stamped
+Traced seed 4 with interrupt acknowledges (`IA`), IRQ4 edges (`I4`), DSP transmit writes (`DT`), DSP vector
+entries (`OCTFIX_VECLOG`) and DSP2 block PCs (`MM_REPRO_P2FROM/_P2TO`):
+- The controller is paced by DSP2 through IRQ4: each DSP2 host word triggers one step. DSP1's voice 3 frame
+  command (0x14) goes out about 35 controller cycles after DSP2's step-2 reply (`000002`, written at DSP2 P:$db).
+- 7% of 0x14 commands land 8.3-9.4k cycles after voice 3's read (normal 10-14k). Only trigger frames among
+  them drop notes.
+- DSP2's pass: it waits for Port C bit 1 to toggle (P:$195, block sync from DSP1), then for its DMA0 (ESSI1
+  receive from DSP1) to advance 11 and 21 words (P:$18d), writing the step word at P:$db after each.
+  P:$100164 is a fixed `do #$c80 / nop` delay in external P memory.
+- DSP1 writes the sync strobe exactly every 36,864 cycles. DSP2 leaves its wait 7 cycles after the
+  emulator applies the edge, which happens at whatever cycle DSP2 has reached when the scheduler runs
+  DSP1's write: that skew spans about 2.8k cycles (p5-p95), DSP2 behind 70% of the time, ahead 30%.
+  DSP2's sync intervals are mostly about 36,730 instead of 36,864, so its reply sawtooths against DSP1.
+  Early frames happen when this skew is low and the controller's latency is short.
+- On silicon the edge reaches DSP2 at the same instant, so the pass phase is fixed.
+Fix candidate (opt-in, `GEARMULATOR_MM_TIMED_SYNC`): queue each edge with the DSP2 cycle matching DSP1's
+write (shared frame timebase); DSP2's Port C read applies edges its clock has reached (mode 1); mode 2 also
+catches DSP1 up to DSP2's time before each read. Results pending (seed sweep off/1/2).
+The macOS session independently traced the controller side: the IRQ4 handler at 0x247dba dispatches on
+DSP2's step word (see doc/mac-claude-brief.md).
 
 Find the timing reference that keeps frames clear of the window on silicon (the real fix). Candidates:
 what the controller waits on before a frame burst (spin loops at ColdFire 0x24829e, 0x243926, 0x24395e,

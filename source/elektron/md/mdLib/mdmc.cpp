@@ -15,6 +15,13 @@
 #include <cstring>
 #include <limits>
 
+namespace dsp56k
+{
+	extern FILE* g_hostLog;	// TEMPORARY host-port trace (dsp56300 hdi08.cpp)
+	extern bool g_hostLogOn;
+	void hostLogRotate();
+}
+
 // Provide the Musashi memory-access callbacks (m68k_read_memory_*, _pcrelative_*, etc.)
 // for this microcontroller. Exactly one TU per synth includes this - cf. n2xmc.cpp / xtUc.cpp.
 #define MC68K_CLASS md::Microcontroller
@@ -627,6 +634,14 @@ namespace md
 	uint32_t Microcontroller::readIrqUserVector(const uint8_t _level)
 	{
 		const auto vector = Mc68k::readIrqUserVector(_level);
+		// TEMPORARY diagnostic: every interrupt acknowledge (all levels, autovectored or not) in the host trace.
+		if(dsp56k::g_hostLog && dsp56k::g_hostLogOn)
+		{
+			dsp56k::hostLogRotate();
+			if(dsp56k::g_hostLog)
+				std::fprintf(dsp56k::g_hostLog, "IA cpu=%llu lvl=%u vec=%02x\n",
+					static_cast<unsigned long long>(getCycles()), _level, vector);
+		}
 		if(m_externalIrq4Pending && _level == m_externalIrq4PendingLevel
 			&& vector == m_externalIrq4PendingVector)
 		{
