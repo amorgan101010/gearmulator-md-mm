@@ -622,8 +622,48 @@ namespace md
 						m_mmLinkStrobeEpoch.fetch_add(1, std::memory_order_acq_rel);
 					}
 				}
+				if(isMonomachine() && m_mmTimedSync)
+				{
+					m_mmSyncEdges.emplace_back(mmProducerCycleAtMixerNow(), level);
+					static const bool dbg = std::getenv("GEARMULATOR_MM_TIMED_SYNC_DEBUG") != nullptr;
+					if(dbg)
+					{
+						const auto now = m_dspProducer.dsp().getCycles();
+						const auto t = m_mmSyncEdges.back().first;
+						if(t > now + 2 * 36864 || m_mmSyncEdges.size() > 4)
+							std::fprintf(stderr, "TIMED_SYNC edge target=%llu dsp2=%llu ahead=%lld queued=%zu mixer=%llu\n",
+								static_cast<unsigned long long>(t), static_cast<unsigned long long>(now),
+								static_cast<long long>(t - now), m_mmSyncEdges.size(),
+								static_cast<unsigned long long>(m_dspMixer.dsp().getCycles()));
+					}
+					return;
+				}
 				m_dspProducer.getPeriph().getPortC().hostWrite(level);
 			});
+
+			// Timed block sync: DSP2 sees each queued edge once its own clock reaches the edge's time.
+			// Mode 2 also runs DSP1 up to DSP2's time before each read, so DSP2 running ahead cannot
+			// miss an edge DSP1 has not produced yet.
+			if(isMonomachine())
+			{
+				if(const char* timed = std::getenv("GEARMULATOR_MM_TIMED_SYNC"))
+					m_mmTimedSync = std::atoi(timed);
+				if(m_mmTimedSync)
+				{
+					m_dspProducer.getPeriph().getPortC().setHostInputSource([this]() -> dsp56k::TWord
+					{
+						if(m_mmTimedSync >= 2)
+							schedCatchUpDspToDsp(0, 1);
+						const auto now = m_dspProducer.dsp().getCycles();
+						size_t n = 0;
+						while(n < m_mmSyncEdges.size() && m_mmSyncEdges[n].first <= now)
+							m_mmSyncLevel = m_mmSyncEdges[n++].second;
+						if(n)
+							m_mmSyncEdges.erase(m_mmSyncEdges.begin(), m_mmSyncEdges.begin() + static_cast<ptrdiff_t>(n));
+						return m_mmSyncLevel;
+					});
+				}
+			}
 		}
 
 		MD_TRANSPORT_RECORD(m_transportScorecard.link[0].currentRingDepth =
@@ -1151,6 +1191,14 @@ namespace md
 			>= policy.hostReceiveIrqMinWords;
 		(void)mixerMoved;
 		(void)producerMoved;
+		// TEMPORARY diagnostic: IRQ4 line edges, with both ColdFire timebases and DSP2's cycle.
+		static bool lastHreq = false;
+		if(hreq != lastHreq)
+			MM_LINKLOG("I4 %d uc=%llu cpu=%llu prod=%llu rx=%zu\n", hreq ? 1 : 0,
+				static_cast<unsigned long long>(hostCurrentCycle()),
+				static_cast<unsigned long long>(m_uc.getCycles()),
+				static_cast<unsigned long long>(m_dspProducer.dsp().getCycles()), hdi.hostRxWordsAvailable());
+		lastHreq = hreq;
 		m_uc.getSim().setExternalIrq4(hreq);
 	}
 
@@ -1626,6 +1674,17 @@ namespace md
 				++score.stoppedByBackpressure;
 			else
 				++score.unexpectedShort;);
+	}
+
+	uint64_t Hardware::mmProducerCycleAtMixerNow()
+	{
+		// DSP1's current machine time expressed on DSP2's cycle counter (same mapping as schedCatchUpDspToDsp).
+		if(!m_schedDspOriginLatched[0] || !m_schedDspOriginLatched[1])
+			return m_dspProducer.dsp().getCycles();
+		const double deltaFrames = schedDspFramePos(0) - m_schedDspOriginFrame[1];
+		if(deltaFrames <= 0.0)
+			return m_dspProducer.dsp().getCycles();
+		return m_schedDspOriginCycles[1] + static_cast<uint64_t>(deltaFrames * static_cast<double>(g_dsp1CyclesPerEsaiFrame));
 	}
 
 	void Hardware::schedCatchUpDspToDsp(const uint32_t _consumer, const uint32_t _producer)
