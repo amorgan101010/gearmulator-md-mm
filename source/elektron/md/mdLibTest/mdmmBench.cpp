@@ -19,6 +19,7 @@
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <iomanip>
@@ -272,6 +273,12 @@ int main(int argc, char** argv)
 		hardware->processAudio(outputs, block, 0);
 		const auto t1 = clock::now();
 		load.push_back(std::chrono::duration<double, std::nano>(t1 - t0).count() / budgetNs);
+
+		// Optional raw dump for offline analysis: per block, channel after channel, float32.
+		static FILE* const raw = std::getenv("MDMM_BENCH_RAW") ? std::fopen(std::getenv("MDMM_BENCH_RAW"), "wb") : nullptr;
+		if(raw)
+			for(const auto& buffer : buffers)
+				std::fwrite(buffer.data(), sizeof(float), buffer.size(), raw);
 
 		for(const auto& buffer : buffers)
 		{

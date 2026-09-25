@@ -4,6 +4,23 @@
 #include "mdtransportpolicy.h"
 
 #include "mc68k/hdi08.h"
+
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+
+namespace dsp56k
+{
+	extern FILE* g_hostLog;	// TEMPORARY host-port trace (dsp56300 hdi08.cpp)
+	void hostLogRotate();
+	extern bool g_hostLogOn;
+	inline void hostLogWindow(const unsigned long long _uc)
+	{
+		static const unsigned long long from = std::getenv("OCTFIX_HOSTLOG_FROM") ? std::strtoull(std::getenv("OCTFIX_HOSTLOG_FROM"), nullptr, 10) : 0;
+		static const unsigned long long to = std::getenv("OCTFIX_HOSTLOG_TO") ? std::strtoull(std::getenv("OCTFIX_HOSTLOG_TO"), nullptr, 10) : ~0ull;
+		g_hostLogOn = _uc >= from && _uc <= to;
+	}
+}
 #include "synthLib/realtimeInstrumentation.h"
 
 namespace md
@@ -38,6 +55,15 @@ namespace md
 	{
 		if(!_hw.isValid())
 			return;
+
+		// Service only the interrupt sources the firmware enables in IPRC/IPRP, at their programmed levels.
+		// The Monomachine mixer leaves DMA1 disabled; servicing it anyway shifts its voice processing.
+		if(const char* ipr = std::getenv("GEARMULATOR_MDMM_IPR_MODEL"))
+			m_dsp.setIprInterruptModel(std::strcmp(ipr, "0") != 0);
+
+		if(m_hardware.isMonomachine())
+			if(const char* guard = std::getenv("GEARMULATOR_MM_TRIGGER_GUARD"); guard && std::strcmp(guard, "0") != 0)
+				enableMmTriggerGuard();
 
 		// Clock the serial ports from DSP cycles. At 101.6064 MHz, the 1152-cycle
 		// codec slot and two slots per frame produce exactly 44.1 kHz; the firmware's
@@ -192,6 +218,56 @@ namespace md
 
 	}
 
+	void Dsp::enableMmTriggerGuard()
+	{
+		// WORKAROUND, not a hardware model. The Monomachine DSP program reads each voice's trigger word
+		// (frame word 40, Y:$528/$628/$728 for voices 1-3) at P:$e1 and clears it at P:$143-$148 at the end
+		// of that voice's processing. A host frame whose DMA lands in between is wiped unseen and the note
+		// is lost. On silicon the frames never land there; under emulated timing they occasionally do.
+		// Hold the voice's frame host command (0x10/0x12/0x14) while that voice is inside its window. The
+		// host keeps seeing HC and waits, as it would for a slow DSP. The hold is capped so a missed clear
+		// cannot stall the host.
+		constexpr dsp56k::TWord readPc = 0xe1;
+		constexpr dsp56k::TWord clearPc = 0x143;
+		constexpr uint64_t maxHoldCycles = 12000;	// the window is about 9,400 cycles
+
+		const auto voiceOfTriggerWord = [](const dsp56k::TWord _addr) -> int
+		{
+			switch(_addr)
+			{
+			case 0x528: return 0;
+			case 0x628: return 1;
+			case 0x728: return 2;
+			default:	return -1;
+			}
+		};
+
+		m_dsp.setPcWatch(readPc, clearPc, [this, voiceOfTriggerWord](const dsp56k::TWord _pc)
+		{
+			if(_pc == readPc)
+			{
+				const auto v = voiceOfTriggerWord(m_dsp.regs().r[6].var);
+				if(v >= 0)
+					m_mmVoiceWindowStart[v] = m_dsp.getCycles() + 1;
+			}
+			else
+			{
+				const auto v = voiceOfTriggerWord(m_memory.get(dsp56k::MemArea_Y, 0x123));
+				if(v >= 0)
+					m_mmVoiceWindowStart[v] = 0;
+			}
+		});
+
+		hdi08().setHostCommandHoldPredicate([this](const dsp56k::TWord _vba)
+		{
+			const int v = _vba == 0x10 ? 0 : _vba == 0x12 ? 1 : _vba == 0x14 ? 2 : -1;
+			if(v < 0)
+				return false;
+			const auto start = m_mmVoiceWindowStart[v];
+			return start != 0 && m_dsp.getCycles() + 1 - start < maxHoldCycles;
+		});
+	}
+
 	void Dsp::onDspBootFinished()
 	{
 		// After boot, further host words are input to the DSP program.
@@ -297,6 +373,11 @@ namespace md
 		// lands, so it consumes everything up to "now" first.
 		m_hardware.schedCatchUpDsp(m_index, Hardware::HostAccess::Write);
 
+		if(dsp56k::g_hostLog)
+			dsp56k::hostLogWindow(m_hardware.hostCurrentCycle()); dsp56k::hostLogRotate(); if(dsp56k::g_hostLog && dsp56k::g_hostLogOn) std::fprintf(dsp56k::g_hostLog, "UW %u %p uc=%llu dsp=%llu word=%06x rxq=%zu busy=%d\n", m_index, static_cast<void*>(&m_dsp),
+				static_cast<unsigned long long>(m_hardware.hostCurrentCycle()), static_cast<unsigned long long>(m_dsp.getCycles()),
+				_word & 0xffffff, hdi08().rxData().size(), hdi08().hostCommandBusy() ? 1 : 0);
+
 		// Route ordinary data words through the paced host receive path. Host-command
 		// arbitration keeps each argument with its in-flight command.
 		writeWordToDsp(_word);
@@ -357,6 +438,10 @@ namespace md
 		// dispatched, so HCP is raised at a defined point in DSP time.
 		if(booted())
 			m_hardware.schedCatchUpDsp(m_index, Hardware::HostAccess::Write);
+		if(dsp56k::g_hostLog)
+			dsp56k::hostLogWindow(m_hardware.hostCurrentCycle()); dsp56k::hostLogRotate(); if(dsp56k::g_hostLog && dsp56k::g_hostLogOn) std::fprintf(dsp56k::g_hostLog, "UC %u %p uc=%llu dsp=%llu irq=%02x rxq=%zu busy=%d\n", m_index, static_cast<void*>(&m_dsp),
+				static_cast<unsigned long long>(m_hardware.hostCurrentCycle()), static_cast<unsigned long long>(m_dsp.getCycles()),
+				_irq, hdi08().rxData().size(), hdi08().hostCommandBusy() ? 1 : 0);
 		// Preserve Monomachine host-command ordering. Data words precede the next
 		// command, so drain the receive path before dispatching that command. Run the DSP
 		// inline until HORX has drained before dispatching the CVR. This is needed
@@ -442,6 +527,10 @@ namespace md
 			uint32_t word;
 			if(!m_timedHostRx.take(m_hardware.hostCurrentCycle(), word))
 				return false;
+			dsp56k::hostLogWindow(m_hardware.hostCurrentCycle()); dsp56k::hostLogRotate();
+			if(dsp56k::g_hostLog && dsp56k::g_hostLogOn)
+				std::fprintf(dsp56k::g_hostLog, "UR %u %p uc=%llu dsp=%llu word=%06x\n", m_index, static_cast<void*>(&m_dsp),
+					static_cast<unsigned long long>(m_hardware.hostCurrentCycle()), static_cast<unsigned long long>(m_dsp.getCycles()), word & 0xffffff);
 			m_hdiUC.writeRx(word);
 			m_hardware.notifyHostPumpStateChanged();
 			return true;

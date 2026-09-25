@@ -9,10 +9,53 @@
 #include <cstdlib>
 #include <iostream>
 #include <limits>
+#include <string>
 #include <memory>
 #include <stdexcept>
 #include <string_view>
 #include <vector>
+
+namespace
+{
+	// TEMPORARY (not for commit): dump the transport scorecard so pass/fail runs can be diffed.
+	void dumpScorecard(md::Hardware& _hw, const char* _tag)
+	{
+		const auto s = _hw.getTransportScorecard();
+		if(!s.enabled)
+			return;
+		auto link = [&](const char* _name, const md::LinkDirectionScore& _l)
+		{
+			std::cout << "SC " << _tag << ' ' << _name
+				<< " tx=" << _l.transmitFrames << " acc=" << _l.acceptedFrames
+				<< " rxDis=" << _l.receiverDisabledDrops << " mmMixDma=" << _l.mmMixerDmaInactiveDrops
+				<< " mmProdDma=" << _l.mmProducerDmaInactiveDrops << " mmPrefix=" << _l.mmRetainedPrefixDrops
+				<< " mmStrobeCU=" << _l.mmStrobeChangedDuringCatchUpDrops << " ringFull=" << _l.ringFullDrops
+				<< " rxCb=" << _l.receiveCallbacks << " pop=" << _l.poppedFrames << " empty=" << _l.emptyReads
+				<< " stallPurge=" << _l.stallPurgedFrames << " mmStrobePurge=" << _l.mmStrobePurgedFrames << '\n';
+		};
+		link("link0(mix->prod)", s.link[0]);
+		link("link1(prod->mix)", s.link[1]);
+		auto path = [&](const char* _name, const md::SchedulerPathScore& _p)
+		{
+			std::cout << "SC " << _tag << ' ' << _name << " calls=" << _p.calls << " atTarget=" << _p.alreadyAtTarget
+				<< " reentrant=" << _p.reentrant << " reached=" << _p.reachedTarget << " clamp=" << _p.hitClamp
+				<< " backpressure=" << _p.stoppedByBackpressure << " short=" << _p.unexpectedShort
+				<< " maxReq=" << _p.maximumRequestedCycles << " maxExec=" << _p.maximumExecutedCycles << '\n';
+		};
+		for(int i = 0; i < 2; ++i)
+		{
+			const std::string n = std::to_string(i);
+			path(("coldFireToDsp" + n).c_str(), s.coldFireToDsp[i]);
+			path(("dspToDsp" + n).c_str(), s.dspToDsp[i]);
+			path(("inlineHdi08_" + n).c_str(), s.inlineHdi08[i]);
+			path(("backgroundDsp" + n).c_str(), s.backgroundDsp[i]);
+			std::cout << "SC " << _tag << " mmBackpressurePark" << i << '=' << s.mmBackpressureParkDecisions[i] << '\n';
+		}
+		std::cout << "SC " << _tag << " ucCycle=" << _hw.hostCurrentCycle() << '\n';
+		std::cout << "SC " << _tag << " mmStrobeEpoch=" << s.mmStrobeEpoch << " mmAwaitFresh=" << s.mmAwaitingFreshResponse << '\n';
+	}
+}
+
 
 namespace
 {
@@ -256,6 +299,58 @@ namespace
 	}
 }
 
+namespace
+{
+	// TEMPORARY (not for commit): note-phase sweep for the dropped track-5/6 notes.
+	// MM_SWEEP_TRACK (default 5), MM_SWEEP_KMIN/KMAX (0..127 samples), MM_SWEEP_MACHINE (33 = DPRO-DENS).
+	void runPhaseSweep(md::Hardware& hardware)
+	{
+		const auto envInt = [](const char* _name, int _default)
+		{
+			const char* v = std::getenv(_name);
+			return v ? std::atoi(v) : _default;
+		};
+		const auto target = static_cast<uint8_t>(envInt("MM_SWEEP_TRACK", 5));
+		const int kmin = envInt("MM_SWEEP_KMIN", 0);
+		const int kmax = envInt("MM_SWEEP_KMAX", 127);
+		const auto machine = static_cast<uint8_t>(envInt("MM_SWEEP_MACHINE", 33));
+		for(uint8_t track = 0; track < 6; ++track)
+		{
+			synthLib::SMidiEvent assign(synthLib::MidiEventSource::Host);
+			assign.sysex = {0xf0, 0, 0x20, 0x3c, 3, 0, 0x5b, track, machine, 1, 0xf7};
+			require(hardware.sendMidi(assign), "assignment rejected");
+			advance(hardware, md::g_samplerate);
+		}
+		const auto send = [&](uint8_t _a, uint8_t _b, uint8_t _c)
+		{
+			require(hardware.sendMidi(synthLib::SMidiEvent(synthLib::MidiEventSource::Host, _a, _b, _c)), "MIDI rejected");
+		};
+		// The ensemble test's exact sequence before the note that goes silent.
+		send(static_cast<uint8_t>(0xb0 | target), 7, 0);
+		advance(hardware, md::g_samplerate * 2);
+		send(static_cast<uint8_t>(0x90 | target), 60, 100);
+		render(hardware);
+		send(static_cast<uint8_t>(0x80 | target), 60, 0);
+		advance(hardware, md::g_samplerate * 2);
+		send(static_cast<uint8_t>(0xb0 | target), 7, 127);
+		advance(hardware, md::g_samplerate / 10);
+		unsigned silent = 0;
+		for(int k = kmin; k <= kmax; ++k)
+		{
+			send(static_cast<uint8_t>(0x80 | target), 60, 0);
+			advance(hardware, md::g_samplerate);
+			if(k > 0)
+				advance(hardware, static_cast<uint32_t>(k));
+			send(static_cast<uint8_t>(0x90 | target), 60, 100);
+			const auto rms = render(hardware);
+			const bool drop = rms <= 1e-5;
+			silent += drop ? 1 : 0;
+			std::cout << "SWEEP track " << unsigned(target) << " k " << k << " rms " << rms << (drop ? " SILENT" : "") << '\n';
+		}
+		std::cout << "SWEEP track " << unsigned(target) << " silent " << silent << " of " << (kmax - kmin + 1) << '\n';
+	}
+}
+
 int main(int argc, char** argv)
 {
 	if(argc == 2 && std::string_view(argv[1]) == "--sine-oracle")
@@ -265,10 +360,11 @@ int main(int argc, char** argv)
 	}
 	const bool sineMidi = argc == 2 && std::string_view(argv[1]) == "--sine-midi";
 	const bool input = argc == 2 && std::string_view(argv[1]) == "--input";
+	const bool sweep = argc == 2 && std::string_view(argv[1]) == "--phase-sweep";
 	const bool sine = sineMidi || (argc == 2 && std::string_view(argv[1]) == "--sine");
 	const bool ensemble = argc == 2 && std::string_view(argv[1]) == "--digipro-ensemble";
 	const bool digipro = ensemble || (argc == 2 && std::string_view(argv[1]) == "--digipro");
-	if(argc != 1 && !sine && !digipro && !input)
+	if(argc != 1 && !sine && !digipro && !input && !sweep)
 		return 2;
 	const auto* path = std::getenv("GEARMULATOR_MM_FIRMWARE_BIN");
 	if(!path || !*path)
@@ -286,8 +382,9 @@ int main(int argc, char** argv)
 		auto& hardware = *machine;
 		advance(hardware, md::g_samplerate * 20);
 		require(hardware.isAudioReady() && hardware.isFirmwareMidiReady(), "MM boot incomplete");
-		if(sine || digipro || input)
+		if(sine || digipro || input || sweep)
 			loadEmptyKit(hardware);
+		if(sweep) { runPhaseSweep(hardware); return 0; }
 		if(input) { testAudioInput(hardware); return 0; }
 		if(sineMidi)
 		{
@@ -335,10 +432,18 @@ int main(int argc, char** argv)
 			require(hardware.sendMidi(synthLib::SMidiEvent(synthLib::MidiEventSource::Host,
 				static_cast<uint8_t>(0xb0 | track), 7, 127)), "level restore rejected");
 			advance(hardware, md::g_samplerate / 10);
+			{
+				const std::string tag = "before-track" + std::to_string(track);
+				dumpScorecard(hardware, tag.c_str());
+			}
 			require(hardware.sendMidi(synthLib::SMidiEvent(synthLib::MidiEventSource::Host,
 				static_cast<uint8_t>(0x90 | track), 60, 100)), "note-on rejected");
 			double roughness = 0;
 			const auto rms = render(hardware, &roughness);
+			{
+				const std::string tag = "after-track" + std::to_string(track);
+				dumpScorecard(hardware, tag.c_str());
+			}
 			std::cout << "track " << unsigned(track) << " RMS " << rms
 				<< ", zero-level RMS " << quiet << ", roughness " << roughness << '\n';
 			require(rms > 1e-5, "MM note produced silence");
