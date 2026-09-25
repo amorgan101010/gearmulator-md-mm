@@ -32,10 +32,18 @@ namespace md
 		                        e <PanelEncoder name> <delta>  encoder turned, signed step count
 		                        p <PanelEncoder name> <1|0>    encoder pushed / released
 		                        t <track 0..15>                select a track (Machinedrum, via sysex)
-		                        m <machine id>                 assign a machine to the current track
+		                      m <machine id>                 assign a machine to the current track
+		                      sc edit <-1|0|1>                leave edit mode, or edit scene A/B
+		                      sc assign <A|B> <0..15>         assign one of sixteen scenes
+		                      sc fader <0..127>               set the scene crossfader
+		                      sc mute <A|B> <0|1>              mute a side to the clean Kit value
+				                      sc clear                        clear the edited side's current lock
+				                      sc erase                        clear all locks from the edited scene
 		                      The server also pushes a text frame "M <json>" with the machine catalogue,
 		                      the current track and the UW sample slot names whenever they change.
-		                        hello                          ask for the current state right away
+		                      hello                          ask for the current state right away
+		                    The server pushes "C <json>" with the current Kit's scene assignments,
+		                    fader, mute flags, stored locks, and edit side.
 	*/
 	class RemotePanelServer
 	{
@@ -51,6 +59,14 @@ namespace md
 			// machine selector: catalogue and state as JSON (see mdmachines.h), and assignment to the current track
 			std::function<std::string()> machineInfo;
 			std::function<bool(uint16_t _machineId)> assignMachine;
+			// Optional remote scenes controls. Scene state is JSON; scene numbers are zero based.
+			std::function<std::string(int _editSide)> sceneInfo;
+			std::function<bool(bool _sideB, uint8_t _scene)> assignScene;
+			std::function<bool(uint8_t _value)> setSceneFader;
+			std::function<bool(bool _sideB, bool _muted)> setSceneMuted;
+			std::function<bool(bool _sideB, PanelEncoder _encoder, int _steps)> editSceneParameter;
+			std::function<bool(bool _sideB)> clearSceneLock;
+			std::function<bool(bool _sideB)> clearScene;
 		};
 
 		RemotePanelServer(MachineModel _model, int _port, Callbacks _callbacks);
@@ -73,6 +89,7 @@ namespace md
 			std::mutex writeMutex;
 			std::vector<uint8_t> lastState;
 			std::string lastMachineInfo;
+			std::string lastSceneInfo;
 			std::atomic<bool> websocket{false};
 			std::atomic<bool> closed{false};
 			std::unique_ptr<std::thread> thread;
@@ -105,6 +122,7 @@ namespace md
 		std::mutex m_inputMutex;
 		uint32_t m_infoTick = 0;
 		std::atomic<bool> m_infoForce{false};
+		std::atomic<int> m_sceneEditSide{-1};
 		PanelRowState m_rows;
 	};
 }

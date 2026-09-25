@@ -9,6 +9,7 @@
 #include "jucePluginLib/processorPropertiesInit.h"
 
 #include "mdLib/mddevice.h"
+#include "mdLib/mdfrontpanel.h"
 #include "mdLib/mdromloader.h"
 #include "mdLib/mdmachines.h"
 #include "mdLib/mdstate.h"
@@ -25,10 +26,49 @@
 
 #include <cstdlib>
 #include <memory>
+#include <optional>
 #include <utility>
 
 namespace
 {
+	std::optional<uint8_t> sceneDataPage(const md::FrontPanel& _panel,
+		const md::MachineModel _model)
+	{
+		if(_model == md::MachineModel::Machinedrum)
+		{
+			constexpr md::FrontPanel::StatusLed pages[] =
+			{
+				md::FrontPanel::StatusLed::Synthesis,
+				md::FrontPanel::StatusLed::Effects,
+				md::FrontPanel::StatusLed::Routing,
+			};
+			std::optional<uint8_t> result;
+			for(uint8_t page = 0; page < std::size(pages); ++page)
+			{
+				if(!_panel.getStatusLed(pages[page]))
+					continue;
+				if(result)
+					return std::nullopt;
+				result = page;
+			}
+			return result;
+		}
+
+		std::optional<uint8_t> result;
+		for(uint8_t page = 0; page < 7; ++page)
+		{
+			const auto bank = page < 4 ? uint8_t{0x25} : uint8_t{0x26};
+			const auto bit = page < 4 ? static_cast<uint8_t>(4 + page)
+				: static_cast<uint8_t>(page - 4);
+			if((_panel.getLedBankRaw(bank) & static_cast<uint8_t>(1u << bit)) != 0)
+				continue;
+			if(result)
+				return std::nullopt;
+			result = page;
+		}
+		return result;
+	}
+
 	synthLib::PerformanceReport::Context panelEventDetails(const synthLib::RealtimeEvent& _event)
 	{
 		using Kind = synthLib::RealtimeEventKind;
@@ -154,6 +194,12 @@ namespace mdJucePlugin
 			baseLib::ChunkWriter chunk(_stream, "AUTO", 1);
 			_stream.write(snapshot);
 		}
+		const auto sceneSnapshot = controller.createSceneSnapshot();
+		if(!sceneSnapshot.empty())
+		{
+			baseLib::ChunkWriter chunk(_stream, "SCEN", 1);
+			_stream.write(sceneSnapshot);
+		}
 	}
 
 	void AudioPluginAudioProcessor::loadChunkData(baseLib::ChunkReader& _reader)
@@ -171,6 +217,13 @@ namespace mdJucePlugin
 			_stream.read(snapshot);
 			auto& controller = dynamic_cast<Controller&>(getController());
 			(void)controller.restoreAutomationSnapshot(snapshot);
+		});
+		_reader.add("SCEN", 1, [this](baseLib::BinaryStream& _stream, uint32_t)
+		{
+			std::vector<uint8_t> snapshot;
+			_stream.read(snapshot);
+			auto& controller = dynamic_cast<Controller&>(getController());
+			(void)controller.restoreSceneSnapshot(snapshot);
 		});
 		_reader.add("RAMF", 1, [this](baseLib::BinaryStream& _stream, uint32_t)
 		{
@@ -583,6 +636,92 @@ namespace mdJucePlugin
 		callbacks.assignMachine = [this](const uint16_t _machineId)
 		{
 			return assignMachineToCurrentTrack(_machineId);
+		};
+		callbacks.sceneInfo = [this](const int _editSide)
+		{
+			const auto& controller = dynamic_cast<const Controller&>(getController());
+			const auto kit = controller.getCurrentKitSlot();
+			if(kit >= controller.getSceneBankCount())
+				return std::string("{\"kit\":-1,\"editSide\":")
+					+ std::to_string(_editSide) + "}";
+			const auto bank = controller.getSceneBank(kit);
+			const auto boolText = [](const bool _value)
+			{
+				return _value ? "true" : "false";
+			};
+			return std::string("{\"kit\":") + std::to_string(kit)
+				+ ",\"sceneA\":" + std::to_string(bank.sceneA)
+				+ ",\"sceneB\":" + std::to_string(bank.sceneB)
+				+ ",\"fader\":" + std::to_string(bank.fader)
+				+ ",\"muteA\":" + boolText(bank.muteA)
+				+ ",\"muteB\":" + boolText(bank.muteB)
+				+ ",\"lockedA\":" + boolText(bank.sceneHasLocks(bank.sceneA))
+				+ ",\"lockedB\":" + boolText(bank.sceneHasLocks(bank.sceneB))
+				+ ",\"editSide\":" + std::to_string(_editSide) + "}";
+		};
+		callbacks.assignScene = [this](const bool _sideB, const uint8_t _scene)
+		{
+			auto& controller = dynamic_cast<Controller&>(getController());
+			const auto kit = controller.getCurrentKitSlot();
+			return controller.assignScene(kit, _sideB, _scene);
+		};
+		callbacks.setSceneFader = [this](const uint8_t _value)
+		{
+			auto& controller = dynamic_cast<Controller&>(getController());
+			return controller.setSceneFader(controller.getCurrentKitSlot(), _value);
+		};
+		callbacks.setSceneMuted = [this](const bool _sideB, const bool _muted)
+		{
+			auto& controller = dynamic_cast<Controller&>(getController());
+			return controller.setSceneMuted(controller.getCurrentKitSlot(), _sideB, _muted);
+		};
+		callbacks.editSceneParameter = [this](const bool _sideB,
+			const md::PanelEncoder _encoder, const int _steps)
+		{
+			auto& controller = dynamic_cast<Controller&>(getController());
+			const auto kit = controller.getCurrentKitSlot();
+			const auto track = controller.getCurrentTrack();
+			if(kit >= controller.getSceneBankCount() || track < 0
+				|| track >= controller.getPartCount()
+				|| _encoder < md::PanelEncoder::DataEntryA
+				|| _encoder > md::PanelEncoder::DataEntryH)
+				return false;
+			const auto panel = getPlugin().withDeviceLocked(
+				[](synthLib::Device* const _device)
+				{
+					const auto* const device = dynamic_cast<const md::Device*>(_device);
+					return device ? device->getFrontPanelSnapshot() : md::FrontPanel();
+				});
+			const auto page = sceneDataPage(panel, m_model);
+			if(!page)
+				return false;
+			const auto index = static_cast<uint8_t>(static_cast<unsigned>(_encoder)
+				- static_cast<unsigned>(md::PanelEncoder::DataEntryA));
+			const md::scene::Address address{static_cast<uint8_t>(track), *page, index};
+			const auto bank = controller.getSceneBank(kit);
+			const auto scene = _sideB ? bank.sceneB : bank.sceneA;
+			return controller.editSceneParameter(kit, scene, address, _steps);
+		};
+		callbacks.clearSceneLock = [this](const bool _sideB)
+		{
+			auto& controller = dynamic_cast<Controller&>(getController());
+			const auto kit = controller.getCurrentKitSlot();
+			const auto address = controller.getLastSceneAddress();
+			if(kit >= controller.getSceneBankCount() || !address)
+				return false;
+			const auto bank = controller.getSceneBank(kit);
+			const auto scene = _sideB ? bank.sceneB : bank.sceneA;
+			return controller.clearSceneLock(kit, scene, *address);
+		};
+		callbacks.clearScene = [this](const bool _sideB)
+		{
+			auto& controller = dynamic_cast<Controller&>(getController());
+			const auto kit = controller.getCurrentKitSlot();
+			if(kit >= controller.getSceneBankCount())
+				return false;
+			const auto bank = controller.getSceneBank(kit);
+			const auto scene = _sideB ? bank.sceneB : bank.sceneA;
+			return controller.clearScene(kit, scene);
 		};
 
 		m_remotePanel = std::make_unique<md::RemotePanelServer>(m_model, port, std::move(callbacks));

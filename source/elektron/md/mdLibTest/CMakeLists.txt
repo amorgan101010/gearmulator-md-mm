@@ -170,6 +170,12 @@ add_test(NAME mdAutomationMidiTest COMMAND mdAutomationMidiTest)
 set_tests_properties(mdAutomationMidiTest PROPERTIES LABELS "UnitTest")
 set_property(TARGET mdAutomationMidiTest PROPERTY FOLDER "Elektron")
 
+add_executable(mdSceneModelTest mdSceneModelTest.cpp)
+target_link_libraries(mdSceneModelTest PRIVATE mdLib)
+add_test(NAME mdSceneModelTest COMMAND mdSceneModelTest)
+set_tests_properties(mdSceneModelTest PROPERTIES LABELS "UnitTest")
+set_property(TARGET mdSceneModelTest PROPERTY FOLDER "Elektron")
+
 add_executable(mdUwFirmwareTest mdUwFirmwareTest.cpp)
 target_link_libraries(mdUwFirmwareTest PRIVATE mdLib)
 # The audio oracle must detect NaN/Inf even in builds using -Ofast or /fp:fast.

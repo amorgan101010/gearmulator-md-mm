@@ -500,6 +500,7 @@ namespace md
 			{
 				c->lastState.clear();
 				c->lastMachineInfo.clear();
+				c->lastSceneInfo.clear();
 			}
 			m_infoForce = true;
 			return;
@@ -531,6 +532,59 @@ namespace md
 			return;
 		}
 
+		if(type == "sc")
+		{
+			std::string action;
+			ss >> action;
+			std::lock_guard lock(m_inputMutex);
+			if(action == "edit")
+			{
+				int side = -1;
+				ss >> side;
+				if(side >= -1 && side <= 1)
+					m_sceneEditSide.store(side, std::memory_order_release);
+			}
+			else if(action == "assign")
+			{
+				std::string side;
+				int scene = -1;
+				ss >> side >> scene;
+				if((side == "A" || side == "B") && scene >= 0 && scene < 16
+					&& m_callbacks.assignScene)
+					m_callbacks.assignScene(side == "B", static_cast<uint8_t>(scene));
+			}
+			else if(action == "fader")
+			{
+				int value = -1;
+				ss >> value;
+				if(value >= 0 && value <= 127 && m_callbacks.setSceneFader)
+					m_callbacks.setSceneFader(static_cast<uint8_t>(value));
+			}
+			else if(action == "mute")
+			{
+				std::string side;
+				int muted = -1;
+				ss >> side >> muted;
+				if((side == "A" || side == "B") && (muted == 0 || muted == 1)
+					&& m_callbacks.setSceneMuted)
+					m_callbacks.setSceneMuted(side == "B", muted != 0);
+			}
+			else if(action == "clear")
+			{
+				const auto side = m_sceneEditSide.load(std::memory_order_acquire);
+				if(side >= 0 && m_callbacks.clearSceneLock)
+					m_callbacks.clearSceneLock(side == 1);
+			}
+			else if(action == "erase")
+			{
+				const auto side = m_sceneEditSide.load(std::memory_order_acquire);
+				if(side >= 0 && m_callbacks.clearScene)
+					m_callbacks.clearScene(side == 1);
+			}
+			m_infoForce.store(true, std::memory_order_release);
+			return;
+		}
+
 		if(!m_callbacks.sendPanelEvent)
 			return;
 
@@ -543,6 +597,19 @@ namespace md
 			const auto control = controlByName(name);
 			if(!control)
 				return;
+			const auto editSide = m_sceneEditSide.load(std::memory_order_acquire);
+			if(down && editSide >= 0
+				&& *control >= PanelControl::Trigger1
+				&& *control <= PanelControl::Trigger16)
+			{
+				const auto scene = static_cast<uint8_t>(static_cast<unsigned>(*control)
+					- static_cast<unsigned>(PanelControl::Trigger1));
+				if(m_callbacks.assignScene)
+					m_callbacks.assignScene(editSide == 1, scene);
+				m_sceneEditSide.store(-1, std::memory_order_release);
+				m_infoForce.store(true, std::memory_order_release);
+				return;
+			}
 			const auto packet = panelPacket(m_model, *control);
 			if(!packet)
 				return;
@@ -556,6 +623,15 @@ namespace md
 			const auto encoder = encoderByName(name);
 			if(!encoder || delta == 0)
 				return;
+			const auto editSide = m_sceneEditSide.load(std::memory_order_acquire);
+			if(editSide >= 0 && *encoder >= PanelEncoder::DataEntryA
+				&& *encoder <= PanelEncoder::DataEntryH)
+			{
+				if(m_callbacks.editSceneParameter)
+					m_callbacks.editSceneParameter(editSide == 1, *encoder, delta);
+				m_infoForce.store(true, std::memory_order_release);
+				return;
+			}
 			const auto command = panelEncoderCommand(m_model, *encoder);
 			if(!command)
 				return;
@@ -602,9 +678,24 @@ namespace md
 			const bool infoDue = m_callbacks.machineInfo && ((++m_infoTick % 16) == 0 || m_infoForce.exchange(false));
 			if(infoDue)
 				machineInfo = "M " + m_callbacks.machineInfo();
+			const auto sceneInfo = m_callbacks.sceneInfo
+				? "C " + m_callbacks.sceneInfo(
+					m_sceneEditSide.load(std::memory_order_acquire))
+				: std::string();
 
 			for(auto& c : clients)
 			{
+				if(!sceneInfo.empty() && c->lastSceneInfo != sceneInfo)
+				{
+					c->lastSceneInfo = sceneInfo;
+					if(!sendWebSocketFrame(*c, 1,
+						reinterpret_cast<const uint8_t*>(sceneInfo.data()), sceneInfo.size()))
+					{
+						c->closed = true;
+						c->stream->close();
+						continue;
+					}
+				}
 				if(infoDue && c->lastMachineInfo != machineInfo)
 				{
 					c->lastMachineInfo = machineInfo;

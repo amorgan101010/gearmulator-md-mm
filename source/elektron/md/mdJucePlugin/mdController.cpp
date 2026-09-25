@@ -247,6 +247,124 @@ namespace mdJucePlugin
 		return true;
 	}
 
+	md::scene::Bank Controller::getSceneBank(const uint8_t _kit) const
+	{
+		if(_kit >= getSceneBankCount())
+			return {};
+		const std::lock_guard lock(m_sceneLock);
+		const auto found = m_scenes.kits.find(_kit);
+		return found == m_scenes.kits.end() ? md::scene::Bank{} : found->second;
+	}
+
+	bool Controller::assignScene(const uint8_t _kit, const bool _sideB,
+		const uint8_t _scene)
+	{
+		if(_kit >= getSceneBankCount() || _scene >= 16)
+			return false;
+		const std::lock_guard lock(m_sceneLock);
+		if(!m_scenes.kits[_kit].assign(_sideB, _scene))
+			return false;
+		m_sceneRevision.fetch_add(1, std::memory_order_release);
+		return true;
+	}
+
+	bool Controller::setSceneFader(const uint8_t _kit, const uint8_t _value)
+	{
+		if(_kit >= getSceneBankCount() || _value > 127)
+			return false;
+		const std::lock_guard lock(m_sceneLock);
+		m_scenes.kits[_kit].fader = _value;
+		m_sceneRevision.fetch_add(1, std::memory_order_release);
+		return true;
+	}
+
+	bool Controller::setSceneMuted(const uint8_t _kit, const bool _sideB,
+		const bool _muted)
+	{
+		if(_kit >= getSceneBankCount())
+			return false;
+		const std::lock_guard lock(m_sceneLock);
+		auto& bank = m_scenes.kits[_kit];
+		(_sideB ? bank.muteB : bank.muteA) = _muted;
+		m_sceneRevision.fetch_add(1, std::memory_order_release);
+		return true;
+	}
+
+	bool Controller::setSceneLock(const uint8_t _kit, const uint8_t _scene,
+		const md::scene::Address _address, const uint8_t _value)
+	{
+		if(_kit >= getSceneBankCount())
+			return false;
+		const std::lock_guard lock(m_sceneLock);
+		if(!m_scenes.kits[_kit].setLock(_scene, _address, _value))
+			return false;
+		m_lastSceneAddress = _address;
+		m_sceneRevision.fetch_add(1, std::memory_order_release);
+		return true;
+	}
+
+	bool Controller::editSceneParameter(const uint8_t _kit, const uint8_t _scene,
+		const md::scene::Address _address, const int _steps)
+	{
+		if(_kit >= getSceneBankCount() || _steps == 0)
+			return false;
+		const auto bank = getSceneBank(_kit);
+		const auto locked = bank.getLock(_scene, _address);
+		const auto base = getTrackParameterValue(_address.track, _address.page,
+			_address.index);
+		if(locked < 0 && base < 0)
+			return false;
+		const auto start = locked >= 0 ? locked : base;
+		const auto value = static_cast<uint8_t>(std::clamp(start + _steps, 0, 127));
+		return setSceneLock(_kit, _scene, _address, value);
+	}
+
+	bool Controller::clearSceneLock(const uint8_t _kit, const uint8_t _scene,
+		const md::scene::Address _address)
+	{
+		if(_kit >= getSceneBankCount())
+			return false;
+		const std::lock_guard lock(m_sceneLock);
+		if(!m_scenes.kits[_kit].clearLock(_scene, _address))
+			return false;
+		m_sceneRevision.fetch_add(1, std::memory_order_release);
+		return true;
+	}
+
+	bool Controller::clearScene(const uint8_t _kit, const uint8_t _scene)
+	{
+		if(_kit >= getSceneBankCount() || _scene >= 16)
+			return false;
+		const std::lock_guard lock(m_sceneLock);
+		if(!m_scenes.kits[_kit].clearScene(_scene))
+			return false;
+		m_sceneRevision.fetch_add(1, std::memory_order_release);
+		return true;
+	}
+
+	std::optional<md::scene::Address> Controller::getLastSceneAddress() const
+	{
+		const std::lock_guard lock(m_sceneLock);
+		return m_lastSceneAddress;
+	}
+
+	std::vector<uint8_t> Controller::createSceneSnapshot() const
+	{
+		const std::lock_guard lock(m_sceneLock);
+		return m_scenes.encode();
+	}
+
+	bool Controller::restoreSceneSnapshot(const std::vector<uint8_t>& _snapshot)
+	{
+		md::scene::Store restored;
+		if(!md::scene::Store::decode(_snapshot, restored))
+			return false;
+		const std::lock_guard lock(m_sceneLock);
+		m_scenes = std::move(restored);
+		m_sceneRevision.fetch_add(1, std::memory_order_release);
+		return true;
+	}
+
 	void Controller::requestAutomationState()
 	{
 		requestAutomationState(false);
@@ -357,6 +475,7 @@ namespace mdJucePlugin
 		drainRealtimeParameterChanges(RealtimeAutomationCapacity, false);
 		completeSynchronizationIfReady();
 		const auto now = milliseconds();
+		applyScenes();
 		// The machine selector needs the current track. Its status message is tiny; it
 		// bypasses sendSynchronizationRequest so automation request accounting is unchanged.
 		if(firmwareReadyForAutomation() && now - m_lastTrackPollMs >= 300)
@@ -417,6 +536,14 @@ namespace mdJucePlugin
 		publishAutomationIntent(change,
 			_origin != pluginLib::Parameter::Origin::HostAutomation
 				|| !m_automationReady.load(std::memory_order_acquire));
+		const auto kit = m_currentKit.load(std::memory_order_acquire);
+		if(kit < getSceneBankCount())
+		{
+			if(auto* const slot = findAutomationSlot(
+				{change.page, change.track, change.index}))
+				slot->pendingSceneBaseValue.store(static_cast<uint16_t>(
+					(kit << 7) | change.value), std::memory_order_release);
+		}
 		// UI changes use exactly the same ordered publication path as host
 		// automation. A non-realtime caller may drain immediately, while a host
 		// callback only performs the bounded publication and returns.
@@ -728,7 +855,8 @@ namespace mdJucePlugin
 	}
 
 	void Controller::applyKitParameters(
-		const std::vector<md::automation::ParameterChange>& _changes)
+		const std::vector<md::automation::ParameterChange>& _changes,
+		const uint8_t _kit)
 	{
 		const auto requestRevision = m_kitDumpRequestRevision.load(
 			std::memory_order_acquire);
@@ -741,6 +869,12 @@ namespace mdJucePlugin
 			const auto value = publishFirmwareValue(
 				{change.page, change.track, change.index}, change.value,
 				requestRevision);
+			if(_kit < getSceneBankCount())
+			{
+				const std::lock_guard sceneLock(m_sceneLock);
+				m_scenes.kits[_kit].setBase(
+					{change.track, change.page, change.index}, value);
+			}
 			const auto& parameters = findSynthParam(change.track, change.page,
 				change.index);
 			for(auto* const parameter : parameters)
@@ -749,6 +883,112 @@ namespace mdJucePlugin
 		}
 		getProcessor().updateHostDisplay(
 			juce::AudioProcessorListener::ChangeDetails().withProgramChanged(true));
+	}
+
+	void Controller::applyScenes()
+	{
+		for(auto& slot : m_automationSlots)
+		{
+			const auto pending = slot.pendingSceneBaseValue.exchange(0xffff,
+				std::memory_order_acq_rel);
+			if(pending != 0xffff)
+			{
+				const auto baseKit = static_cast<uint8_t>(pending >> 7);
+				const auto value = static_cast<uint8_t>(pending & 0x7f);
+				const std::lock_guard sceneLock(m_sceneLock);
+				m_scenes.kits[baseKit].setBase({slot.address.track,
+					slot.address.page, slot.address.index}, value);
+			}
+		}
+		const auto kit = m_currentKit.load(std::memory_order_acquire);
+		if(!m_automationReady.load(std::memory_order_acquire))
+			return;
+
+		const auto now = milliseconds();
+		if(now - m_lastSceneApplyMs < 16)
+			return;
+		m_lastSceneApplyMs = now;
+		if(kit >= getSceneBankCount())
+			return;
+
+		md::scene::Bank bank;
+		std::map<md::scene::Address, uint8_t> previouslyApplied;
+		{
+			const std::lock_guard sceneLock(m_sceneLock);
+			if(m_sceneAppliedKit != kit)
+			{
+				// A selected Kit loads its own values. Never restore the previous Kit's
+				// CCs into the newly selected one.
+				m_sceneAppliedValues.clear();
+				m_sceneAppliedKit = kit;
+			}
+			previouslyApplied = m_sceneAppliedValues;
+			const auto found = m_scenes.kits.find(kit);
+			if(found != m_scenes.kits.end())
+				bank = found->second;
+		}
+		const auto refreshSceneOutput = now - m_lastSceneRefreshMs >= 50;
+		if(refreshSceneOutput)
+			m_lastSceneRefreshMs = now;
+		std::map<md::scene::Address, uint8_t> nextValues;
+		for(const auto sceneIndex : {bank.sceneA, bank.sceneB})
+		{
+			for(const auto& [address, value] : bank.scenes[sceneIndex].locks)
+			{
+				(void)value;
+				const auto base = bank.getBase(address);
+				if(base < 0)
+					continue;
+				const auto morphed = bank.morphedValue(address,
+					static_cast<uint8_t>(base));
+				nextValues[address] = static_cast<uint8_t>(morphed);
+			}
+		}
+		for(const auto& [address, value] : nextValues)
+		{
+			const auto wasApplied = previouslyApplied.find(address);
+			if(wasApplied != previouslyApplied.end() && wasApplied->second == value
+				&& !refreshSceneOutput)
+				continue;
+			const auto message = md::automation::encodeParameterChange(m_model,
+				{address.page, address.track, address.index, value},
+				getAutomationBaseChannel());
+			if(message)
+				sendMidiEvent((*message)[0], (*message)[1], (*message)[2]);
+		}
+		for(const auto& [address, previousValue] : previouslyApplied)
+		{
+			(void)previousValue;
+			if(nextValues.find(address) != nextValues.end())
+				continue;
+			const auto base = bank.getBase(address);
+			if(base < 0)
+				continue;
+			const auto message = md::automation::encodeParameterChange(m_model,
+				{address.page, address.track, address.index,
+					static_cast<uint8_t>(base)}, getAutomationBaseChannel());
+			if(message)
+				sendMidiEvent((*message)[0], (*message)[1], (*message)[2]);
+		}
+		{
+			const std::lock_guard sceneLock(m_sceneLock);
+			m_sceneAppliedValues = std::move(nextValues);
+		}
+	}
+
+	bool Controller::isSceneFeedback(const Address _address,
+		const uint8_t _value) const
+	{
+		const auto currentKit = m_currentKit.load(std::memory_order_acquire);
+		if(currentKit >= getSceneBankCount())
+			return false;
+		const md::scene::Address sceneAddress{_address.track, _address.page,
+			_address.index};
+		const std::lock_guard sceneLock(m_sceneLock);
+		if(m_sceneAppliedKit != currentKit)
+			return false;
+		const auto found = m_sceneAppliedValues.find(sceneAddress);
+		return found != m_sceneAppliedValues.end() && found->second == _value;
 	}
 
 	void Controller::completeSynchronizationIfReady()
@@ -895,7 +1135,7 @@ namespace mdJucePlugin
 			if(!m_kitSynchronization.acceptDump(kit->slot))
 				return true;
 			if(m_applyRequestedKitDump.exchange(false, std::memory_order_acq_rel))
-				applyKitParameters(kit->parameters);
+				applyKitParameters(kit->parameters, kit->slot);
 			else
 			{
 				// Even when the stored dump must not replace the live cache, retain its
@@ -948,6 +1188,10 @@ namespace mdJucePlugin
 			change->index);
 		if(parameters.empty())
 			return false;
+		if(_event.source == synthLib::MidiEventSource::Device
+			&& isSceneFeedback({change->page, change->track, change->index},
+				change->value))
+			return true;
 		const auto value = publishFirmwareValue(
 			{change->page, change->track, change->index}, change->value);
 		const auto origin = midiEventSourceToParameterOrigin(_event.source);

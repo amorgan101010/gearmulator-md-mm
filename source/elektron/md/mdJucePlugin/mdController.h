@@ -3,6 +3,7 @@
 #include "jucePluginLib/controller.h"
 #include "mdLib/mdautomation.h"
 #include "mdLib/mdautomationsync.h"
+#include "mdLib/mdscene.h"
 #include "mdLib/mdtypes.h"
 #include "mdRealtimeQueue.h"
 
@@ -10,6 +11,7 @@
 #include <deque>
 #include <map>
 #include <mutex>
+#include <optional>
 
 namespace mdJucePlugin
 {
@@ -76,6 +78,11 @@ namespace mdJucePlugin
 
 		// Current track of the machine (polled via status request 0x22), -1 while unknown.
 		int getCurrentTrack() const { return m_currentTrack.load(std::memory_order_acquire); }
+		uint8_t getCurrentKitSlot() const { return m_currentKit.load(std::memory_order_acquire); }
+		uint16_t getSceneBankCount() const
+		{
+			return m_model == md::MachineModel::Monomachine ? 128 : 64;
+		}
 		// Last known value (0-127) of a track parameter, kept current from Kit dumps and the CCs the
 		// firmware sends when a knob turns. -1 before the first Kit dump or for an unknown address.
 		int getTrackParameterValue(const uint8_t _track, const uint8_t _page, const uint8_t _index) const
@@ -89,6 +96,20 @@ namespace mdJucePlugin
 		void refreshKit() { requestKitState(); }
 		std::vector<uint8_t> createAutomationSnapshot() const;
 		bool restoreAutomationSnapshot(const std::vector<uint8_t>& _snapshot);
+		md::scene::Bank getSceneBank(uint8_t _kit) const;
+		uint64_t getSceneRevision() const { return m_sceneRevision.load(std::memory_order_acquire); }
+		bool assignScene(uint8_t _kit, bool _sideB, uint8_t _scene);
+		bool setSceneFader(uint8_t _kit, uint8_t _value);
+		bool setSceneMuted(uint8_t _kit, bool _sideB, bool _muted);
+		bool setSceneLock(uint8_t _kit, uint8_t _scene, md::scene::Address _address,
+			uint8_t _value);
+		bool editSceneParameter(uint8_t _kit, uint8_t _scene,
+			md::scene::Address _address, int _steps);
+		bool clearSceneLock(uint8_t _kit, uint8_t _scene, md::scene::Address _address);
+		bool clearScene(uint8_t _kit, uint8_t _scene);
+		std::optional<md::scene::Address> getLastSceneAddress() const;
+		std::vector<uint8_t> createSceneSnapshot() const;
+		bool restoreSceneSnapshot(const std::vector<uint8_t>& _snapshot);
 
 	private:
 		friend struct ControllerAutomationTestAccess;
@@ -124,6 +145,10 @@ namespace mdJucePlugin
 			// Raw value from the most recently accepted stored-Kit dump. This is
 			// diagnostic truth, distinct from the live/session publication above.
 			std::atomic<uint16_t> lastFirmwareKitValue{0x100};
+			// Explicit UI/DAW writes become clean scene bases on the controller timer.
+			// This keeps the realtime parameter callback free of scene mutexes.
+			// Packed as (Kit slot << 7) | value; 0xffff means no pending edit.
+			std::atomic<uint16_t> pendingSceneBaseValue{0xffff};
 		};
 
 		struct QueuedAutomationChange
@@ -164,7 +189,10 @@ namespace mdJucePlugin
 		const AutomationSlot* findAutomationSlot(const Address& _address) const;
 		void completeSynchronizationIfReady();
 		bool firmwareReadyForAutomation() const;
-		void applyKitParameters(const std::vector<md::automation::ParameterChange>& _changes);
+		void applyKitParameters(const std::vector<md::automation::ParameterChange>& _changes,
+			uint8_t _kit);
+		void applyScenes();
+		bool isSceneFeedback(Address _address, uint8_t _value) const;
 		void onControllerTimer() override;
 		void sendMissingSynchronizationRequests();
 		void sendSynchronizationRequest(const pluginLib::SysEx& _message) const;
@@ -203,6 +231,14 @@ namespace mdJucePlugin
 		std::map<Address, size_t> m_automationSlotIndices;
 		RealtimeQueue<QueuedAutomationChange,
 			RealtimeAutomationCapacity> m_realtimeAutomationChanges;
+		mutable std::mutex m_sceneLock;
+		md::scene::Store m_scenes;
+		std::atomic<uint64_t> m_sceneRevision{0};
+		std::optional<md::scene::Address> m_lastSceneAddress;
+		std::map<md::scene::Address, uint8_t> m_sceneAppliedValues;
+		uint8_t m_sceneAppliedKit = 0xff;
+		uint64_t m_lastSceneApplyMs = 0;
+		uint64_t m_lastSceneRefreshMs = 0;
 		size_t m_dirtyScanPosition = 0;
 		bool m_minimumBudgetRecoveryTurn = true;
 		std::atomic_flag m_realtimeAutomationDrain = ATOMIC_FLAG_INIT;

@@ -176,9 +176,18 @@
 		<div class="secondary compact" style="left:12px;top:81px;width:52px">SCALE SETUP</div>
 	</div>
 </div>
+<div id="sceneStrip" class="sceneStrip">
+	<div class="sceneSide"><button id="sceneMuteA" type="button">MUTE A</button><button id="sceneEditA" type="button">A 01</button></div>
+	<div id="sceneFader" class="sceneFader" role="slider" tabindex="0" aria-label="Scene crossfader" aria-valuemin="0" aria-valuemax="127" aria-valuenow="0">
+		<div class="sceneFaderTrack"><div class="sceneFaderFill"></div><div class="sceneFaderThumb"></div></div>
+		<span class="sceneFaderEnd sceneFaderEndA">A</span><span class="sceneFaderEnd sceneFaderEndB">B</span>
+	</div>
+	<div class="sceneSide"><button id="sceneEditB" type="button">B 16</button><button id="sceneMuteB" type="button">MUTE B</button></div>
+	<button id="sceneClear" type="button">CLEAR LOCK</button>
+	<button id="sceneErase" type="button">CLEAR SCENE</button>
+</div>
 <div id="rack" class="rack"></div>
 </div>
-<button id="btnRack" type="button">MACHINES</button>
 <div id="overlay"><div id="overlayText">Connecting to the machine...</div></div>
 <script src="panel.js"></script>
 <script src="rack.js"></script>

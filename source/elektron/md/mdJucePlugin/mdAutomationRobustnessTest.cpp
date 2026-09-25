@@ -94,6 +94,21 @@ namespace mdJucePlugin
 		{
 			_controller.onControllerTimer();
 		}
+
+		static int appliedSceneValue(const Controller& _controller,
+			const md::scene::Address _address)
+		{
+			const std::lock_guard lock(_controller.m_sceneLock);
+			const auto found = _controller.m_sceneAppliedValues.find(_address);
+			return found == _controller.m_sceneAppliedValues.end()
+				? -1 : found->second;
+		}
+
+		static void tickScenesNow(Controller& _controller)
+		{
+			_controller.m_lastSceneApplyMs = 0;
+			_controller.onControllerTimer();
+		}
 	};
 }
 
@@ -1250,6 +1265,73 @@ namespace
 		primeSyntheticSnapshot(harness);
 		verifyStateLoadReplacesSameSlotBaseline(harness);
 		verifyMuteOwnership(harness);
+		auto* const parameter = parameters(harness, false).front();
+		const auto& description = parameter->getDescription();
+		const md::scene::Address address{parameter->getPart(),
+			description.page, description.index};
+		const auto before = harness.controller.createAutomationSnapshot();
+		const auto cleanBase = harness.controller.getTrackParameterValue(
+			address.track, address.page, address.index);
+		require(cleanBase >= 0
+			&& harness.controller.getSceneBank(0).getBase(address) == cleanBase,
+			"coherent Kit dump did not seed its clean scene base");
+		require(harness.controller.setSceneLock(0, 0, address, 100)
+			&& harness.controller.setSceneLock(0, 1, address, 0),
+			"scene lock setup failed");
+		require(harness.controller.setSceneFader(0, 0),
+			"scene fader setup failed");
+		mdJucePlugin::ControllerAutomationTestAccess::tickScenesNow(
+			harness.controller);
+		require(mdJucePlugin::ControllerAutomationTestAccess::appliedSceneValue(
+			harness.controller, address) == 100,
+			"scene A endpoint did not publish its MIDI target");
+		require(harness.controller.setSceneFader(0, 127),
+			"scene fader B endpoint setup failed");
+		mdJucePlugin::ControllerAutomationTestAccess::tickScenesNow(
+			harness.controller);
+		require(mdJucePlugin::ControllerAutomationTestAccess::appliedSceneValue(
+			harness.controller, address) == 0,
+			"scene B endpoint did not publish its MIDI target");
+		require(harness.controller.setSceneMuted(0, true, true),
+			"scene B mute setup failed");
+		mdJucePlugin::ControllerAutomationTestAccess::tickScenesNow(
+			harness.controller);
+		require(mdJucePlugin::ControllerAutomationTestAccess::appliedSceneValue(
+			harness.controller, address) == cleanBase,
+			"muted scene B did not return to the clean Kit value");
+		require(harness.controller.setSceneMuted(0, true, false)
+			&& harness.controller.setSceneFader(0, 0)
+			&& harness.controller.setSceneMuted(0, false, true),
+			"scene A mute setup failed");
+		mdJucePlugin::ControllerAutomationTestAccess::tickScenesNow(
+			harness.controller);
+		require(mdJucePlugin::ControllerAutomationTestAccess::appliedSceneValue(
+			harness.controller, address) == cleanBase,
+			"muted scene A did not return to the clean Kit value");
+		require(harness.controller.setSceneMuted(0, false, false),
+			"scene A unmute failed");
+		require(harness.controller.clearScene(0, 0)
+			&& harness.controller.clearScene(0, 1)
+			&& !harness.controller.getSceneBank(0).sceneHasLocks(0)
+			&& !harness.controller.getSceneBank(0).sceneHasLocks(1)
+			&& harness.controller.getSceneBank(0).sceneA == 0
+			&& harness.controller.getSceneBank(0).sceneB == 15,
+			"full scene clear did not remove all locks");
+		mdJucePlugin::ControllerAutomationTestAccess::tickScenesNow(
+			harness.controller);
+		require(mdJucePlugin::ControllerAutomationTestAccess::appliedSceneValue(
+			harness.controller, address) == -1,
+			"released scene address remained active");
+		require(harness.controller.getSceneBank(0).getBase(address) == cleanBase
+			&& harness.controller.createAutomationSnapshot() == before,
+			"scene MIDI writes changed the clean Kit or AUTO snapshot");
+		if(_model == md::MachineModel::Monomachine)
+		{
+			require(harness.controller.getSceneBankCount() == 128
+				&& harness.controller.assignScene(127, true, 15)
+				&& harness.controller.setSceneLock(127, 15, address, 64),
+				"Monomachine scene banks did not include the last Kit slot");
+		}
 		verifyOrderedIntentArchitecture(harness);
 		verifyAdversarialRestoreSynchronization(harness);
 		verifyConcurrentPublicationArchitecture(harness);

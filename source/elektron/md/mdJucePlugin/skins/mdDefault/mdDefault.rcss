@@ -432,3 +432,166 @@ body
 {
 	image-color: #d05f3d;
 }
+#sceneStrip
+{
+	position: absolute;
+	left: 0dp;
+	top: 570dp;
+	width: 1100dp;
+	height: 54dp;
+	background-color: #17191d;
+	border-top: 1dp #3a3d44;
+	border-bottom: 1dp #08090b;
+}
+
+.mdSceneTitle
+{
+	position: absolute;
+	left: 20dp;
+	top: 19dp;
+	width: 76dp;
+	height: 16dp;
+	color: #d4d7dd;
+	font-size: 11dp;
+	font-weight: bold;
+	letter-spacing: 2dp;
+}
+
+.mdSceneSide
+{
+	position: absolute;
+	top: 11dp;
+	width: 74dp;
+	height: 30dp;
+	border: 1dp #565b64;
+	border-radius: 4dp;
+	background-color: #25282e;
+	color: #e0e2e7;
+	font-size: 12dp;
+	font-weight: bold;
+	line-height: 28dp;
+	text-align: center;
+	white-space: nowrap;
+	overflow: hidden;
+}
+
+#sceneSideA { left: 105dp; }
+#sceneSideB { left: 409dp; }
+#sceneMuteA { left: 181dp; }
+#sceneMuteB { left: 485dp; }
+.mdSceneMute
+{
+	position: absolute; top: 14dp; width: 20dp; height: 24dp;
+	border: 1dp #565b64; border-radius: 3dp; background-color: #202328; color: #b6bac2;
+	font-size: 9dp; font-weight: bold; line-height: 22dp; text-align: center;
+	white-space: nowrap; overflow: hidden;
+}
+.mdSceneMute:hover { background-color: #343942; border-color: #ffb27a; }
+.mdSceneMute.sceneMuted { background-color: #8a4b22; border-color: #ffc28e; color: #ffffff; }
+
+
+.mdSceneClear, .mdSceneErase
+{
+	position: absolute;
+	left: 519dp;
+	top: 15dp;
+	width: 78dp;
+	height: 24dp;
+	border: 1dp #4b5058;
+	border-radius: 3dp;
+	background-color: #202328;
+	color: #b6bac2;
+	font-size: 9dp;
+	font-weight: bold;
+	line-height: 22dp;
+	text-align: center;
+	white-space: nowrap;
+	overflow: hidden;
+}
+.mdSceneErase { left: 610dp; width: 90dp; }
+
+.mdSceneSide:hover
+{
+	background-color: #343942;
+	border-color: #ffb27a;
+}
+
+.mdSceneSide.sceneEditing
+{
+	background-color: #8a4b22;
+	border-color: #ffc28e;
+	color: #ffffff;
+}
+
+.mdSceneFader
+{
+	position: absolute;
+	left: 205dp;
+	top: 17dp;
+	width: 196dp;
+	height: 20dp;
+}
+
+#sceneFader slidertrack
+{
+	margin-top: 8dp;
+	height: 4dp;
+	border-radius: 2dp;
+	background-color: #4a4e56;
+}
+
+#sceneFader sliderprogress
+{
+	margin-top: 8dp;
+	height: 4dp;
+	border-radius: 2dp;
+	background-color: #ffb27a;
+}
+
+#sceneFader sliderbar
+{
+	width: 12dp;
+	height: 18dp;
+	border: 1dp #ffe0c4;
+	border-radius: 3dp;
+	background-color: #d9783c;
+}
+
+#sceneFader sliderbar:hover
+{
+	background-color: #f0995d;
+}
+
+#sceneFader sliderbar:active
+{
+	background-color: #ffb27a;
+}
+
+#sceneFader sliderarrowdec, #sceneFader sliderarrowinc
+{
+	width: 0dp;
+	height: 0dp;
+}
+
+.mdSceneStatus
+{
+	position: absolute;
+	left: 710dp;
+	top: 10dp;
+	width: 374dp;
+	height: 16dp;
+	color: #ffb27a;
+	font-size: 11dp;
+	font-weight: bold;
+}
+
+.mdSceneValue
+{
+	position: absolute;
+	left: 710dp;
+	top: 28dp;
+	width: 374dp;
+	height: 16dp;
+	color: #9298a2;
+	font-size: 10dp;
+}

@@ -21,6 +21,7 @@
 #include "mdLcdInteractionModel.h"
 #include "mdPanelAffordances.h"
 #include "mdLib/mdfrontpanel.h"
+#include "mdLib/mdscene.h"
 #include "mdLib/mdsyseximport.h"
 
 #include "juce_gui_basics/juce_gui_basics.h"
@@ -139,8 +140,11 @@ namespace mdJucePlugin
 		void updateLcdHover(const Rml::Event& _event);
 		void clearLcdHover();
 		void cancelLcdGesture();
-		void emitEncoderSteps(md::PanelEncoder _encoder, int _steps) const;
+		void emitEncoderSteps(md::PanelEncoder _encoder, int _steps);
 		void createButtons();
+		void createSceneControls();
+		void updateScenePresentation();
+		bool editSceneParameter(md::PanelEncoder _encoder, int _steps);
 		void createPanelAffordances();
 		void bindPanelTarget(const char* _id, md::PanelControl _control);
 		void bindPanelChord(const char* _id, md::PanelControl _control);
@@ -366,6 +370,17 @@ namespace mdJucePlugin
 		float m_soundAccum = 0.0f;
 		juceRmlUi::ElemKnob* m_masterVolume = nullptr;
 		float m_masterVolumeGain = 1.0f;	// last gain this knob published, to detect settings-page edits
+		Rml::Element* m_sceneSideA = nullptr;
+		Rml::Element* m_sceneSideB = nullptr;
+		Rml::Element* m_sceneMuteA = nullptr;
+		Rml::Element* m_sceneMuteB = nullptr;
+		Rml::Element* m_sceneFader = nullptr;
+		Rml::Element* m_sceneStatus = nullptr;
+		Rml::Element* m_sceneValue = nullptr;
+		int m_sceneEditSide = -1;	// 0 = A, 1 = B, -1 = normal panel operation
+		uint8_t m_sceneDisplayedKit = 0xff;
+		uint64_t m_scenePresentationRevision = 0;
+		std::optional<md::scene::Address> m_lastSceneAddress;
 
 		std::array<Rml::Element*, 16> m_stepLeds{};
 		std::array<Rml::Element*, 16> m_drumLeds{};

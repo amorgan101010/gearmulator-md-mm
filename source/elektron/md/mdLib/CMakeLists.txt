@@ -33,6 +33,7 @@ set(SOURCES
 	mdromloader.cpp mdromloader.h
 	mdscheduledmidi.h
 	mdstate.cpp mdstate.h
+	mdscene.cpp mdscene.h
 	mdsysextransfer.h
 	mdsyseximport.h
 	mdturbomidi.cpp mdturbomidi.h mdturbomidiprotocol.h mdturbomidisenderpolicy.h
