@@ -147,7 +147,10 @@ entries (`OCTFIX_VECLOG`) and DSP2 block PCs (`MM_REPRO_P2FROM/_P2TO`):
 - On silicon the edge reaches DSP2 at the same instant, so the pass phase is fixed.
 Fix candidate (opt-in, `GEARMULATOR_MM_TIMED_SYNC`): queue each edge with the DSP2 cycle matching DSP1's
 write (shared frame timebase); DSP2's Port C read applies edges its clock has reached (mode 1); mode 2 also
-catches DSP1 up to DSP2's time before each read. Results pending (seed sweep off/1/2).
+catches DSP1 up to DSP2's time before each read. Seed sweep (E12, 16 fuzz seeds x 30 s, guard off, Linux
+Release at f19467fe): off 5 missing kicks (seeds 4, 8, 9 x2, 14, the same seeds macOS reported); mode 1 0;
+mode 2 0. Mode 1 suffices. Still to do before making it the default: hashes and firmware tests, cost, a
+300 s run, and whether the guard is still needed.
 The macOS session independently traced the controller side: the IRQ4 handler at 0x247dba dispatches on
 DSP2's step word (see doc/mac-claude-brief.md).
 
