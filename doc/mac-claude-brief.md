@@ -80,6 +80,38 @@ not need a build. Entry points (ColdFire addresses, OS 1.32b):
 Find what the controller waits for before it starts a frame burst, i.e. what event on real hardware ties
 the burst to the DSP's 16-sample processing cycle. Report addresses and reasoning.
 
+## Results from the macOS session (2026-09-25)
+
+Apple Silicon (arm64 slice of the universal build), Release, JUCE plugin off, built from this branch at
+`97f3f466` with dsp56300 at `6a63e831`. No source changes were needed to build.
+
+### Task 1: default output matches Linux
+
+```
+mdmmBench md 10 512 pattern:C04   hash=b8e0c7d9d71809bc   (match)
+mdmmBench mm 10 512 pattern:B15   hash=ed4758a81d23aedd   (match)
+```
+
+### Task 2: drops differ from Linux; the guard still removes all of them
+
+Missing track 6 kicks per 30 s run (46 expected), E12, the command line above:
+
+| Seed | macOS, no guard | Linux, no guard | macOS, `GEARMULATOR_MM_TRIGGER_GUARD=1` |
+|---|---|---|---|
+| 4 | 1 (gap at 21.765 s) | 1 (22.37 s) | 0 |
+| 8 | 1 (gap at 21.105 s) | 1 | 0 |
+| 9 | 2 (gaps at 21.765 s, 26.390 s) | 0 | 0 |
+| 14 | 1 (gap at 23.085 s) | 0 | 0 |
+| other 12 | 0 | 0 | 0 |
+
+- `kicks.py` prints the start of each gap, so the missing kick is one beat (660 ms) later: seed 4 loses the
+  kick at about 22.43 s, which agrees with Linux's 22.37 s.
+- macOS is deterministic too: rerunning seeds 4, 9 and 14 gave byte-identical `.f32` output.
+- So the default path is bit-exact across platforms, but the fuzzed repro is not: macOS drops on two
+  extra seeds (5 drops over 4 seeds, against 2 over 2 on Linux). Something platform-dependent shifts where
+  host-port frames land relative to the DSP's processing window in this path, probably the arm64 JIT's
+  cycle accounting or one of the opt-in timing hooks. Not investigated further yet.
+
 ## Notes
 
 - Do not play test audio through speakers without asking the user.
