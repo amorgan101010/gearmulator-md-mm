@@ -113,11 +113,27 @@ design and real timing must keep frames clear of the window. What anchors the co
 to the DSP pass is still open (candidates: the 0x0c poll/reply, DSP2's IRQ4, the HI08 flow control).
 The scheduler's lookahead and write-ahead both default to 0.
 
-## Options
+## Workaround: trigger guard (implemented)
 
-1. Keep looking for the timing reference that anchors the frame burst on silicon.
-2. An MM-specific guard, off by default and labelled a workaround: hold the mixer's acceptance of a
-   voice's frame command while that voice is between its word-40 read (P:$e1) and clear (P:$148).
+`GEARMULATOR_MM_TRIGGER_GUARD=1` (Monomachine only, both DSPs) holds a voice's frame host command
+(0x10/0x12/0x14) while that voice is between its word-40 read (P:$e1) and clear (P:$143), capped at
+12,000 cycles. The controller keeps seeing HC and waits. It needs the per-block dispatcher, so it turns
+off bounded JIT dispatch for the MM. Off by default; it is a workaround, not a hardware model.
+
+Validation (Linux, plain Release):
+- 16 fuzz seeds: 0 missing kicks (5 without the guard); two 300 s runs (plain, and fuzz seed 99): no gaps.
+- DSP tests 3/3; firmware tests pass except mdBlockSizeTest, which compares against stored reference
+  hashes that the guard changes on the MM.
+- mmDigiproEnsembleFirmwareTest with the cadence fixes on (`OCTFIX_ON=irq,hdi,timer`), which failed
+  before, passes with the guard.
+- Cost, 4 alternating pairs: MM B15 +1.5% host cycles, MM machine:32 x6 +3.6%; p99 needs a proper A/B.
+- With nothing set, output equals upstream bit for bit (MD C04 b8e0c7d9d71809bc, MM B15 ed4758a81d23aedd).
+
+## Still open
+
+Find the timing reference that keeps frames clear of the window on silicon (the real fix). Candidates:
+what the controller waits on before a frame burst (spin loops at ColdFire 0x24829e, 0x243926, 0x24395e,
+0x248214 on CVR, 0x2482ba on ISR), DSP2's IRQ4, HI08 flow control.
 
 ## Diagnostic knobs on this branch
 
