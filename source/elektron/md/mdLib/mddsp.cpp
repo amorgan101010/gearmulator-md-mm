@@ -57,7 +57,7 @@ namespace md
 		{
 			m_periphX.getEssi0().setRxDataAvailableCallback([this]
 			{
-				return !m_periphX.getEssi0().getAudioInputs().empty();
+				return m_hardware.linkFrameVisible(m_index);
 			});
 
 			// An RX0 read with DMA4 disabled flushes staged link data. DMA reads
@@ -69,12 +69,8 @@ namespace md
 				{
 					if(m_periphX.getDMA().getDCR(4) & (1u << dsp56k::DmaChannel::De))
 						return;
-					auto& ring = m_periphX.getEssi0().getAudioInputs();
-#if MD_TRANSPORT_DIAGNOSTICS
-					const auto purgedFrames = ring.size();
-#endif
-					while(!ring.empty())
-						ring.pop_front();
+					const auto purgedFrames = m_hardware.linkPurgeVisible(m_index);
+					(void)purgedFrames;
 #if MD_TRANSPORT_DIAGNOSTICS
 					m_hardware.recordMdLinkPurge(purgedFrames);
 #endif

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <deque>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -203,6 +204,12 @@ namespace md
 			uint64_t _clampCycle, bool _workComplete) noexcept;
 		void recordMdLinkPurge(size_t _purgedFrames) noexcept;
 
+		// Threading experiment (doc/mdmm-threading-plan.md): a link frame reaches the consumer DSP's
+		// receiver only m_linkDelayDspCycles after the producer transmitted it, as it would across
+		// threads with link lookahead. With the delay off these reduce to the plain ring state.
+		bool linkFrameVisible(uint32_t _consumerDsp);
+		size_t linkPurgeVisible(uint32_t _consumerDsp);
+
 		// Mark the start of a Machinedrum DMA receive window. No-op for MM.
 		void mdLinkWindowFlushed();
 
@@ -396,6 +403,20 @@ namespace md
 		// UC's time instead of exactly to it, as a thread running behind would be. From GEARMULATOR_MDMM_LOOKAHEAD_US; 0 = off.
 		uint64_t m_schedLookaheadDspCycles = 0;
 		uint64_t m_schedWriteAheadDspCycles = 0;	// GEARMULATOR_MDMM_WRITEAHEAD_US; 0 = off
+		// Link delay experiment: GEARMULATOR_MDMM_LINK_DELAY_SLOTS link slots of 96 cycles; 0 = off.
+		// m_linkVisibleAt[c] holds, per frame in consumer c's ESSI0 input ring, the consumer cycle at
+		// which it arrives. Every removal from that ring is from its front, so the two are re-aligned
+		// by size (linkStampReconcile) instead of hooking each purge.
+		uint64_t m_linkDelayDspCycles = 0;
+		std::array<std::deque<uint64_t>, 2> m_linkVisibleAt;
+		std::array<uint64_t, 2> m_linkNotYetArrived{};	// receive checks that found the front word still in flight
+		auto& linkInputRing(const uint32_t _consumerDsp)
+		{
+			return (_consumerDsp == 0 ? m_dspMixer : m_dspProducer).getPeriph().getEssi0().getAudioInputs();
+		}
+		void linkStampReconcile(uint32_t _consumerDsp);
+		void linkPush(uint32_t _consumerDsp, dsp56k::Audio::RxFrame&& _frame);
+		size_t linkVisibleCount(uint32_t _consumerDsp);
 		double   m_schedDspOriginFrame [2]  = { 0.0, 0.0 };		// machine-frame at runnable transition
 		uint64_t m_schedDspOriginCycles[2]  = { 0, 0 };			// getCycles() at that transition
 		uint64_t m_schedDspOriginUcCycles[2] = { 0, 0 };		// exact host clock at that transition

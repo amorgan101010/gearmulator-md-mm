@@ -38,6 +38,7 @@ namespace md
 	// 2304 cycles per codec frame at the 101.6064 MHz DSP clock.
 	// The UC is granted g_ucClockHz/44100, about 907.03 cycles per frame.
 	constexpr uint64_t g_dsp1CyclesPerEsaiFrame  = 2304;
+	constexpr uint64_t g_linkSlotDspCycles       = 96;
 
 	Rom initRom(const std::vector<uint8_t>& _romData, const std::string& _romName,
 		const MachineModel _model)
@@ -131,6 +132,11 @@ namespace md
 		if(const auto* const lookahead = std::getenv("GEARMULATOR_MDMM_LOOKAHEAD_US"))
 			m_schedLookaheadDspCycles = static_cast<uint64_t>(std::max(0.0, std::atof(lookahead))
 				* static_cast<double>(g_dsp1CyclesPerEsaiFrame) * static_cast<double>(g_samplerate) / 1e6);
+		if(const auto* const linkDelay = std::getenv("GEARMULATOR_MDMM_LINK_DELAY_SLOTS"))
+			m_linkDelayDspCycles = static_cast<uint64_t>(std::max(0, std::atoi(linkDelay))) * g_linkSlotDspCycles;
+		// Finer control for diagnosing the delay path itself (1 cycle = on, but effectively no delay).
+		if(const auto* const linkDelayCycles = std::getenv("GEARMULATOR_MDMM_LINK_DELAY_CYCLES"))
+			m_linkDelayDspCycles = static_cast<uint64_t>(std::max(0, std::atoi(linkDelayCycles)));
 
 		if(!m_rom.isValid())
 			return;
@@ -239,7 +245,7 @@ namespace md
 								.mdRendezvousRingFullDrops;);
 						else
 						{
-							ring.push_back(std::move(rx));
+							linkPush(1u - _selfDsp, std::move(rx));
 							MD_TRANSPORT_RECORD(auto& score = m_transportScorecard.link[_selfDsp];
 								++score.acceptedFrames;
 								score.currentRingDepth = ring.size();
@@ -336,7 +342,7 @@ namespace md
 					}
 					if(!ring.full())
 					{
-						ring.push_back(std::move(rx));
+						linkPush(1u - _selfDsp, std::move(rx));
 						MD_TRANSPORT_RECORD(auto& score = m_transportScorecard.link[_selfDsp];
 							++score.acceptedFrames;
 							score.currentRingDepth = ring.size();
@@ -379,23 +385,24 @@ namespace md
 							&& !isMonomachine();
 						const uint64_t esaiNow = m_esaiFrameIndex;
 						auto& lastShallow = m_linkLastShallow[_selfDsp];
-						if(ring.size() <= 16)
+						// Frames still on the delayed wire (link delay experiment) are not a backlog.
+						if(linkVisibleCount(_selfDsp) <= 16)
 							lastShallow = esaiNow;
 						else if(!preserveRendezvousFutureEdges
 							&& (s_immediate || esaiNow - lastShallow > 1024))
 						{
+							const auto purged = linkPurgeVisible(_selfDsp);
 							MD_TRANSPORT_RECORD(m_transportScorecard.link[1u - _selfDsp]
-								.stallPurgedFrames += ring.size();
-								m_transportScorecard.link[1u - _selfDsp].currentRingDepth = 0;);
-							while(!ring.empty())
-								ring.pop_front();
-							lastShallow = esaiNow;	// ring is now empty (shallow)
+								.stallPurgedFrames += purged;
+								m_transportScorecard.link[1u - _selfDsp].currentRingDepth = ring.size(););
+							(void)purged;
+							lastShallow = esaiNow;	// no received frame is left (shallow)
 						}
 					}
 					// Non-blocking on the single scheduler thread: silence on empty rather than park.
 					// Hardware-true skip-on-empty link receive replaces this with matched consumption
 					// and production once the frame has landed.
-					if(ring.empty())
+					if(!linkFrameVisible(_selfDsp))
 					{
 						_frame.clear();
 						MD_TRANSPORT_RECORD(++m_transportScorecard.link[1u - _selfDsp].emptyReads;);
@@ -561,6 +568,9 @@ namespace md
 						// Anything queued before this new request belongs to the
 						// completed/idle wire interval and cannot precede DSP2's
 						// response in the new DMA4 window.
+						// This also discards words still on a delayed wire (link delay experiment): they
+						// belong to the completed interval. Keeping them instead lands stale words in the
+						// new DMA4 window, which breaks MM audio sooner (measured 2026-09-23).
 						auto& ring = m_dspMixer.getPeriph().getEssi0().getAudioInputs();
 						MD_TRANSPORT_RECORD(m_transportScorecard.link[1]
 							.mmStrobePurgedFrames += ring.size();
@@ -610,6 +620,11 @@ namespace md
 
 	Hardware::~Hardware()
 	{
+		if(m_linkDelayDspCycles)
+			std::fprintf(stderr, "[%s] link delay %llu cycles: receive checks with the word still in flight: mixer %llu, producer %llu\n",
+				isMonomachine() ? "MM" : "MD", static_cast<unsigned long long>(m_linkDelayDspCycles),
+				static_cast<unsigned long long>(m_linkNotYetArrived[0]),
+				static_cast<unsigned long long>(m_linkNotYetArrived[1]));
 		m_uc.setMidiTransmitTap({});
 	}
 
@@ -909,6 +924,93 @@ namespace md
 			m_transportScorecard.link[1].currentRingDepth -= std::min(
 				m_transportScorecard.link[1].currentRingDepth, _purgedFrames););
 		(void)_purgedFrames;
+	}
+
+	void Hardware::linkStampReconcile(const uint32_t _consumerDsp)
+	{
+		auto& stamps = m_linkVisibleAt[_consumerDsp & 1];
+		const auto ringSize = linkInputRing(_consumerDsp & 1).size();
+		// Purges remove from the front. Frames that predate stamping (the constructor
+		// prefill) are older than every stamped frame, so they have already arrived.
+		while(stamps.size() > ringSize)
+			stamps.pop_front();
+		while(stamps.size() < ringSize)
+			stamps.push_front(0);
+	}
+
+	void Hardware::linkPush(const uint32_t _consumerDsp, dsp56k::Audio::RxFrame&& _frame)
+	{
+		const uint32_t c = _consumerDsp & 1;
+		auto& ring = linkInputRing(c);
+		if(!m_linkDelayDspCycles)
+		{
+			ring.push_back(std::move(_frame));
+			return;
+		}
+		linkStampReconcile(c);
+		// The producer transmits at its own current time. Express that time on the consumer's
+		// cycle counter (both are rate-locked to the machine clock) and add the wire delay.
+		const uint32_t p = 1u - c;
+		uint64_t visibleAt = 0;
+		if(m_schedDspOriginLatched[c] && m_schedDspOriginLatched[p])
+		{
+			const double deltaFrames = std::max(0.0, schedDspFramePos(p) - m_schedDspOriginFrame[c]);
+			visibleAt = m_schedDspOriginCycles[c]
+				+ static_cast<uint64_t>(deltaFrames * static_cast<double>(g_dsp1CyclesPerEsaiFrame))
+				+ m_linkDelayDspCycles;
+		}
+		ring.push_back(std::move(_frame));
+		m_linkVisibleAt[c].push_back(visibleAt);
+	}
+
+	size_t Hardware::linkVisibleCount(const uint32_t _consumerDsp)
+	{
+		const uint32_t c = _consumerDsp & 1;
+		if(!m_linkDelayDspCycles)
+			return linkInputRing(c).size();
+		linkStampReconcile(c);
+		const auto now = (c == 0 ? m_dspMixer : m_dspProducer).dsp().getCycles();
+		// Stamps follow the producer's clock, so they are non-decreasing: the arrived frames
+		// are a prefix of the ring.
+		size_t count = 0;
+		for(const auto visibleAt : m_linkVisibleAt[c])
+		{
+			if(visibleAt > now)
+				break;
+			++count;
+		}
+		return count;
+	}
+
+	bool Hardware::linkFrameVisible(const uint32_t _consumerDsp)
+	{
+		const uint32_t c = _consumerDsp & 1;
+		if(!m_linkDelayDspCycles)
+			return !linkInputRing(c).empty();
+		linkStampReconcile(c);
+		const auto& stamps = m_linkVisibleAt[c];
+		if(stamps.empty())
+			return false;
+		if(stamps.front() > (c == 0 ? m_dspMixer : m_dspProducer).dsp().getCycles())
+		{
+			++m_linkNotYetArrived[c];
+			return false;
+		}
+		return true;
+	}
+
+	size_t Hardware::linkPurgeVisible(const uint32_t _consumerDsp)
+	{
+		// A receiver can only discard words that have reached it; words still on the wire
+		// arrive after the purge.
+		const uint32_t c = _consumerDsp & 1;
+		auto& ring = linkInputRing(c);
+		const auto count = linkVisibleCount(c);
+		for(size_t i = 0; i < count; ++i)
+			ring.pop_front();
+		if(m_linkDelayDspCycles)
+			linkStampReconcile(c);
+		return count;
 	}
 
 	void Hardware::mdLinkWindowFlushed()
