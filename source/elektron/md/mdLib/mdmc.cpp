@@ -12,6 +12,7 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <limits>
 
 // Provide the Musashi memory-access callbacks (m68k_read_memory_*, _pcrelative_*, etc.)
@@ -138,6 +139,9 @@ namespace md
 		// A complete patch-RAM image is already initialized and can be restored as-is.
 		if(_initialPatchRam.size() == m_patchRam.size())
 			m_patchRam = _initialPatchRam;
+
+		if(const char* bus = std::getenv("GEARMULATOR_MDMM_BUS_TIMING"))
+			m_busTiming = std::strcmp(bus, "0") != 0;
 	}
 
 	std::vector<uint8_t> Microcontroller::copyPatchRam() const
@@ -491,6 +495,12 @@ namespace md
 			m_cycles = m_cycles - cycles + newCycles;
 			cycles = newCycles;
 		}
+		if(m_busPenalty)
+		{
+			cycles += m_busPenalty;
+			m_cycles += m_busPenalty;
+			m_busPenalty = 0;
+		}
 		busStatsNoteCycles(cycles, getCpuState()->cacr);
 		advanceAfterCpu(cycles);
 		return cycles;
@@ -542,6 +552,76 @@ namespace md
 		const uint32_t cycles = _instructions * 2;
 		m_cycles += cycles;
 		advanceAfterCpu(cycles);
+	}
+
+
+	void Microcontroller::rebuildBusTable()
+	{
+		// Region 0: on-chip (SIM registers, internal SRAM): no external bus cycle.
+		// Regions 1-8: chip selects 0-7. Region 9: default memory (no chip select), 32-bit, no wait states.
+		m_busTableDirty = false;
+		m_busRegions[0] = BusRegion{4, 0, false};
+		m_busRegions[9] = BusRegion{4, 0, true};
+		struct Cs { uint32_t base = 0, mask = 0; bool enabled = false; };
+		std::array<Cs, 8> cs{};
+		for(uint32_t n = 0; n < 8; ++n)
+		{
+			const uint32_t off = 0x64 + 12 * n;
+			const uint32_t csar = m_sim.read16(off);
+			const uint32_t csmr = (static_cast<uint32_t>(m_sim.read16(off + 4)) << 16) | m_sim.read16(off + 6);
+			const uint32_t cscr = m_sim.read16(off + 10);
+			const uint32_t ps = (cscr >> 6) & 3;
+			m_busRegions[1 + n] = BusRegion{static_cast<uint8_t>(ps == 0 ? 4 : ps == 1 ? 1 : 2),
+				static_cast<uint8_t>((cscr >> 10) & 15), true};
+			cs[n] = Cs{csar << 16, csmr & 0xffff0000, cscr != 0};
+		}
+		// Cover the emulated address map up to the highest alias window.
+		m_busPageRegion.assign(memorymap::g_mainExecAlias.end >> 16, 9);
+		for(uint32_t page = 0; page < m_busPageRegion.size(); ++page)
+		{
+			uint32_t addr = page << 16;
+			if(memorymap::g_internalSram.contains(addr) || memorymap::g_sim.contains(addr))
+			{
+				m_busPageRegion[page] = 0;
+				continue;
+			}
+			// The emulator's main-RAM aliases reach the same chip-select-5 RAM.
+			if(memorymap::g_mainHighAlias.contains(addr))
+				addr = memorymap::g_mainRam.begin + memorymap::g_mainHighAlias.offset(addr);
+			else if(memorymap::g_mainExecAlias.contains(addr))
+				addr = memorymap::g_mainRam.begin + memorymap::g_mainExecAlias.offset(addr);
+			for(uint32_t n = 0; n < 8; ++n)
+			{
+				if(cs[n].enabled && ((addr ^ cs[n].base) & ~(cs[n].mask | 0xffffu)) == 0)
+				{
+					m_busPageRegion[page] = static_cast<uint8_t>(1 + n);
+					break;
+				}
+			}
+		}
+	}
+
+	void Microcontroller::chargeFetch(const uint32_t _addr)
+	{
+		if(!m_busTiming)
+			return;
+		const auto& r = busRegion(_addr);
+		if(!r.external)
+			return;
+		const bool cacheEnabled = (getCpuState()->cacr & 0x80000000u) != 0;
+		if(!cacheEnabled)
+		{
+			m_busPenalty += busTransfers(2, r) * (1u + r.waitStates);
+			return;
+		}
+		// 4 KB direct-mapped instruction cache, 256 lines of 16 bytes (UM 4.2).
+		const uint32_t line = _addr >> 4;
+		const uint32_t index = line & 255;
+		if(m_icacheValid[index] && m_icacheTag[index] == line)
+			return;
+		m_icacheValid[index] = true;
+		m_icacheTag[index] = line;
+		m_busPenalty += busTransfers(16, r) * (2u + r.waitStates);
 	}
 
 	uint32_t Microcontroller::readIrqUserVector(const uint8_t _level)
@@ -720,6 +800,7 @@ namespace md
 	}
 	uint8_t Microcontroller::read8(const uint32_t _addr)
 	{
+		chargeData(_addr, 1);
 		busstats::data(_addr, 0, false);
 		uint32_t fastOffset, fastSize;
 		if(auto* data = fastRamData(_addr, fastOffset, fastSize); data != nullptr
@@ -750,6 +831,7 @@ namespace md
 
 	uint16_t Microcontroller::read16(const uint32_t _addr)
 	{
+		chargeData(_addr, 2);
 		busstats::data(_addr, 1, false);
 		uint32_t fastOffset, fastSize;
 		if(auto* data = fastRamData(_addr, fastOffset, fastSize); data != nullptr
@@ -780,6 +862,7 @@ namespace md
 
 	void Microcontroller::write8(const uint32_t _addr, const uint8_t _val)
 	{
+		chargeData(_addr, 1);
 		busstats::data(_addr, 0, true);
 		uint32_t fastOffset, fastSize;
 		if(auto* data = fastRamData(_addr, fastOffset, fastSize); data != nullptr
@@ -788,7 +871,14 @@ namespace md
 			data[fastOffset] = _val;
 			return;
 		}
-		if(memorymap::g_sim.contains(_addr))		{ m_sim.write8(memorymap::g_sim.offset(_addr), _val); return; }
+		if(memorymap::g_sim.contains(_addr))
+		{
+			const auto offset = memorymap::g_sim.offset(_addr);
+			if(offset >= 0x64 && offset < 0x64 + 12 * 8)
+				m_busTableDirty = true;
+			m_sim.write8(offset, _val);
+			return;
+		}
 		if(memorymap::g_dsp1Hdi08.contains(_addr))	{ m_hdi08Dsp1.write8(static_cast<mc68k::PeriphAddress>(memorymap::g_dsp1Hdi08.offset(_addr)), _val); return; }
 		if(memorymap::g_dsp2Hdi08.contains(_addr))	{ m_hdi08Dsp2.write8(static_cast<mc68k::PeriphAddress>(memorymap::g_dsp2Hdi08.offset(_addr)), _val); return; }
 		const bool patchRam = memorymap::isPatchRam(_addr);
@@ -803,6 +893,7 @@ namespace md
 
 	void Microcontroller::write16(const uint32_t _addr, const uint16_t _val)
 	{
+		chargeData(_addr, 2);
 		busstats::data(_addr, 1, true);
 		uint32_t fastOffset, fastSize;
 		if(auto* data = fastRamData(_addr, fastOffset, fastSize); data != nullptr
@@ -857,7 +948,14 @@ namespace md
 				return;
 			}
 		}
-		if(memorymap::g_sim.contains(_addr))		{ m_sim.write16(memorymap::g_sim.offset(_addr), _val); return; }
+		if(memorymap::g_sim.contains(_addr))
+		{
+			const auto offset = memorymap::g_sim.offset(_addr);
+			if(offset >= 0x64 && offset < 0x64 + 12 * 8)
+				m_busTableDirty = true;
+			m_sim.write16(offset, _val);
+			return;
+		}
 		if(memorymap::g_dsp1Hdi08.contains(_addr))	{ m_hdi08Dsp1.write16(static_cast<mc68k::PeriphAddress>(memorymap::g_dsp1Hdi08.offset(_addr)), _val); return; }
 		if(memorymap::g_dsp2Hdi08.contains(_addr))	{ m_hdi08Dsp2.write16(static_cast<mc68k::PeriphAddress>(memorymap::g_dsp2Hdi08.offset(_addr)), _val); return; }
 		if(m_monomachineFlash && (memorymap::g_flashFull.contains(_addr)
@@ -886,6 +984,7 @@ namespace md
 
 	uint16_t Microcontroller::readImm16(const uint32_t _addr)
 	{
+		chargeFetch(_addr);
 		busstats::fetch(_addr);
 		// Instruction fetch: always from ROM/RAM, never a peripheral - do not log.
 		static constexpr uint32_t pageSize = 4096;

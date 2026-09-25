@@ -267,6 +267,46 @@ namespace md
 		void advanceAfterCpu(uint32_t _cycles);
 		uint32_t idleSelfBranchInstructions(uint32_t _maxCycles);
 		void advanceIdleSelfBranch(uint32_t _instructions);
+
+		// ColdFire external bus timing (MCF5206E UM 3.6.1: the instruction timings assume zero-wait
+		// memory). When enabled (GEARMULATOR_MDMM_BUS_TIMING=1), every external data transfer adds its
+		// bus cycles beyond the core's single clock, derived from the chip selects the firmware programs
+		// (port width, wait states), and instruction fetches go through a 4 KB direct-mapped cache model
+		// (UM 4) whose misses cost a line fill.
+		struct BusRegion
+		{
+			uint8_t portBytes = 4;
+			uint8_t waitStates = 0;
+			bool external = false;
+		};
+		void rebuildBusTable();
+		uint32_t busTransfers(uint32_t _bytes, const BusRegion& _r) const
+		{
+			return (_bytes + _r.portBytes - 1) / _r.portBytes;
+		}
+		const BusRegion& busRegion(uint32_t _addr)
+		{
+			if(m_busTableDirty)
+				rebuildBusTable();
+			const uint32_t page = _addr >> 16;
+			return m_busRegions[page < m_busPageRegion.size() ? m_busPageRegion[page] : 0];
+		}
+		void chargeData(const uint32_t _addr, const uint32_t _bytes)
+		{
+			if(!m_busTiming)
+				return;
+			const auto& r = busRegion(_addr);
+			if(r.external)
+				m_busPenalty += busTransfers(_bytes, r) * (1u + r.waitStates);
+		}
+		void chargeFetch(uint32_t _addr);
+		bool m_busTiming = false;
+		bool m_busTableDirty = true;
+		uint32_t m_busPenalty = 0;
+		std::vector<uint8_t> m_busPageRegion;
+		std::array<BusRegion, 10> m_busRegions{};
+		std::array<uint32_t, 256> m_icacheTag{};
+		std::array<bool, 256> m_icacheValid{};
 		void decodePanelByte(uint8_t _byte);
 		void serviceExternalIrq4();
 		bool m_externalIrq4Pending = false;
