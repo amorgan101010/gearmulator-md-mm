@@ -7,6 +7,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 
 namespace dsp56k
 {
@@ -54,6 +55,11 @@ namespace md
 	{
 		if(!_hw.isValid())
 			return;
+
+		// Service only the interrupt sources the firmware enables in IPRC/IPRP, at their programmed levels.
+		// The Monomachine mixer leaves DMA1 disabled; servicing it anyway shifts its voice processing.
+		if(const char* ipr = std::getenv("GEARMULATOR_MDMM_IPR_MODEL"))
+			m_dsp.setIprInterruptModel(std::strcmp(ipr, "0") != 0);
 
 		// Clock the serial ports from DSP cycles. At 101.6064 MHz, the 1152-cycle
 		// codec slot and two slots per frame produce exactly 44.1 kHz; the firmware's

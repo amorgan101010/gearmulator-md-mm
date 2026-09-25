@@ -91,10 +91,33 @@ estimates that the real bus (3-clock external transfers plus wait states, 16-bit
 top of the emulated table timing. The emulated ColdFire therefore runs well ahead of silicon, which is
 the direction that puts trigger frames into the danger window.
 
-## Next step
+## Candidate fixes tried (none stops the drops)
 
-Model ColdFire bus timing per access from the programmed chip selects (port size, wait states, burst)
-and the instruction cache, behind a flag, and check that the trigger-frame margin grows and drops stop.
+| change | fuzz seeds (missing kicks) | 300 s plain playback |
+|---|---|---|
+| baseline | 2 over seeds 1-8 | 3 of 457 |
+| ColdFire bus timing (`GEARMULATOR_MDMM_BUS_TIMING=1`, +39% controller cycles) | 3 over 1-8 | 5-6 |
+| IPR-aware interrupts (`GEARMULATOR_MDMM_IPR_MODEL=1`) | 5 over 1-16 (1-8 identical to baseline) | 2 (first at 194.905 s, as baseline) |
+
+The IPR model fixes a real emulator bug: the mixer no longer enters its DMA1 handler, which IPRC
+($300000) leaves disabled but the emulator serviced about 930 times per second. The bus model is
+grounded in the MCF5206E manual. Both stay available, off by default.
+
+## Where the timing comes from
+
+At the dropped beat of fuzz seed 4 the controller wrote CVR 0x14 (voice 3's frame) 8,504 cycles after
+voice 3's read; neighbouring played beats: 10,572 and 12,834. DSP1 accepts within about 25-100 cycles,
+so the controller sends early, not the DSP accepting late. Voice processing runs at SR mask 0 and HPL is
+IPL 1, so silicon also accepts host commands during voice processing: the race exists in the firmware
+design and real timing must keep frames clear of the window. What anchors the controller's frame burst
+to the DSP pass is still open (candidates: the 0x0c poll/reply, DSP2's IRQ4, the HI08 flow control).
+The scheduler's lookahead and write-ahead both default to 0.
+
+## Options
+
+1. Keep looking for the timing reference that anchors the frame burst on silicon.
+2. An MM-specific guard, off by default and labelled a workaround: hold the mixer's acceptance of a
+   voice's frame command while that voice is between its word-40 read (P:$e1) and clear (P:$148).
 
 ## Diagnostic knobs on this branch
 

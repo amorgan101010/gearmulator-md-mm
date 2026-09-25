@@ -31,8 +31,14 @@ namespace
 	struct PcWindow { uint64_t start = 0, end = 0; std::map<uint32_t, uint32_t> pcs; };
 	std::vector<PcWindow> g_pcWindows;
 	const dsp56k::DSP* g_pcDsp = nullptr;
+	dsp56k::Peripherals56303* g_pcPeriph = nullptr;
+	const dsp56k::DSP* g_pcDsp2 = nullptr;
+	std::map<uint32_t, uint64_t> g_vectorEntries[2];	// MM_REPRO_VECCENSUS: vector entries per DSP
 	void pcTrace(const dsp56k::DSP* _dsp, const uint32_t _pc)
 	{
+		static const bool census = std::getenv("MM_REPRO_VECCENSUS") != nullptr;
+		if(census && _pc < 0x80 && !(_pc & 1))
+			++g_vectorEntries[_dsp == g_pcDsp ? 0 : 1][_pc];
 		if(_dsp != g_pcDsp)
 			return;
 		const auto c = _dsp->getCycles();
@@ -46,7 +52,9 @@ namespace
 		if(v3)
 		{
 			if(_pc == 0xe1 && _dsp->regs().r[6].var == 0x728)
-				std::printf("V3READ %llu\n", static_cast<unsigned long long>(c));
+				std::printf("V3READ %llu sr=%06x mask=%u mode=%d iprc=%06x iprp=%06x\n", static_cast<unsigned long long>(c),
+					_dsp->regs().sr.var, (_dsp->regs().sr.var >> 8) & 3, static_cast<int>(_dsp->getProcessingMode()),
+					g_pcPeriph->read(dsp56k::XIO_IPRC, dsp56k::Nop), g_pcPeriph->read(dsp56k::XIO_IPRP, dsp56k::Nop));
 			else if(_pc == 0x143 && _dsp->memory().get(dsp56k::MemArea_Y, 0x123) == 0x728)
 				std::printf("V3CLEAR %llu\n", static_cast<unsigned long long>(c));
 		}
@@ -216,6 +224,8 @@ int main(int argc, char** argv)
 				g_pcWindows.push_back(std::move(w));
 			}
 			g_pcDsp = &hardware.getDspMixer().dsp();
+			g_pcPeriph = &hardware.getDspMixer().getPeriph();
+			g_pcDsp2 = &hardware.getDspProducer().dsp();
 			dsp56k::g_pcTraceHook = &pcTrace;
 		}
 		std::cout << "mmPatternRepro: render starts at ucCycle " << hardware.hostCurrentCycle() << '\n';
@@ -329,6 +339,9 @@ int main(int argc, char** argv)
 			std::fwrite(interleaved.data(), sizeof(float), interleaved.size(), out);
 		}
 		std::fclose(out);
+		for(int d = 0; d < 2; ++d)
+			for(const auto& [pc, n] : g_vectorEntries[d])
+				std::printf("VECTOR %s $%02x %llu\n", d == 0 ? "mixer" : "producer", pc, static_cast<unsigned long long>(n));
 		for(size_t i = 0; i < g_pcWindows.size(); ++i)
 			for(const auto& [pc, n] : g_pcWindows[i].pcs)
 				std::printf("PCWIN %zu %06x %u\n", i, pc, n);
