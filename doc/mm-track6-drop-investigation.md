@@ -157,8 +157,10 @@ Validation of mode 1 (Linux Release):
 - Firmware tests: 17/18 pass; mdBlockSizeTest fails only on MM reference hashes, as any MM timing change does.
 - Golden MM scenarios FX-DYNAMIX and FX-RINGMOD render silence with it (the reference has sound). This is
   not specific to the fix: with the trigger guard, FX-CHORUS, FX-DYNAMIX and FX-RINGMOD all render silence.
-  Disabling the strobe purge does not change it. Why these FX scenarios depend on timing is still open;
-  check before making either option the default. `GEARMULATOR_MM_TIMED_SYNC_DEBUG=1` reports edges queued far
+  Disabling the strobe purge does not change it. Not a real regression: the user played FX-CHORUS, FX-DYNAMIX
+  and FX-RINGMOD on the installed guard build (2026-09-25) and all work. The golden FX scenarios put the FX
+  machine on all six tracks with no source track and some default to mix 0, so their reference output is
+  incidental. The golden test needs FX scenarios with a playing source track before it can cover FX. `GEARMULATOR_MM_TIMED_SYNC_DEBUG=1` reports edges queued far
   ahead of DSP2 (in the golden runner DSP1 often runs about 11 passes ahead).
 The macOS session independently traced the controller side: the IRQ4 handler at 0x247dba dispatches on
 DSP2's step word (see doc/mac-claude-brief.md).
