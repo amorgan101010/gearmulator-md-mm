@@ -21,6 +21,8 @@
 
 namespace md
 {
+	void busStatsNoteCycles(uint32_t _cycles, uint32_t _cacr);	// TEMPORARY bus-cost estimate, defined below
+
 	namespace
 	{
 		// The SFX-60 MKII stores user DigiPRO waves in the uniform-sector portion
@@ -489,7 +491,7 @@ namespace md
 			m_cycles = m_cycles - cycles + newCycles;
 			cycles = newCycles;
 		}
-		if(busstats::enabled()) { busstats::g_stats.ucCycles += cycles; busstats::g_stats.cacr = getCpuState()->cacr; }
+		busStatsNoteCycles(cycles, getCpuState()->cacr);
 		advanceAfterCpu(cycles);
 		return cycles;
 	}
@@ -708,6 +710,14 @@ namespace md
 	}
 
 	void busStatsReset() { busstats::resetStats(); }
+
+	void busStatsNoteCycles(const uint32_t _cycles, const uint32_t _cacr)
+	{
+		if(!busstats::enabled())
+			return;
+		busstats::g_stats.ucCycles += _cycles;
+		busstats::g_stats.cacr = _cacr;
+	}
 	uint8_t Microcontroller::read8(const uint32_t _addr)
 	{
 		busstats::data(_addr, 0, false);

@@ -88,6 +88,27 @@ int main(int argc, char** argv)
 		advance(hardware, md::g_samplerate * 20);
 		require(hardware.isAudioReady() && hardware.isFirmwareMidiReady(), "MM boot incomplete");
 
+		// MM_REPRO_DUMP_P=<prefix>: write each DSP's P memory after boot as 24-bit big-endian words
+		// (<prefix>-mixer.p, <prefix>-producer.p), the input format of dsp56kDisassemble.
+		if(const char* prefix = std::getenv("MM_REPRO_DUMP_P"))
+		{
+			for(int which = 0; which < 2; ++which)
+			{
+				auto& mem = (which == 0 ? hardware.getDspMixer() : hardware.getDspProducer()).dsp().memory();
+				const std::string name = std::string(prefix) + (which == 0 ? "-mixer.p" : "-producer.p");
+				FILE* f = std::fopen(name.c_str(), "wb");
+				require(f != nullptr, "could not open P dump");
+				for(dsp56k::TWord a = 0; a < mem.sizeP(); ++a)
+				{
+					const auto v = mem.get(dsp56k::MemArea_P, a);
+					const uint8_t bytes[3] = {static_cast<uint8_t>(v >> 16), static_cast<uint8_t>(v >> 8), static_cast<uint8_t>(v)};
+					std::fwrite(bytes, 1, 3, f);
+				}
+				std::fclose(f);
+				std::cout << "mmPatternRepro: wrote " << name << " (" << mem.sizeP() << " words)\n";
+			}
+		}
+
 		// MM_REPRO_DUMP_CS=1: print the chip-select setup the firmware programmed (MCF5206e UM 9.4.2:
 		// bank n at MBAR+$64+12n CSAR (16), +$68 CSMR (32), +$6E CSCR (16); CSCR bits 13-10 = WS).
 		if(std::getenv("MM_REPRO_DUMP_CS"))
