@@ -46,7 +46,7 @@ below.
 
 ## Task 2: reproduce the drop, then check the guard
 
-Pattern E12 is slot 75. The user's MIDI base channel is 5, so tracks 1-6 are channel indexes 3-8. The
+Pattern E12 is slot 75. The user's MIDI base channel is 5, so track n is channel index 3+n (tracks 1-5 are indexes 4-8). The
 repro silences tracks 1-5 through CC7 on their own channels (never the auto channel), adds random
 controller traffic on them, and counts track 6's kicks:
 

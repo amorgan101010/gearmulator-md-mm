@@ -1,6 +1,6 @@
 # Monomachine dropped notes on tracks 5/6: investigation notes
 
-Status: reproduced on unmodified code, not yet fixed. Everything below is diagnostic tooling on the
+Status: reproduced on unmodified code; opt-in workaround (trigger guard) implemented, real fix still open. Everything below is diagnostic tooling on the
 `investigate/mm-track6-drops` branch. Nothing here changes default behaviour: every hook is opt-in
 through an environment variable.
 
@@ -141,11 +141,11 @@ what the controller waits on before a frame burst (spin loops at ColdFire 0x2482
 |---|---|---|
 | `MM_REPRO_LEVEL0`, `_FUZZ`, `_FUZZ_CH`, `_BLOCK`, `_CLOCK`, `_DUMP`, `_DUMP_DELAY`, `_WATCH*`, `_DUMP_CS` | mmPatternRepro | isolate tracks, fuzz, dump or watch mixer memory, print chip selects |
 | `OCTFIX_HOSTLOG=<file>`, `OCTFIX_HOSTLOG_FROM/TO` (ColdFire cycles) | dsp56300 hdi08, mddsp, mdhardware | host-port and link trace, rotating 300 MB files |
-| `OCTFIX_OFF=irq,hdi,timer` | dsp56300 | switch off the experimental cadence fixes (all off = upstream behaviour) |
+| `OCTFIX_ON=irq,hdi,timer` | dsp56300 | switch on the experimental cadence fixes (any subset; unset = upstream behaviour) |
 | `MM_UC_CYCLE_SCALE=<percent>` | mdmc | ColdFire instruction cost scale |
 | `MM_BUSSTATS=1` | mdmc | count ColdFire bus accesses per region and estimate wait-state cost |
 | `mmAudioFirmwareTest --phase-sweep` (`MM_SWEEP_*`) | test | note-on phase sweep after the ensemble pre-note sequence |
 
 The dsp56300 cadence fixes (timer phase, prompt external interrupts, host-command completion polling)
-are real model bugs but change output on both machines. They are on by default in this branch's
-submodule commit and switched off with `OCTFIX_OFF=irq,hdi,timer`.
+are real model bugs but change output on both machines. They are off by default and switched on with
+`OCTFIX_ON=irq,hdi,timer`.
