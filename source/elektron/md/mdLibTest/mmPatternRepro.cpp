@@ -8,6 +8,7 @@
 // Optional: MM_REPRO_LEVEL0="c1,c2,..." sends CC7=0 on those MIDI channels (0-15) after Play.
 
 #include "mdLib/mddevice.h"
+#include "mdLib/mdmemorymap.h"
 #include "mdLib/mdmidiprotocol.h"
 #include "mdLib/mdpanel.h"
 #include "mdLib/mdromloader.h"
@@ -188,6 +189,26 @@ int main(int argc, char** argv)
 				std::printf("CS%u CSAR=%04x (base %08x) CSMR=%08x CSCR=%04x WS=%u AA=%u PS=%u BRST=%u\n", n, csar,
 					static_cast<uint32_t>(csar) << 16, csmr, cscr, (cscr >> 10) & 15, (cscr >> 8) & 1, (cscr >> 6) & 3, (cscr >> 4) & 1);
 			}
+		}
+
+		// MM_REPRO_DUMP_RAM=<file>: write ColdFire main RAM ($200000-$2fffff, where the OS runs) after boot,
+		// as a flat big-endian image for static disassembly (load address $200000).
+		if(const char* ramDump = std::getenv("MM_REPRO_DUMP_RAM"))
+		{
+			auto& uc = hardware.getUC();
+			std::vector<uint8_t> ram;
+			ram.reserve(md::memorymap::g_mainRam.size());
+			for(uint32_t a = md::memorymap::g_mainRam.begin; a < md::memorymap::g_mainRam.end; a += 2)
+			{
+				const auto v = uc.read16(a);
+				ram.push_back(static_cast<uint8_t>(v >> 8));
+				ram.push_back(static_cast<uint8_t>(v));
+			}
+			FILE* f = std::fopen(ramDump, "wb");
+			require(f != nullptr, "could not open RAM dump");
+			std::fwrite(ram.data(), 1, ram.size(), f);
+			std::fclose(f);
+			std::cout << "mmPatternRepro: wrote " << ramDump << " (" << ram.size() << " bytes)\n";
 		}
 
 		const auto body = md::midiProtocol::selectPattern(g_model, std::atoi(argv[4]));
