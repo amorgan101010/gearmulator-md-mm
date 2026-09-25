@@ -16,6 +16,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <iostream>
+#include <map>
 #include <memory>
 #include <sstream>
 #include <stdexcept>
@@ -23,6 +24,62 @@
 #include <vector>
 
 namespace md { void busStatsReset(); }
+
+namespace
+{
+	// MM_REPRO_PCWIN="start:len,start:len,...": record mixer DSP block PCs inside each cycle window.
+	struct PcWindow { uint64_t start = 0, end = 0; std::map<uint32_t, uint32_t> pcs; };
+	std::vector<PcWindow> g_pcWindows;
+	const dsp56k::DSP* g_pcDsp = nullptr;
+	void pcTrace(const dsp56k::DSP* _dsp, const uint32_t _pc)
+	{
+		if(_dsp != g_pcDsp)
+			return;
+		const auto c = _dsp->getCycles();
+		// MM_REPRO_PCLOG_MIN/MAX: also print every block start PC in [min,max] with its cycle.
+		static const uint32_t logMin = std::getenv("MM_REPRO_PCLOG_MIN") ? static_cast<uint32_t>(std::strtoul(std::getenv("MM_REPRO_PCLOG_MIN"), nullptr, 16)) : 1;
+		static const uint32_t logMax = std::getenv("MM_REPRO_PCLOG_MAX") ? static_cast<uint32_t>(std::strtoul(std::getenv("MM_REPRO_PCLOG_MAX"), nullptr, 16)) : 0;
+		if(_pc >= logMin && _pc <= logMax)
+			std::printf("PCHIT %06x %llu\n", _pc, static_cast<unsigned long long>(c));
+		// MM_REPRO_V3PHASE=1: log voice 3's word-40 read ($e1 block with r6=$728) and clear ($143 with y:$123=$728).
+		static const bool v3 = std::getenv("MM_REPRO_V3PHASE") != nullptr;
+		if(v3)
+		{
+			if(_pc == 0xe1 && _dsp->regs().r[6].var == 0x728)
+				std::printf("V3READ %llu\n", static_cast<unsigned long long>(c));
+			else if(_pc == 0x143 && _dsp->memory().get(dsp56k::MemArea_Y, 0x123) == 0x728)
+				std::printf("V3CLEAR %llu\n", static_cast<unsigned long long>(c));
+		}
+		static const uint32_t probe = std::getenv("MM_REPRO_PCPROBE") ? static_cast<uint32_t>(std::strtoul(std::getenv("MM_REPRO_PCPROBE"), nullptr, 16)) : 0xffffffff;
+		static const uint32_t probeOff = std::getenv("MM_REPRO_PCPROBE_OFF") ? static_cast<uint32_t>(std::strtoul(std::getenv("MM_REPRO_PCPROBE_OFF"), nullptr, 16)) : 0;
+		for(size_t i = 0; i < g_pcWindows.size(); ++i)
+		{
+			auto& w = g_pcWindows[i];
+			if(c < w.start || c >= w.end)
+				continue;
+			++w.pcs[_pc];
+			// MM_REPRO_YWATCH=<hex addr>: report each change of that Y word, with the block that ran before.
+			static const uint32_t ywatch = std::getenv("MM_REPRO_YWATCH") ? static_cast<uint32_t>(std::strtoul(std::getenv("MM_REPRO_YWATCH"), nullptr, 16)) : 0xffffffff;
+			static uint32_t lastValue = 0xffffffff;
+			static uint32_t lastPc = 0;
+			if(ywatch != 0xffffffff)
+			{
+				const auto v = _dsp->memory().get(dsp56k::MemArea_Y, ywatch);
+				if(v != lastValue)
+					std::printf("YCHG win%zu +%llu y:%x %06x -> %06x after block %06x (now at %06x)\n", i,
+						static_cast<unsigned long long>(c - w.start), ywatch, lastValue, v, lastPc, _pc);
+				lastValue = v;
+				lastPc = _pc;
+			}
+			if(_pc == probe)
+			{
+				const auto r6 = _dsp->regs().r[6].var;
+				const auto v = _dsp->memory().get(dsp56k::MemArea_Y, (r6 + probeOff) & 0xffffff);
+				std::printf("PROBE win%zu +%llu r6=%06x y:(r6+%x)=%06x\n", i, static_cast<unsigned long long>(c - w.start), r6, probeOff, v);
+			}
+		}
+	}
+}
 
 namespace
 {
@@ -147,6 +204,20 @@ int main(int argc, char** argv)
 		}
 
 		md::busStatsReset();
+		if(const char* win = std::getenv("MM_REPRO_PCWIN"))
+		{
+			std::stringstream ss(win);
+			std::string item;
+			while(std::getline(ss, item, ','))
+			{
+				PcWindow w;
+				w.start = std::strtoull(item.c_str(), nullptr, 10);
+				w.end = w.start + std::strtoull(item.c_str() + item.find(':') + 1, nullptr, 10);
+				g_pcWindows.push_back(std::move(w));
+			}
+			g_pcDsp = &hardware.getDspMixer().dsp();
+			dsp56k::g_pcTraceHook = &pcTrace;
+		}
 		std::cout << "mmPatternRepro: render starts at ucCycle " << hardware.hostCurrentCycle() << '\n';
 		FILE* out = std::fopen(argv[2], "wb");
 		require(out != nullptr, "could not open output");
@@ -258,6 +329,9 @@ int main(int argc, char** argv)
 			std::fwrite(interleaved.data(), sizeof(float), interleaved.size(), out);
 		}
 		std::fclose(out);
+		for(size_t i = 0; i < g_pcWindows.size(); ++i)
+			for(const auto& [pc, n] : g_pcWindows[i].pcs)
+				std::printf("PCWIN %zu %06x %u\n", i, pc, n);
 		std::cout << "mmPatternRepro: wrote " << blocks * 256 << " frames\n";
 		return 0;
 	}

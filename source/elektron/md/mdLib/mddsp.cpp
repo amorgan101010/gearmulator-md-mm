@@ -467,6 +467,10 @@ namespace md
 			uint32_t word;
 			if(!m_timedHostRx.take(m_hardware.hostCurrentCycle(), word))
 				return false;
+			dsp56k::hostLogWindow(m_hardware.hostCurrentCycle()); dsp56k::hostLogRotate();
+			if(dsp56k::g_hostLog && dsp56k::g_hostLogOn)
+				std::fprintf(dsp56k::g_hostLog, "UR %u %p uc=%llu dsp=%llu word=%06x\n", m_index, static_cast<void*>(&m_dsp),
+					static_cast<unsigned long long>(m_hardware.hostCurrentCycle()), static_cast<unsigned long long>(m_dsp.getCycles()), word & 0xffffff);
 			m_hdiUC.writeRx(word);
 			m_hardware.notifyHostPumpStateChanged();
 			return true;

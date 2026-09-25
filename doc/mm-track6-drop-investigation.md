@@ -66,10 +66,35 @@ close it. For the record, the firmware programs CS0 flash 16-bit 4 WS, CS1 16-bi
 8-bit 0 WS and main RAM CS5 16-bit 0 WS, and MCF5206E UM 3.6.1 says the instruction timing tables
 assume zero-wait memory. The emulator models neither.
 
+## Mechanism (mixer DSP firmware, 2026-09-25)
+
+- Host commands 0x10/0x12/0x14 arm DMA channel 5 (`DCR5 = $8e9ac4`, request = host receive, destination Y)
+  to copy the 52 frame words into `Y:$500`/`$600`/`$700` (voices 1-3; the mixer plays tracks 4-6). The
+  controller then writes the words and DMA copies each as it arrives. Command 0x0c reads one DSP X word
+  (`x:(addr)`) back to the controller; in E12 it always polls `x:$701` and always reads `0x1fff`.
+- Frame word 32 (`Y:$x20`) is a latch the audio routine clears when it takes it (P:$4ff-$504).
+- Frame word 40 (`Y:$x28`, `0x81` on a trigger frame) decides the note start. Per pass, the voice routine
+  reads it at P:$e1 and turns bit 7 into "start pending" (P:$e2-$e3, `0x81 -> 1`); P:$88b starts the voice
+  if it is 1; P:$143-$148 clears it at the end of the voice's processing.
+- A trigger frame whose word 40 lands after voice 3's read (P:$e1) but before its clear (P:$148) is wiped
+  unseen: the note never starts. The window lasts 9,406 of every 36,864 DSP cycles.
+- Trigger frames normally land 9,775-21,777 cycles after voice 3's read (mostly 11-14k), just after the
+  window closes. The dropped beat of fuzz seed 4 landed at 9,255, 167 cycles too early.
+- The frame period equals the DSP pass, so the offset is the controller's processing latency after its
+  sync point. A faster emulated ColdFire lands frames earlier, inside the window.
+
+## ColdFire bus timing
+
+The firmware enables the instruction cache (CACR `$81000503`). `MM_BUSSTATS` over 10 s of E12 playback
+estimates that the real bus (3-clock external transfers plus wait states, 16-bit main RAM, 8-bit HDI08,
+4 KB direct-mapped I-cache misses) adds about 61% cycles for data accesses and 16% for cache misses on
+top of the emulated table timing. The emulated ColdFire therefore runs well ahead of silicon, which is
+the direction that puts trigger frames into the danger window.
+
 ## Next step
 
-Disassemble the mixer's host-command handlers (0x0c and 0x14) and find how a trig frame reaches the
-audio routine through the 0x00e3.. ring, then watch that handoff at the dropped beat of fuzz seed 4.
+Model ColdFire bus timing per access from the programmed chip selects (port size, wait states, burst)
+and the instruction cache, behind a flag, and check that the trigger-frame margin grows and drops stop.
 
 ## Diagnostic knobs on this branch
 
