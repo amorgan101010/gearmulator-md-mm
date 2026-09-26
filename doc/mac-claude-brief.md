@@ -152,6 +152,18 @@ Suggested next steps: dump DSP2 P memory (`MM_REPRO_DUMP_P`) and find where in i
 0/1/2 command words to HTX; measure the DSP1-DSP2 pass phase at the dropped beat against played beats;
 verify the step dispatch above by logging `d2` at `0x247dfe`.
 
+### Timed block sync check (macOS, 2026-09-25, branch at `4f5bb8cc`, dsp56300 `9d8297e4`)
+
+Mode 1 (`GEARMULATOR_MM_TIMED_SYNC=1`) is the same edge delivery as `fix/mm-timed-block-sync`, where it
+is on by default.
+
+- Nothing set: MD C04 `b8e0c7d9d71809bc`, MM B15 `ed4758a81d23aedd` (unchanged).
+- MM B15 with mode 1: `52d2671c38eacf32`, RMS `1.808e-01` as without it.
+- E12, 16 fuzz seeds x 30 s, guard off: timed sync off loses 5 kicks (seeds 4, 8, 9 x2, 14, at the same
+  gap times as the earlier macOS run); mode 1 loses 0. That now matches Linux seed for seed, so the
+  earlier Linux/macOS difference came from the older Linux build, not from arm64.
+- E12, 300 s plain playback, mode 1: 456 onsets, no gaps (`kicks.py`: missing ~0).
+
 ## Notes
 
 - Do not play test audio through speakers without asking the user.
