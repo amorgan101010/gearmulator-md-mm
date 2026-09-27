@@ -18,6 +18,8 @@ namespace mdJucePlugin
 	class AudioPluginAudioProcessor : public jucePluginEditorLib::Processor,
 		private juce::Timer
 	{
+		std::array<std::atomic<int>, 128> m_externalRequests{};   // by reply id
+		std::array<std::atomic<int64_t>, 128> m_editorAskedMs{};  // by reply id
 	public:
 		struct EphemeralConfig final
 		{
@@ -37,6 +39,17 @@ namespace mdJucePlugin
 		AudioPluginAudioProcessor(md::MachineModel _model,
 			std::vector<uint8_t> _initialPatchRam, bool _allowMcpServer = true);
 	    ~AudioPluginAudioProcessor() override;
+
+		// The editor keeps itself in sync by asking the unit for its status
+		// (SysEx 0x70) and global/kit/pattern/song dumps, and the unit's replies
+		// used to go out of MIDI OUT as well -- a status reply every few hundred
+		// ms, a global dump every few seconds. A unit following this one's MIDI
+		// had to swallow them, and an MM behind an MD played audibly different
+		// kicks (0 of 71 with clock alone, 36 of 71 with everything). A reply now
+		// stays internal when the editor asked for it; one asked for on MIDI In,
+		// and a dump nobody asked for (SEND on the machine), still go out.
+		bool sendToPhysicalOut(const synthLib::SMidiEvent& _ev) override;
+		void observeMidiEvent(const synthLib::SMidiEvent& _ev) override;
 
 		md::MachineModel getModel() const { return m_model; }
 		static md::MachineModel getCompiledProductModel();

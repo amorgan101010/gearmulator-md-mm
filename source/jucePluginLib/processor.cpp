@@ -67,6 +67,7 @@ namespace pluginLib
 
 	void Processor::addMidiEvent(const synthLib::SMidiEvent& _ev)
 	{
+		observeMidiEvent(_ev);
 		// Process through MIDI Learn translator first
 		if (_ev.source != synthLib::MidiEventSource::Device)
 		{
@@ -90,12 +91,14 @@ namespace pluginLib
 			m_controller->tryEnqueueRealtimeMidiMessage(_ev);
 		if (m_midiRoutingMatrix.enabled(_ev, synthLib::MidiEventSource::Device))
 			getPlugin().addMidiEvent(_ev);
-		if (m_midiRoutingMatrix.enabled(_ev, synthLib::MidiEventSource::Physical))
+		if (m_midiRoutingMatrix.enabled(_ev, synthLib::MidiEventSource::Physical)
+			&& sendToPhysicalOut(_ev))
 			m_midiPorts.send(_ev);
 	}
 
 	bool Processor::tryAddRealtimeMidiEvent(const synthLib::SMidiEvent& _ev)
 	{
+		observeMidiEvent(_ev);
 		// Physical output is attempted first: once queued, insertion into the local
 		// synth is allocation-free because prepareToPlay reserves both the normal
 		// ingress capacity and the controller's bounded realtime batch.

@@ -173,6 +173,14 @@ namespace pluginLib
 
 		virtual void processBpm(float _bpm) {}
 
+		// Whether a message the unit sends goes out of the physical MIDI port.
+		// A plugin keeps back replies meant for its own editor here; everything
+		// the unit would put on its MIDI OUT wire goes. Audio or MIDI thread.
+		virtual bool sendToPhysicalOut(const synthLib::SMidiEvent&) { return true; }
+		// Every event that reaches addMidiEvent, before routing (MIDI, audio or
+		// message thread): lets a plugin note what arrived on its MIDI In.
+		virtual void observeMidiEvent(const synthLib::SMidiEvent&) {}
+
 		bool rebootDevice();
 
 		auto& getMidiPorts() { return m_midiPorts; }

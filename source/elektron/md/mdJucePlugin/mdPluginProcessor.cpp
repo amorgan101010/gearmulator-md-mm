@@ -132,6 +132,72 @@ namespace
 
 namespace mdJucePlugin
 {
+	namespace
+	{
+		// F0 00 20 3C <product> 00 <id> ...: the id of an Elektron message for
+		// an MD or MM, or -1
+		int elektronId(const synthLib::SMidiEvent& _ev)
+		{
+			const auto& s = _ev.sysex;
+			if(s.size() >= 8 && s[0] == 0xf0 && s[1] == 0x00 && s[2] == 0x20 && s[3] == 0x3c
+				&& (s[4] == 0x02 || s[4] == 0x03) && s[5] == 0x00)
+				return s[6] & 0x7f;
+			return -1;
+		}
+
+		// request id -> the id of the unit's reply
+		int replyTo(const int _request)
+		{
+			switch(_request)
+			{
+			case 0x70: return 0x72;    // status
+			case 0x51: return 0x50;    // global
+			case 0x53: return 0x52;    // kit
+			case 0x68: return 0x67;    // pattern
+			case 0x6a: return 0x69;    // song
+			default: return -1;
+			}
+		}
+
+		int64_t nowMs()
+		{
+			return std::chrono::duration_cast<std::chrono::milliseconds>(
+				std::chrono::steady_clock::now().time_since_epoch()).count();
+		}
+
+		constexpr int64_t g_editorReplyWindowMs = 2000;
+	}
+
+	void AudioPluginAudioProcessor::observeMidiEvent(const synthLib::SMidiEvent& _ev)
+	{
+		const auto reply = replyTo(elektronId(_ev));
+		if(reply < 0)
+			return;
+		if(_ev.source == synthLib::MidiEventSource::Physical)
+			++m_externalRequests[static_cast<size_t>(reply)];
+		else if(_ev.source != synthLib::MidiEventSource::Device)
+			m_editorAskedMs[static_cast<size_t>(reply)] = nowMs();
+	}
+
+	bool AudioPluginAudioProcessor::sendToPhysicalOut(const synthLib::SMidiEvent& _ev)
+	{
+		const auto id = elektronId(_ev);
+		if(_ev.source != synthLib::MidiEventSource::Device || id < 0)
+			return true;
+		// asked for on MIDI In: answer on MIDI OUT
+		auto& external = m_externalRequests[static_cast<size_t>(id)];
+		int pending = external.load();
+		while(pending > 0)
+		{
+			if(external.compare_exchange_weak(pending, pending - 1))
+				return true;
+		}
+		// asked for by the editor a moment ago: keep it internal. A time window
+		// rather than a count, so a request that never gets its reply cannot
+		// later swallow a dump sent from the machine's own menu.
+		return nowMs() - m_editorAskedMs[static_cast<size_t>(id)].load() > g_editorReplyWindowMs;
+	}
+
 	void AudioPluginAudioProcessor::saveChunkData(baseLib::BinaryStream& _stream)
 	{
 		// Written before the device state so that a project loads its firmware first
