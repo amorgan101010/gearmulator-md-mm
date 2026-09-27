@@ -32,6 +32,7 @@ namespace
 		bool released = false;
 		size_t entered = 0;
 		std::vector<std::array<uint8_t, 3>> messages;
+		std::vector<std::chrono::steady_clock::time_point> times;
 	};
 
 	class ControlledSink final : public pluginLib::MidiOutputSink
@@ -70,6 +71,7 @@ namespace
 			const auto count = std::min(3, _message.getRawDataSize());
 			std::copy_n(_message.getRawData(), count, bytes.begin());
 			state->messages.push_back(bytes);
+			state->times.push_back(std::chrono::steady_clock::now());
 			state->condition.notify_all();
 		}
 
@@ -243,6 +245,45 @@ namespace
 	}
 }
 
+namespace
+{
+	// sendAt: a message waits for its due time, and one due earlier than the
+	// message ahead of it still goes second -- the order is the order queued.
+	void testTimedSendWaitsAndKeepsOrder()
+	{
+		auto state = std::make_shared<SinkState>();
+		pluginLib::MidiOutputDispatcher dispatcher;
+		require(dispatcher.setOutput(sink(state, "timed")), "timed output did not open");
+		const auto t0 = pluginLib::MidiOutputDispatcher::Clock::now();
+		dispatcher.sendAt(message(1), t0 + 60ms);
+		dispatcher.sendAt(message(2), t0 + 30ms);
+		dispatcher.send(message(3));
+		require(waitFor(state, [](const SinkState& _s) { return _s.messages.size() == 3; }),
+			"timed messages were not delivered");
+		const auto first = state->times[0] - t0;
+		require(first >= 55ms, "a timed message left before its due time");
+		require(first < 500ms, "a timed message was held far past its due time");
+		const auto a = message(1), b = message(2), c = message(3);
+		require(state->messages[0][1] == a.getRawData()[1]
+			&& state->messages[1][1] == b.getRawData()[1]
+			&& state->messages[2][1] == c.getRawData()[1], "timed messages left out of order");
+		dispatcher.close();
+	}
+
+	// Closing while a message waits for a due time far ahead returns at once.
+	void testCloseWhileWaiting()
+	{
+		auto state = std::make_shared<SinkState>();
+		pluginLib::MidiOutputDispatcher dispatcher;
+		require(dispatcher.setOutput(sink(state, "waiting")), "waiting output did not open");
+		dispatcher.sendAt(message(4), pluginLib::MidiOutputDispatcher::Clock::now() + 10s);
+		const auto t0 = std::chrono::steady_clock::now();
+		dispatcher.close();
+		require(std::chrono::steady_clock::now() - t0 < 1s, "close waited for a pending due time");
+		require(state->messages.empty(), "a message due later was sent on close");
+	}
+}
+
 int main()
 {
 	try
@@ -250,6 +291,8 @@ int main()
 		testSaturationAndBlockingSend();
 		testReplacementAndShutdown();
 		testConcurrentProducers();
+		testTimedSendWaitsAndKeepsOrder();
+		testCloseWhileWaiting();
 		std::cout << "midiOutputDispatcherTest: PASS\n";
 		return 0;
 	}

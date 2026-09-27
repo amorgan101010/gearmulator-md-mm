@@ -112,9 +112,10 @@ namespace pluginLib
 		return true;
 	}
 
-	void Processor::handleIncomingMidiMessage(juce::MidiInput *_source, const juce::MidiMessage &_message)
+	void Processor::handleIncomingMidiMessage(juce::MidiInput *_source, const juce::MidiMessage &_message, const uint32_t _offset)
 	{
 		synthLib::SMidiEvent sm(synthLib::MidiEventSource::Physical);
+		sm.offset = _offset;
 
 		const auto* raw = _message.getSysExData();
 		if (raw)
@@ -682,6 +683,9 @@ namespace pluginLib
 		}
 
 		updateLatencySamples();
+
+		// the plugin and controller are ready for MIDI from here on
+		m_midiPorts.openVirtualPorts();
 	}
 
 	void Processor::releaseResources()
@@ -776,6 +780,8 @@ namespace pluginLib
 	{
 	    juce::ScopedNoDenormals noDenormals;
 	    const int numSamples = buffer.getNumSamples();
+		// first thing, so the block's wall-clock start is as close as it gets
+		m_midiPorts.beginBlock(numSamples, getSampleRate());
 		synthLib::RealtimeInstrumentation::CallbackScope instrumentation(
 			getPlugin().getRealtimeInstrumentation(), static_cast<size_t>(numSamples),
 			getSampleRate());

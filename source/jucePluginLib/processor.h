@@ -80,7 +80,12 @@ namespace pluginLib
 		// wrapper to republish the finished program in one host-visible operation.
 		void notifyHostOfProgramChange();
 
-		void handleIncomingMidiMessage(juce::MidiInput* _source, const juce::MidiMessage& _message);
+		void handleIncomingMidiMessage(juce::MidiInput* _source, const juce::MidiMessage& _message)
+		{
+			handleIncomingMidiMessage(_source, _message, 0);
+		}
+		// `_offset`: the sample in the coming block the message belongs at.
+		void handleIncomingMidiMessage(juce::MidiInput* _source, const juce::MidiMessage& _message, uint32_t _offset);
 
 	    Controller& getController();
 		bool isPluginValid() { return getPlugin().isValid(); }

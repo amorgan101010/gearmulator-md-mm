@@ -376,7 +376,7 @@ namespace synthLib
 
 			if (isComplete)
 			{
-				m_midiIn.push_back(_ev);
+				insertMidiEvent(_ev);
 				return;
 			}
 
@@ -395,13 +395,15 @@ namespace synthLib
 
 				if (isEnd)
 				{
-					m_midiIn.push_back(m_pendingSysexInput);
+					insertMidiEvent(m_pendingSysexInput);
 					m_pendingSysexInput.sysex.clear();
 				}
 			}
 		}
 
-		m_midiIn.push_back(_ev);
+		// in offset order: timed MIDI IN carries real offsets (jucePluginLib
+		// MidiPorts::deliverTimedInput); with every offset 0 this is push_back
+		insertMidiEvent(_ev);
 	}
 
 	void Plugin::setBlockSize(const uint32_t _blockSize)

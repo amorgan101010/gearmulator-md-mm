@@ -82,13 +82,13 @@ namespace jucePluginEditorLib
 
 	void MidiPorts::refreshSelection()
 	{
-		refreshComboSelection(m_midiIn, juce::MidiInput::getAvailableDevices(), getMidiPorts().getInputId());
-		refreshComboSelection(m_midiOut, juce::MidiOutput::getAvailableDevices(), getMidiPorts().getOutputId());
+		refreshComboSelection(m_midiIn, getMidiPorts().getAvailableInputs(), getMidiPorts().getInputId());
+		refreshComboSelection(m_midiOut, getMidiPorts().getAvailableOutputs(), getMidiPorts().getOutputId());
 	}
 
 	void MidiPorts::createMidiInputMenu(juceRmlUi::Menu& _menu, pluginLib::MidiPorts& _ports)
 	{
-		createMenu(_menu, juce::MidiInput::getAvailableDevices(), _ports.getInputId(), [&_ports](const juce::String& _id)
+		createMenu(_menu, _ports.getAvailableInputs(), _ports.getInputId(), [&_ports](const juce::String& _id)
 		{
 			if(!_ports.setMidiInput(_id))
 				showMidiPortFailedMessage(_ports.getProcessor(), "Input");
@@ -97,7 +97,7 @@ namespace jucePluginEditorLib
 
 	void MidiPorts::createMidiOutputMenu(juceRmlUi::Menu& _menu, pluginLib::MidiPorts& _ports)
 	{
-		createMenu(_menu, juce::MidiOutput::getAvailableDevices(), _ports.getOutputId(), [&_ports](const juce::String& _id)
+		createMenu(_menu, _ports.getAvailableOutputs(), _ports.getOutputId(), [&_ports](const juce::String& _id)
 		{
 			if(!_ports.setMidiOutput(_id))
 				showMidiPortFailedMessage(_ports.getProcessor(), "Output");
@@ -122,7 +122,7 @@ namespace jucePluginEditorLib
 		if(!_combo)
 			return;
 
-		initComboBox(_combo, juce::MidiInput::getAvailableDevices(), getMidiPorts(_processor).getInputId());
+		initComboBox(_combo, getMidiPorts(_processor).getAvailableInputs(), getMidiPorts(_processor).getInputId());
 
 		juceRmlUi::EventListener::Add(_combo, Rml::EventId::Change, [&_processor, _combo](Rml::Event&)
 		{
@@ -135,7 +135,7 @@ namespace jucePluginEditorLib
 		if(!_combo)
 			return;
 
-		initComboBox(_combo, juce::MidiOutput::getAvailableDevices(), getMidiPorts(_processor).getOutputId());
+		initComboBox(_combo, getMidiPorts(_processor).getAvailableOutputs(), getMidiPorts(_processor).getOutputId());
 
 		juceRmlUi::EventListener::Add(_combo, Rml::EventId::Change, [&_processor, _combo](Rml::Event&)
 		{
@@ -172,7 +172,7 @@ namespace jucePluginEditorLib
 
 	void MidiPorts::updateMidiInput(Processor& _processor, juceRmlUi::ElemComboBox* _combo, int _index)
 	{
-	    const auto list = juce::MidiInput::getAvailableDevices();
+	    const auto list = getMidiPorts(_processor).getAvailableInputs();
 
 	    if (_index <= 0)
 	    {
@@ -202,7 +202,7 @@ namespace jucePluginEditorLib
 
 	void MidiPorts::updateMidiOutput(Processor& _processor, juceRmlUi::ElemComboBox* _combo, int _index)
 	{
-	    const auto list = juce::MidiOutput::getAvailableDevices();
+	    const auto list = getMidiPorts(_processor).getAvailableOutputs();
 
 	    if (_index == 0)
 	    {
