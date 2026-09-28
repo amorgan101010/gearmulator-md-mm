@@ -1,5 +1,7 @@
 #pragma once
 
+#include <atomic>
+
 #include "mdSampleImport.h"
 #include <array>
 #include <chrono>
@@ -173,6 +175,7 @@ namespace mdJucePlugin
 		void createEncoders();
 		void createMasterVolume();
 		void syncMasterVolume();
+		bool syncLcdColours();
 		void configureEncoder(juceRmlUi::ElemKnob* _knob, md::PanelEncoder _encoder,
 			float& _last, float& _accum);
 		void onEncoderChanged(juceRmlUi::ElemKnob* _knob, md::PanelEncoder _encoder,
@@ -310,6 +313,9 @@ namespace mdJucePlugin
 		Controller& m_controller;
 		const md::MachineModel m_model;
 		juceRmlUi::ElemCanvas* m_lcdCanvas = nullptr;
+		// ARGB; 0 = the stock colour. Written on the message thread, read by paintLcd on the render thread.
+		std::atomic<uint32_t> m_skinLcdOn{0};
+		std::atomic<uint32_t> m_skinLcdOff{0};
 		std::unique_ptr<PixelPerfectPanel> m_pixelPerfectPanel;
 		md::FrontPanel m_frontPanelSnapshot;
 		bool m_frontPanelSnapshotValid = false;

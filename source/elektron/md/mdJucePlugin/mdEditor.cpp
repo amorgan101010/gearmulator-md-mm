@@ -2705,11 +2705,33 @@ namespace mdJucePlugin
 		return true;
 	}
 
+	bool Editor::syncLcdColours()
+	{
+		// A skin may colour the display on its LCD element (#lcdArea): image-color is the backlight
+		// (unlit pixels), color the lit pixels. Only properties the skin sets count, never inherited text colour.
+		auto* area = m_lcdCanvas ? m_lcdCanvas->GetParentNode() : nullptr;
+		const auto read = [area](const char* _name) -> uint32_t
+		{
+			const auto* prop = area ? area->GetLocalProperty(_name) : nullptr;
+			if(!prop)
+				return 0;
+			const auto c = prop->Get<Rml::Colourb>(area->GetCoreInstance());
+			return juce::Colour(c.red, c.green, c.blue, c.alpha).getARGB() | 0xff000000;
+		};
+		const auto off = read("image-color");
+		const auto on = read("color");
+		const bool changed = off != m_skinLcdOff.load(std::memory_order_relaxed) || on != m_skinLcdOn.load(std::memory_order_relaxed);
+		m_skinLcdOff.store(off, std::memory_order_relaxed);
+		m_skinLcdOn.store(on, std::memory_order_relaxed);
+		return changed;
+	}
 	void Editor::paintLcd(const juce::Image& _target, juce::Graphics& _g) const
 	{
 		const auto isMonomachine = getModel() == md::MachineModel::Monomachine;
-		const auto lcdOff = isMonomachine ? g_mmLcdOff : g_mdLcdOff;
-		const auto lcdOn = isMonomachine ? g_mmLcdOn : g_mdLcdOn;
+		const auto skinOff = m_skinLcdOff.load(std::memory_order_relaxed);
+		const auto skinOn = m_skinLcdOn.load(std::memory_order_relaxed);
+		const auto lcdOff = skinOff ? skinOff : isMonomachine ? g_mmLcdOff : g_mdLcdOff;
+		const auto lcdOn = skinOn ? skinOn : isMonomachine ? g_mmLcdOn : g_mdLcdOn;
 
 		// The skin's display surround need not have the framebuffer's 2:1 aspect.
 		// Keep spare space the LCD background colour instead of stretching pixels.
@@ -2794,7 +2816,7 @@ namespace mdJucePlugin
 		updateParameterTooltip();
 		syncMasterVolume();
 
-		if(m_lcdCanvas && m_lcdChanged)
+		if(m_lcdCanvas && (syncLcdColours() || m_lcdChanged))
 			m_lcdCanvas->repaint();
 
 		// SetClass mutates the Rml DOM but does not wake its renderer. Without this,
