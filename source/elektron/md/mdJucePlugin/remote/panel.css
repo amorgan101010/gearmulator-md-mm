@@ -11,12 +11,31 @@ html, body {
 	-webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
 	touch-action: none; overscroll-behavior: none;
 }
-#stage { position: absolute; left: 0; top: 0; width: 1100px; height: 570px; transform-origin: 0 0; }
+#stage { position: absolute; left: 0; top: 0; width: 1100px; height: 770px; transform-origin: 0 0; }
 .panel { position: absolute; left: 0; top: 0; width: 1100px; height: 570px; background: #d0d1cc;
 	border: 2px solid #676863; box-sizing: border-box; color: #30312d;
 	background-image: linear-gradient(90deg, #ffffff16, #00000010); }
 .panel > div, .panel div { box-sizing: border-box; }
 .panel > * { position: absolute; }
+.sceneStrip { position: absolute; left: 0; top: 712px; width: 1100px; height: 58px; display: flex; align-items: center; gap: 12px; padding: 7px 14px; box-sizing: border-box; z-index: 36;
+	background: linear-gradient(#272a30, #17191e); border-top: 1px solid #555963; color: #d6d9df; font-size: 11px; }
+.sceneSide { display: flex; align-items: center; gap: 7px; flex: 0 0 auto; }
+.sceneStrip button, .sceneStrip select { height: 30px; box-sizing: border-box; border: 1px solid #464a53; border-radius: 4px; background: #22252b; color: #d6d9df; font: inherit; font-size: 9px; font-weight: 700; }
+.sceneStrip button { padding: 0 6px; }
+.sceneStrip button.active { border-color: #ffb27a; color: #ffc28e; background: #54351f; }
+.sceneStrip button:disabled { opacity: 0.42; }
+.sceneStrip select { width: 50px; padding: 0 4px; }
+.sceneFader { position: relative; height: 42px; min-width: 280px; flex: 1 1 420px; margin: 0 18px; touch-action: none; cursor: ew-resize; outline: none; }
+.sceneFader:focus-visible .sceneFaderThumb { box-shadow: 0 0 0 3px #ffb27a66, 0 0 12px #ff9d3a; }
+.sceneFaderTrack { position: absolute; left: 12px; right: 12px; top: 16px; height: 9px; border-radius: 5px; background: #41444b; box-shadow: inset 0 1px 3px #000a; }
+.sceneFaderFill { position: absolute; left: 0; top: 0; bottom: 0; width: 0; border-radius: inherit; background: linear-gradient(90deg, #6d7888, #ff9d3a); }
+.sceneFaderThumb { position: absolute; left: 0; top: 50%; width: 18px; height: 32px; transform: translate(-50%, -50%); border: 1px solid #ffd19e; border-radius: 4px;
+	background: linear-gradient(#ffb16b, #d7662e); box-shadow: 0 1px 5px #000b, 0 0 7px #ff9d3a88; pointer-events: none; }
+.sceneFaderEnd { position: absolute; top: 29px; color: #8d939d; font-size: 8px; font-weight: 800; line-height: 9px; }
+.sceneFaderEndA { left: 9px; }
+.sceneFaderEndB { right: 9px; }
+#sceneClear { white-space: nowrap; }
+#sceneErase { white-space: nowrap; }
 
 .portLabel { color: #7c3f35; font-size: 8px; letter-spacing: 1px; text-align: center; white-space: nowrap; height: 13px; line-height: 13px; overflow: hidden; }
 .guide { background: #8d493c; }
@@ -199,8 +218,8 @@ html, body {
 .trigModeLabel { color: #353630; font-size: 9px; text-align: left; height: 14px; line-height: 14px; white-space: nowrap; }
 .miniLabel.bold { font-weight: bold; letter-spacing: 1px; height: 13px; line-height: 13px; }
 
-/* ---- machine rack below the faceplate ---- */
-.rack { position: absolute; left: 0; top: 570px; width: 1100px; height: 196px; box-sizing: border-box; overflow: hidden;
+/* ---- machine rack between the faceplate and scene controls ---- */
+.rack { position: absolute; left: 0; top: 570px; width: 1100px; height: 142px; box-sizing: border-box; overflow: hidden;
 	--accent: #ff9d3a;
 	background: radial-gradient(120% 140% at 50% -20%, #2a2d34 0%, #14161a 55%, #0a0b0d 100%);
 	border-top: 2px solid #3a3d44; box-shadow: inset 0 1px 0 #ffffff10; color: #e9ecef;
@@ -219,7 +238,9 @@ html, body {
 .rackTab.pressed { transform: scale(0.94); }
 .rackAccent { position: absolute; left: 18px; right: 18px; top: 38px; height: 1px;
 	background: linear-gradient(90deg, transparent, var(--accent) 20%, var(--accent) 80%, transparent); opacity: 0.55; box-shadow: 0 0 6px var(--accent); }
-.rackGrid { position: absolute; left: 18px; right: 12px; top: 46px; height: 128px; display: flex; flex-wrap: wrap; align-content: flex-start; gap: 6px; }
+.rackGrid { position: absolute; left: 18px; right: 12px; top: 46px; height: 88px; display: flex; flex-wrap: wrap; align-content: flex-start; gap: 6px;
+	overflow-y: auto; overscroll-behavior: contain; touch-action: pan-y; }
+.rackGrid * { touch-action: pan-y; }
 .rackTile { position: relative; width: 80px; height: 38px; box-sizing: border-box; border-radius: 6px; border: 1px solid #34373e;
 	background: linear-gradient(#2d3037, #16181c); box-shadow: inset 0 1px 0 #ffffff12, 0 2px 4px #00000060; transition: transform 0.08s, box-shadow 0.15s; }
 .rackTile::before { content: ""; position: absolute; left: 0; top: 6px; width: 3px; height: 24px; border-radius: 2px; background: var(--accent); box-shadow: 0 0 6px var(--accent); }
@@ -228,11 +249,13 @@ html, body {
 .rackTile.pressed { transform: scale(0.95); border-color: var(--accent); box-shadow: 0 0 14px var(--accent), inset 0 0 10px #00000080; }
 .rackTile.assigned { border-color: var(--accent); background: linear-gradient(#4a3020, #1c130c); box-shadow: 0 0 12px var(--accent); animation: rackPulse 1.6s ease-in-out infinite; }
 @keyframes rackPulse { 0%, 100% { box-shadow: 0 0 6px var(--accent); } 50% { box-shadow: 0 0 16px var(--accent); } }
-.rackGrid.compact { gap: 5px 6px; }
-.rackGrid.compact .rackTile { width: 76px; height: 27px; }
+.rackGrid.compact { gap: 5px; }
+.rackGrid.compact { overflow: hidden; }
+.rackGrid.compact .rackTile { width: 62px; height: 26px; flex: 0 0 62px; }
 .rackGrid.compact .rackTile::before { top: 4px; height: 17px; }
-.rackGrid.compact .rackTileCode { top: 3px; left: 10px; right: auto; width: 22px; font-size: 12px; line-height: 20px; color: #c9ccd2; }
-.rackGrid.compact .rackTileName { left: 34px; top: 3px; font-size: 11px; font-weight: 700; letter-spacing: 0; line-height: 20px; color: #ffc58f; }
+.rackGrid.compact .rackTileCode { top: 3px; left: 8px; right: auto; width: 16px; font-size: 11px; line-height: 20px; color: #c9ccd2; }
+.rackGrid.compact .rackTileName { left: 26px; top: 3px; font-size: 9px; font-weight: 700; letter-spacing: 0; line-height: 18px; color: #ffc58f; }
+.rackGrid.compact + .rackHint { display: none; }
 .rackTile.empty { background: linear-gradient(#1e2024, #131417); border-style: dashed; }
 .rackTile.empty .rackTileName { color: #5c616a; font-weight: 400; }
 .rackEmpty { width: 100%; text-align: center; margin-top: 44px; color: #8a8f98; font-size: 12px; }
@@ -261,13 +284,3 @@ html, body {
 	background: #16181ce8; border: 1px solid var(--accent); color: #f2f4f7; font: 700 15px Roboto, "Helvetica Neue", Helvetica, Arial, sans-serif;
 	letter-spacing: 1px; box-shadow: 0 0 20px var(--accent), 0 10px 30px #000000a0; transition: opacity 0.25s; }
 .rackToast.hidden { opacity: 0; pointer-events: none; }
-
-/* ---- machine rack as an overlay, so the faceplate always gets the whole screen ---- */
-	bottom: calc(env(safe-area-inset-bottom, 0px) + 10px); z-index: 40;
-	-webkit-appearance: none; appearance: none; font: 700 10px/1 Roboto, Helvetica, Arial, sans-serif;
-	letter-spacing: 2px; color: #c9ccd2; background: #1b1e22cc; border: 1px solid #ffffff22; border-radius: 6px;
-	padding: 9px 11px; opacity: 0.5; }
-.rack { position: fixed; left: 0; right: 0; bottom: 0; top: auto; width: auto;
-	height: min(420px, 52vh); z-index: 35; display: none;
-	padding-bottom: env(safe-area-inset-bottom, 0px); border-top: 2px solid #3a3d44; }
-body.rackOpen .rack { display: block; }

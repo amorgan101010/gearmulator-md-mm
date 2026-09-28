@@ -52,7 +52,22 @@
 
 	function tap(element, handler) {
 		let armed = false;
-		element.addEventListener('pointerdown', function (ev) { ev.preventDefault(); ev.stopPropagation(); armed = true; element.classList.add('pressed'); });
+		let startX = 0;
+		let startY = 0;
+		element.addEventListener('pointerdown', function (ev) {
+			if (ev.pointerType !== 'touch') ev.preventDefault();
+			ev.stopPropagation();
+			armed = true;
+			startX = ev.clientX;
+			startY = ev.clientY;
+			element.classList.add('pressed');
+		});
+		element.addEventListener('pointermove', function (ev) {
+			if (armed && Math.hypot(ev.clientX - startX, ev.clientY - startY) > 8) {
+				armed = false;
+				element.classList.remove('pressed');
+			}
+		});
 		element.addEventListener('pointerup', function (ev) { ev.preventDefault(); ev.stopPropagation(); element.classList.remove('pressed'); if (armed) handler(); armed = false; });
 		element.addEventListener('pointercancel', function () { armed = false; element.classList.remove('pressed'); });
 		element.addEventListener('pointerleave', function () { armed = false; element.classList.remove('pressed'); });
@@ -65,7 +80,6 @@
 			lastAssigned = pending.machine.id;
 			showToast(pending.machine.name + ' loaded on ' + trackLabel(), pending.family.color);
 			renderTiles();
-			if (window.remotePanelRackDone) window.remotePanelRackDone();		// close the overlay
 		}
 		closeModal();
 	});

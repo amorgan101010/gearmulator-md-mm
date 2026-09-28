@@ -10,7 +10,7 @@
 		<link type="text/rcss" href="elektron_materials.rcss"/>
 		<link type="text/rcss" href="machineRack.rcss"/>
 	</head>
-	<body id="Root" class="elektronPanel elektronPanel--md" style="left: 0dp; top: 0dp; width: 1100dp; height: 766dp;">
+	<body id="Root" class="elektronPanel elektronPanel--md" style="left: 0dp; top: 0dp; width: 1100dp; height: 820dp;">
 		<div class="jucePos elektronAluminumPanel mdChassis" style="left: 0dp; top: 0dp; width: 1100dp; height: 570dp;"/>
 
 		<!-- Rear-connector legends printed along the hardware's upper faceplate. -->
@@ -455,6 +455,18 @@
 			<button id="btScale" class="juceButton elektronButton elektronKey elektronScaleButton" isToggle="0"/>
 			<div id="altScaleSetup" class="juceLabel elektronButtonCaption elektronScaleSetup elektronSecondary compact mdAffordance" title="FUNCTION + SCALE: Scale setup">SCALE SETUP</div>
 		</div>
-		<div id="machineRack"/>
+		<div id="sceneStrip" class="mdSceneStrip">
+			<div class="mdSceneTitle">SCENES</div>
+			<button id="sceneSideA" class="mdSceneSide" isToggle="0">A 01</button>
+			<button id="sceneMuteA" class="mdSceneMute" isToggle="0" title="Use clean Kit values on side A">M</button>
+			<input id="sceneFader" class="mdSceneFader" type="range" min="0" max="127" value="0"/>
+			<button id="sceneSideB" class="mdSceneSide" isToggle="0">B 16</button>
+			<button id="sceneMuteB" class="mdSceneMute" isToggle="0" title="Use clean Kit values on side B">M</button>
+			<button id="sceneClearLock" class="mdSceneClear" isToggle="0">CLEAR LOCK</button>
+			<button id="sceneClear" class="mdSceneErase" isToggle="0">CLEAR SCENE</button>
+			<div id="sceneStatus" class="mdSceneStatus">Choose A or B, then a trig to assign</div>
+			<div id="sceneValue" class="mdSceneValue">MIDI scene morph · base values return when a lock releases</div>
+		</div>
+		<div id="machineRack" style="top: 624dp; height: 196dp;"/>
 	</body>
 </rml>

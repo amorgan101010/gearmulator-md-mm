@@ -22,6 +22,7 @@
 	let reconnectTimer = null;
 	let recordLit = false;		// grid recording: trig keys edit steps, so no auto track select then
 	let currentPage = -1;		// Monomachine: lit EDIT page LED
+	let sceneState = null;
 
 	// ---- build the repeated parts of the panel ----
 
@@ -96,35 +97,97 @@
 	function layout() {
 		const stage = document.getElementById('stage');
 		const w = window.innerWidth, h = window.innerHeight;
-		const stageHeight = 570;		// the rack is an overlay, so it never shrinks the faceplate
+		const stageHeight = 770;		// faceplate, scene strip, and rack fit together in the scaled stage
 		stageScale = Math.min(w / 1100, h / stageHeight);
 		const x = Math.floor((w - 1100 * stageScale) / 2), y = Math.floor((h - stageHeight * stageScale) / 2);
 		stage.style.transform = 'translate(' + x + 'px,' + y + 'px) scale(' + stageScale + ')';
 	}
 	window.remotePanelLayout = layout;
-	// ---- view buttons: hide the machine rack (more room for the faceplate), go full screen ----
-	function setupViewButtons() {
-		const rackButton = document.getElementById('btnRack');
-		const rack = document.getElementById('rack');
-		if (!rackButton) return;
-		if (!rack) { rackButton.style.display = 'none'; return; }
-		let open = false;
-		const apply = function () {
-			document.body.classList.toggle('rackOpen', open);
-			rackButton.classList.toggle('on', open);
-		};
-		apply();
-		rackButton.addEventListener('click', function () { open = !open; apply(); });
-		// Loading a machine closes the overlay, so the panel is usable again right away.
-		window.remotePanelRackDone = function () { open = false; apply(); };
-	}
-
 	// ---- connection ----
 
 	function send(msg) {
 		if (socket && socket.readyState === WebSocket.OPEN) socket.send(msg);
 	}
 	window.remotePanelSend = send;
+
+	function setupSceneControls() {
+		const fader = document.getElementById('sceneFader');
+		const faderFill = fader.querySelector('.sceneFaderFill');
+		const faderThumb = fader.querySelector('.sceneFaderThumb');
+		let faderDrag = null;
+		let faderValue = sceneState ? sceneState.fader : 0;
+		const setFaderValue = function (value, sendValue) {
+			faderValue = Math.max(0, Math.min(127, value));
+			const percent = (faderValue / 127) * 100;
+			faderFill.style.width = percent + '%';
+			faderThumb.style.left = percent + '%';
+			fader.setAttribute('aria-valuenow', String(faderValue));
+			if (sendValue) send('sc fader ' + faderValue);
+		};
+		window.remotePanelSetFader = function (value) {
+			if (!faderDrag) setFaderValue(value, false);
+		};
+		const changeFader = function (delta) {
+			if (!delta) return;
+			setFaderValue(faderValue + delta, true);
+		};
+		fader.addEventListener('pointerdown', function (ev) {
+			ev.preventDefault();
+			try { fader.setPointerCapture(ev.pointerId); } catch (e) { }
+			faderDrag = { pointerId: ev.pointerId, x: ev.clientX, acc: 0 };
+		});
+		fader.addEventListener('pointermove', function (ev) {
+			if (!faderDrag || faderDrag.pointerId !== ev.pointerId) return;
+			const width = fader.getBoundingClientRect().width;
+			if (width <= 0) return;
+			faderDrag.acc += ev.clientX - faderDrag.x;
+			faderDrag.x = ev.clientX;
+			const pixelsPerStep = Math.max(1, width / 127);
+			const steps = Math.trunc(faderDrag.acc / pixelsPerStep);
+			if (steps) {
+				faderDrag.acc -= steps * pixelsPerStep;
+				changeFader(steps);
+			}
+		});
+		const endFaderDrag = function (ev) {
+			if (faderDrag && faderDrag.pointerId === ev.pointerId) faderDrag = null;
+		};
+		fader.addEventListener('pointerup', endFaderDrag);
+		fader.addEventListener('pointercancel', endFaderDrag);
+		fader.addEventListener('keydown', function (ev) {
+			if (ev.key === 'ArrowRight' || ev.key === 'ArrowUp') changeFader(1);
+			else if (ev.key === 'ArrowLeft' || ev.key === 'ArrowDown') changeFader(-1);
+			else if (ev.key === 'Home') setFaderValue(0, true);
+			else if (ev.key === 'End') setFaderValue(127, true);
+			else return;
+			ev.preventDefault();
+		});
+		setFaderValue(faderValue, false);
+		document.getElementById('sceneMuteA').addEventListener('click', function () { send('sc mute A ' + (sceneState && sceneState.muteA ? '0' : '1')); });
+		document.getElementById('sceneMuteB').addEventListener('click', function () { send('sc mute B ' + (sceneState && sceneState.muteB ? '0' : '1')); });
+		document.getElementById('sceneEditA').addEventListener('click', function () { send('sc edit ' + (sceneState && sceneState.editSide === 0 ? '-1' : '0')); });
+		document.getElementById('sceneEditB').addEventListener('click', function () { send('sc edit ' + (sceneState && sceneState.editSide === 1 ? '-1' : '1')); });
+		document.getElementById('sceneClear').addEventListener('click', function () { send('sc clear'); });
+		document.getElementById('sceneErase').addEventListener('click', function () { send('sc erase'); });
+	}
+
+	function applySceneInfo(json) {
+		try { sceneState = JSON.parse(json); } catch (e) { return; }
+		if (!sceneState) return;
+		const editA = document.getElementById('sceneEditA'), editB = document.getElementById('sceneEditB');
+		if (sceneState.sceneA !== undefined) editA.textContent = 'A ' + String(sceneState.sceneA + 1).padStart(2, '0') + (sceneState.lockedA ? ' *' : '');
+		if (sceneState.sceneB !== undefined) editB.textContent = 'B ' + String(sceneState.sceneB + 1).padStart(2, '0') + (sceneState.lockedB ? ' *' : '');
+		if (sceneState.fader !== undefined) {
+			if (window.remotePanelSetFader) window.remotePanelSetFader(sceneState.fader);
+		}
+		const muteA = document.getElementById('sceneMuteA'), muteB = document.getElementById('sceneMuteB');
+		muteA.classList.toggle('active', !!sceneState.muteA); muteB.classList.toggle('active', !!sceneState.muteB);
+		muteA.textContent = sceneState.muteA ? 'A MUTED' : 'MUTE A'; muteB.textContent = sceneState.muteB ? 'B MUTED' : 'MUTE B';
+		editA.classList.toggle('active', sceneState.editSide === 0); editB.classList.toggle('active', sceneState.editSide === 1);
+		const lock = sceneState.editSide === 0 ? sceneState.lockedA : (sceneState.editSide === 1 ? sceneState.lockedB : false);
+		document.getElementById('sceneClear').disabled = sceneState.editSide < 0 || !lock;
+		document.getElementById('sceneErase').disabled = sceneState.editSide < 0 || !lock;
+	}
 
 	function connect() {
 		const proto = location.protocol === 'https:' ? 'wss://' : 'ws://';
@@ -138,6 +201,8 @@
 			if (ev.data instanceof ArrayBuffer) applyState(new Uint8Array(ev.data));
 			else if (typeof ev.data === 'string' && ev.data.charAt(0) === 'M' && window.remotePanelMachineInfo)
 				window.remotePanelMachineInfo(ev.data.substring(2));
+			else if (typeof ev.data === 'string' && ev.data.charAt(0) === 'C')
+				applySceneInfo(ev.data.substring(2));
 		};
 		socket.onclose = function () {
 			document.getElementById('overlay').classList.remove('hidden');
@@ -547,7 +612,7 @@
 	bindEncoders();
 	bindXy();
 	bindSwitch();
-	setupViewButtons();
+	setupSceneControls();
 	layout();
 	window.addEventListener('resize', layout);
 	window.addEventListener('orientationchange', function () { setTimeout(layout, 100); });
