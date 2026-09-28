@@ -72,6 +72,7 @@ namespace mdJucePlugin
 				initial = i;
 		selectFamily(initial);
 		refreshTrack();
+		refreshMute();
 		startTimerHz(4);
 	}
 
@@ -85,6 +86,19 @@ namespace mdJucePlugin
 		auto* const header = addChild(m_root, "rackHeader");
 		addChild(header, "rackTitle", "MACHINES");
 		m_trackBadge = addChild(header, "rackTrack", "TRACK --");
+		// this computer's output only: a remote panel page keeps playing (Settings > DSP/Audio has it too)
+		m_muteBadge = addChild(header, "rackTab rackMute", "MUTE PC");
+		m_muteBadge->SetAttribute("title", std::string("Silence this computer's output; the remote panel still plays"));
+		{
+			const std::weak_ptr<void> lifetime = m_lifetime;
+			juceRmlUi::EventListener::AddClick(m_muteBadge, [this, lifetime]
+			{
+				if(lifetime.expired())
+					return;
+				m_processor.setOutputMuted(!m_processor.isOutputMuted());
+				refreshMute();
+			});
+		}
 		m_tabs = addChild(header, "rackTabs");
 		m_hint = addChild(m_root, "rackHint", "Tap a machine to load it on the current track");
 		m_accentLeft = addChild(m_root, "rackAccentLeft");
@@ -187,6 +201,7 @@ namespace mdJucePlugin
 	{
 		++m_ticks;
 		refreshTrack();
+		refreshMute();
 		const bool extended = m_processor.isExtendedOs();
 		if(extended != m_extendedOs)
 		{
@@ -208,6 +223,20 @@ namespace mdJucePlugin
 		m_trackBadge->SetInnerRML(track < 0 ? std::string("TRACK --")
 			: "TRACK " + std::to_string(track + 1) + (m_model == md::MachineModel::Machinedrum
 				? " \u00b7 " + md::machines::trackName(m_model, static_cast<uint32_t>(track)) : std::string()));
+	}
+
+	void MachineRack::refreshMute()
+	{
+		const int muted = m_processor.isOutputMuted() ? 1 : 0;
+		if(muted == m_muteShown)
+			return;
+		m_muteShown = muted;
+		m_muteBadge->SetInnerRML(muted ? "PC MUTED" : "MUTE PC");
+		m_muteBadge->SetClass("active", muted != 0);
+		if(muted)
+			m_muteBadge->SetProperty("background-color", "#ff5a4e");
+		else
+			m_muteBadge->RemoveProperty("background-color");
 	}
 
 	void MachineRack::refreshSlots()

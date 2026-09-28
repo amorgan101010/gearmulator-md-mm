@@ -248,3 +248,9 @@
 {
 	left: 550dp;
 }
+.rackMute
+{
+	margin-left: 0dp;
+	margin-right: 18dp;
+	padding: 0dp 12dp;
+}

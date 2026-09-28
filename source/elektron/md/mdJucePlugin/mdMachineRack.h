@@ -32,6 +32,7 @@ namespace mdJucePlugin
 		void selectFamily(size_t _index);
 		void rebuildTiles();
 		void refreshTrack();
+		void refreshMute();
 		void refreshSlots();
 		void confirm(uint16_t _machineId, const std::string& _name);
 		void markAssigned(uint16_t _machineId);
@@ -41,6 +42,8 @@ namespace mdJucePlugin
 		md::MachineModel m_model;
 		Rml::Element* m_root = nullptr;
 		Rml::Element* m_trackBadge = nullptr;
+		Rml::Element* m_muteBadge = nullptr;
+		int m_muteShown = -1;
 		Rml::Element* m_tabs = nullptr;
 		Rml::Element* m_grid = nullptr;
 		Rml::Element* m_hint = nullptr;
