@@ -275,6 +275,14 @@ set_tests_properties(mdEncoderPressFirmwareTest mmEncoderPressFirmwareTest PROPE
 	LABELS "Integration;FirmwareTest" SKIP_RETURN_CODE 77 TIMEOUT 300)
 set_property(TARGET encoderPressFirmwareTest PROPERTY FOLDER "Elektron/test")
 
+add_executable(panelQuickTapFirmwareTest panelQuickTapFirmwareTest.cpp)
+target_link_libraries(panelQuickTapFirmwareTest PRIVATE mdLib)
+add_test(NAME mdPanelQuickTapFirmwareTest COMMAND panelQuickTapFirmwareTest md)
+add_test(NAME mmPanelQuickTapFirmwareTest COMMAND panelQuickTapFirmwareTest mm)
+set_tests_properties(mdPanelQuickTapFirmwareTest mmPanelQuickTapFirmwareTest PROPERTIES
+	LABELS "Integration;FirmwareTest" SKIP_RETURN_CODE 77 TIMEOUT 300)
+set_property(TARGET panelQuickTapFirmwareTest PROPERTY FOLDER "Elektron/test")
+
 # Local headless render benchmark (not upstream). Same compile flags as mdLib, no test registration.
 add_executable(mdmmBench mdmmBench.cpp)
 target_link_libraries(mdmmBench PRIVATE mdLib)

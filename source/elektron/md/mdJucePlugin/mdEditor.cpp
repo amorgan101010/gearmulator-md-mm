@@ -980,7 +980,9 @@ namespace mdJucePlugin
 		}
 	}
 
-	// One step per timer tick, so the firmware sees distinct press and release edges.
+	// One pulse per timer tick: its press and release go together. The firmware takes a press and
+	// release that reach it at the same instant (panelQuickTapFirmwareTest, MD and MM), so a tick
+	// between them only made a pulse, and each page step of navigation, a tick slower.
 	void Editor::servicePanelQueue()
 	{
 		if(m_panelSteps.empty())
@@ -989,14 +991,19 @@ namespace mdJucePlugin
 			return;
 		}
 
-		const auto step = m_panelSteps.front();
-
-		const auto combined = step.press ? m_panelRows.press(step.packet) : m_panelRows.release(step.packet);
-		// Navigation pulses are retryable: do not advance to the matching release
-		// until this row state actually entered the bounded FIFO.
-		if(!sendPanelEvent(combined.row, combined.mask))
-			return;
-		m_panelSteps.pop_front();
+		PanelStep step;
+		do
+		{
+			step = m_panelSteps.front();
+			const auto combined = step.press ? m_panelRows.press(step.packet) : m_panelRows.release(step.packet);
+			// Navigation pulses are retryable: do not advance to the matching release
+			// until this row state actually entered the bounded FIFO.
+			if(!sendPanelEvent(combined.row, combined.mask))
+				return;
+			m_panelSteps.pop_front();
+		}
+		while(step.press && !m_panelSteps.empty() && !m_panelSteps.front().press
+			&& m_panelSteps.front().packet == step.packet);
 
 		// Give the firmware a complete timer interval to update its LED readback
 		// before deciding whether the pending direct-selection target needs another
@@ -3693,8 +3700,13 @@ namespace mdJucePlugin
 				{
 					if(const auto packet = md::panelEncoderPressPacket(getModel(), encoderKnob(i).second))
 					{
-						m_panelSteps.push_back({ *packet, true });
-						m_panelSteps.push_back({ *packet, false });
+						// Straight to the machine, as a click on the knob is: the firmware takes a
+						// press and release together, and the pulse queue would put the tap behind
+						// any navigation still stepping.
+						const auto down = m_panelRows.press(*packet);
+						(void)sendPanelEvent(down.row, down.mask);
+						const auto up = m_panelRows.release(*packet);
+						(void)sendPanelEvent(up.row, up.mask);
 					}
 				}
 				releaseKeyboardEncoderPress();
