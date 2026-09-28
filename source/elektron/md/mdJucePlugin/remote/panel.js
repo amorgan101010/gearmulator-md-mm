@@ -15,8 +15,13 @@
 	const STATE_HEADER = 2;
 	const VRAM_SIZE = 2 * 8 * 64;
 	const LETTERS = 'ABCDEFGH';
-	const LCD_ON = IS_MM ? [0x1a, 0x2b, 0x1e] : [0xf4, 0xa0, 0x6c];
-	const LCD_OFF = IS_MM ? [0xb9, 0xc8, 0xb2] : [0x3a, 0x14, 0x0e];
+	// a skin's remote.css may recolour the display with --lcd-on / --lcd-off (#rrggbb)
+	function cssColor(name, fallback) {
+		const m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(getComputedStyle(document.documentElement).getPropertyValue(name).trim());
+		return m ? [parseInt(m[1], 16), parseInt(m[2], 16), parseInt(m[3], 16)] : fallback;
+	}
+	const LCD_ON = cssColor('--lcd-on', IS_MM ? [0x1a, 0x2b, 0x1e] : [0xf4, 0xa0, 0x6c]);
+	const LCD_OFF = cssColor('--lcd-off', IS_MM ? [0xb9, 0xc8, 0xb2] : [0x3a, 0x14, 0x0e]);
 
 	let socket = null;
 	let reconnectTimer = null;

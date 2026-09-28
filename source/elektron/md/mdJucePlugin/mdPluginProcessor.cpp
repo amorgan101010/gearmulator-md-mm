@@ -670,6 +670,28 @@ namespace mdJucePlugin
 		};
 		callbacks.resource = [this](const std::string& _path, std::string& _data, std::string& _mime)
 		{
+			// "skin/<file>" comes from the folder of the skin chosen in the window, so a disk skin can theme
+			// the page with a remote.css of its own. Embedded skins and skins without one get an empty sheet.
+			if(_path.rfind("skin/", 0) == 0)
+			{
+				const auto skinFolder = getConfig().getValue("skinFolder", "");
+				const auto folder = skinFolder.isEmpty() ? juce::File() : juce::File(skinFolder);
+				const auto file = folder.getChildFile(juce::String::fromUTF8(_path.substr(5).c_str()));
+				juce::MemoryBlock block;
+				if(folder != juce::File() && file.isAChildOf(folder) && file.existsAsFile() && file.loadFileAsData(block))
+				{
+					_data.assign(static_cast<const char*>(block.getData()), block.getSize());
+					_mime.clear();
+					return true;
+				}
+				if(_path != "skin/remote.css")
+					return false;
+				_data.clear();
+				_mime = "text/css";
+				return true;
+			}
+
+
 			// a "remote" folder next to the firmware overrides the embedded web app, handy while editing it
 			const auto file = juce::File(juce::String::fromUTF8(getDataFolder().c_str())).getChildFile("remote").getChildFile(juce::String::fromUTF8(_path.c_str()));
 			if(file.existsAsFile())
