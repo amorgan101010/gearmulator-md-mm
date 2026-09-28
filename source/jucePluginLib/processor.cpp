@@ -908,6 +908,8 @@ namespace pluginLib
 		instrumentation.setMidiInputSummary(diagnosticMidiEvents, diagnosticMidiBytes);
 		getPlugin().process(inputs, outputs, numSamples, bpm, ppqPos, isPlaying, ppqKnown);
 
+		observeOutput(outputs, static_cast<size_t>(numSamples), getSampleRate(), isNonRealtime());
+
 		applyOutputGain(outputs, numSamples);
 
 		m_midiOut.clear();

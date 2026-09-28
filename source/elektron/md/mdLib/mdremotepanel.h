@@ -44,6 +44,17 @@ namespace md
 		                      hello                          ask for the current state right away
 		                    The server pushes "C <json>" with the current Kit's scene assignments,
 		                    fader, mute flags, stored locks, and edit side.
+
+		Sound, the same protocol as the digiemu and octemu remotes:
+		                      "A <rate>"   (server, text) the sample rate of the sound it can stream; 0 while
+		                                   there is none (no blocks, or a host rendering offline)
+		                      a <1|0>      (page) stream the sound to this page, or stop
+		                      binary 'A', then 16-bit LE stereo PCM: Main A/B (not C/D, E/F), every 20 ms,
+		                                   only to pages that asked
+		                    The sound is taken before the plugin's output gain, so the host can be turned
+		                    down while a tablet plays. The audio thread only copies into a lock-free ring
+		                    (feedAudio); a page whose socket is backed up misses blocks rather than holding
+		                    up the others.
 	*/
 	class RemotePanelServer
 	{
@@ -80,6 +91,10 @@ namespace md
 		int getPort() const { return m_port; }
 		size_t getClientCount() const;
 
+		// Audio thread: one block of Main A/B. _sampleRate 0 means the block is not real time (offline
+		// render) and is not streamed. Never blocks; does nothing but count while no page listens.
+		void feedAudio(const float* _left, const float* _right, size_t _frames, uint32_t _sampleRate);
+
 		static std::vector<uint8_t> encodeState(MachineModel _model, const FrontPanel& _panel);
 
 	private:
@@ -90,19 +105,23 @@ namespace md
 			std::vector<uint8_t> lastState;
 			std::string lastMachineInfo;
 			std::string lastSceneInfo;
+			std::atomic<int> lastRate{-1};		// the sound rate last told to the page
 			std::atomic<bool> websocket{false};
 			std::atomic<bool> closed{false};
+			std::atomic<bool> sound{false};		// it asked for the sound
 			std::unique_ptr<std::thread> thread;
 		};
 
 		void onClientConnected(std::unique_ptr<networkLib::TcpStream> _stream);
 		void clientThreadFunc(const std::shared_ptr<Client>& _client);
 		void publisherThreadFunc();
+		void soundThreadFunc();
 
 		bool serveHttp(Client& _client, const std::string& _method, const std::string& _path, const std::vector<std::pair<std::string, std::string>>& _headers);
 		bool websocketLoop(Client& _client);
 		bool sendWebSocketFrame(Client& _client, uint8_t _opcode, const uint8_t* _data, size_t _size);
-		void handleMessage(const std::string& _message);
+		void handleMessage(Client& _client, const std::string& _message);
+		void wantSound(Client& _client, bool _on);
 		void releaseAllRows();
 
 		static bool readLine(networkLib::Stream& _stream, std::string& _line);
@@ -114,7 +133,18 @@ namespace md
 
 		std::unique_ptr<networkLib::TcpServer> m_tcpServer;
 		std::unique_ptr<std::thread> m_publisherThread;
+		std::unique_ptr<std::thread> m_soundThread;
 		std::atomic<bool> m_exit{false};
+
+		// sound: a single producer (the audio thread) / single consumer (the sound thread) ring of
+		// stereo frames, 16-bit left in the low half, right in the high half
+		std::vector<uint32_t> m_soundRing;
+		std::atomic<uint64_t> m_soundWrite{0};
+		std::atomic<uint64_t> m_soundRead{0};
+		std::atomic<int> m_soundListeners{0};
+		std::atomic<uint32_t> m_feedRate{0};		// the rate of the last block fed, 0 offline
+		std::atomic<uint64_t> m_feedCount{0};		// blocks fed, so the sound thread sees them flow
+		std::atomic<uint32_t> m_streamRate{0};		// what pages are offered: m_feedRate while blocks flow
 
 		mutable std::mutex m_clientsMutex;
 		std::vector<std::shared_ptr<Client>> m_clients;

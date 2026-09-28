@@ -150,6 +150,14 @@ html, body {
 /* overlay */
 #overlay { position: fixed; left: 0; top: 0; right: 0; bottom: 0; background: #000000aa; color: #eee; display: flex; align-items: center; justify-content: center; font-size: 20px; z-index: 10; }
 #overlay.hidden { display: none; }
+#soundButton { position: fixed; left: calc(10px + env(safe-area-inset-left)); bottom: calc(8px + env(safe-area-inset-bottom)); z-index: 9;
+	height: 32px; padding: 0 12px; box-sizing: border-box; border: 1px solid #464a53; border-radius: 4px; background: #22252b; color: #8d929c;
+	font: inherit; font-size: 11px; font-weight: 700; letter-spacing: 0.04em; touch-action: manipulation; }
+#soundButton.on { border-color: #ffb27a; color: #ffc28e; background: #54351f; }
+#soundButton[hidden] { display: none; }
+.rackHeader #soundButton { position: static; height: 20px; padding: 0 12px; border-radius: 10px; border-color: #2e3138; background: #1a1c20;
+	font-size: 10px; letter-spacing: 1px; margin-right: 18px; white-space: nowrap; }
+.rackHeader #soundButton.on { border-color: #6a4228; color: #ffb27a; background: linear-gradient(#3a2618, #22160e); }
 
 /* XY multitouch pad: permanent, each finger drives two DATA ENTRY encoders */
 .xyPad { background: #0b0c0b; border: 1px dashed #d05f3d99; border-radius: 4px; overflow: visible; z-index: 5; }

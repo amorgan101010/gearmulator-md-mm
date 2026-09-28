@@ -196,23 +196,117 @@
 		socket.onopen = function () {
 			document.getElementById('overlay').classList.add('hidden');
 			send('hello');
+			if (soundOn) send('a 1');
 		};
 		socket.onmessage = function (ev) {
-			if (ev.data instanceof ArrayBuffer) applyState(new Uint8Array(ev.data));
+			if (ev.data instanceof ArrayBuffer) {
+				const bytes = new Uint8Array(ev.data);
+				if (bytes[0] === 0x41) playSound(ev.data);
+				else applyState(bytes);
+			}
 			else if (typeof ev.data === 'string' && ev.data.charAt(0) === 'M' && window.remotePanelMachineInfo)
 				window.remotePanelMachineInfo(ev.data.substring(2));
 			else if (typeof ev.data === 'string' && ev.data.charAt(0) === 'C')
 				applySceneInfo(ev.data.substring(2));
+			else if (typeof ev.data === 'string' && ev.data.charAt(0) === 'A')
+				soundRate(+ev.data.substring(2));
 		};
 		socket.onclose = function () {
 			document.getElementById('overlay').classList.remove('hidden');
 			document.getElementById('overlayText').textContent = 'Connection lost, retrying...';
 			releaseAll();
+			soundRate(0);
 			clearTimeout(reconnectTimer);
 			reconnectTimer = setTimeout(connect, 1000);
 		};
 		socket.onerror = function () { socket.close(); };
 	}
+
+	// ---- sound: Main A/B, streamed while the page asks for it ----
+	/* The same player as the digiemu and octemu remotes. Each block is scheduled on the page's own
+	   clock, playAt running on by exact block lengths: an AudioWorklet needs HTTPS and this page is
+	   plain HTTP. It restarts a cushion ahead after running dry, and drops a block that would put it
+	   more than SLACK past the cushion (Wi-Fi delivers in bursts, and the two clocks drift apart).
+	   ?cushion=<ms> in the address sets how far ahead it plays. */
+
+	const CUSHION = (+new URLSearchParams(location.search).get('cushion') || 150) / 1000;
+	const SLACK = 0.1;
+	const soundBtn = document.createElement('button');
+	soundBtn.id = 'soundButton'; soundBtn.type = 'button'; soundBtn.hidden = true;
+	document.body.appendChild(soundBtn);
+	let actx = null, rate = 0, soundOn = false, playAt = 0, dropouts = 0;
+
+	function soundRate(r) {
+		rate = r;
+		soundBtn.hidden = !r;
+		// the context runs at the stream's rate, so the blocks join without resampling seams
+		if (actx && r && actx.wantedRate !== r) { actx.close(); actx = null; }
+		showSound();
+	}
+
+	function showSound() {
+		const live = actx && actx.state === 'running';
+		soundBtn.classList.toggle('on', soundOn);
+		soundBtn.textContent = !soundOn ? 'SOUND OFF' : !live ? 'TAP FOR SOUND'
+			: dropouts ? 'SOUND ON - ' + dropouts + ' DROPOUTS' : 'SOUND ON';
+	}
+
+	function newContext() {
+		const Ctx = window.AudioContext || window.webkitAudioContext;
+		try { actx = new Ctx({ sampleRate: rate }); } catch (e) { actx = new Ctx(); }
+		actx.wantedRate = rate;
+		actx.onstatechange = showSound;
+	}
+
+	// a click, not pointerdown: iOS lets a page start sound only from one
+	soundBtn.addEventListener('click', function () {
+		if (!rate) return;
+		if (navigator.audioSession) {
+			try { navigator.audioSession.type = 'playback'; } catch (e) { }	// plays past the mute switch
+		}
+		if (!actx) newContext();
+		if (soundOn && actx.state === 'running') {
+			soundOn = false;
+			send('a 0');
+		} else {
+			soundOn = true;
+			actx.resume();
+			const tick = actx.createBufferSource();		// older iOS unlocks on a played buffer
+			tick.buffer = actx.createBuffer(1, 1, actx.sampleRate);
+			tick.connect(actx.destination);
+			tick.start();
+			playAt = 0;
+			send('a 1');
+		}
+		showSound();
+	});
+
+	function playSound(data) {
+		if (!soundOn || !actx || actx.state !== 'running' || !rate) return;
+		const pcm = new Int16Array(data.slice(1, 1 + ((data.byteLength - 1) & ~3)));
+		const n = pcm.length >> 1;
+		if (!n) return;
+		const now = actx.currentTime;
+		if (playAt < now + 0.005) {
+			if (playAt) { dropouts++; showSound(); }
+			playAt = now + CUSHION;
+		} else if (playAt - now > CUSHION + SLACK) {
+			return;
+		}
+		const buf = actx.createBuffer(2, n, rate);
+		const l = buf.getChannelData(0), r = buf.getChannelData(1);
+		for (let i = 0, j = 0; i < n; i++, j += 2) { l[i] = pcm[j] / 32768; r[i] = pcm[j + 1] / 32768; }
+		const src = actx.createBufferSource();
+		src.buffer = buf;
+		src.connect(actx.destination);
+		src.start(playAt);
+		playAt += n / rate;
+	}
+
+	document.addEventListener('visibilitychange', function () {
+		if (!document.hidden && soundOn && actx) { playAt = 0; actx.resume().then(showSound, showSound); }
+	});
+	showSound();
 
 	// ---- state rendering ----
 

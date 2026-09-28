@@ -219,6 +219,16 @@ namespace mdJucePlugin
 			m_editorAskedMs[static_cast<size_t>(reply)] = nowMs();
 	}
 
+	void AudioPluginAudioProcessor::observeOutput(const synthLib::TAudioOutputs& _outputs, const size_t _numSamples,
+		const double _sampleRate, const bool _nonRealtime)
+	{
+		// Main A/B to the remote panel's pages that asked for the sound. Only the constructor and
+		// destructor set m_remotePanel, so reading it here needs no lock.
+		if(m_remotePanel)
+			m_remotePanel->feedAudio(_outputs[0], _outputs[1], _numSamples,
+				_nonRealtime ? 0 : static_cast<uint32_t>(std::lround(_sampleRate)));
+	}
+
 	bool AudioPluginAudioProcessor::sendToPhysicalOut(const synthLib::SMidiEvent& _ev)
 	{
 		const auto id = elektronId(_ev);

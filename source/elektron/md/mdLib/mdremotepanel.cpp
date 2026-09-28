@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cmath>
 #include <optional>
 #include <chrono>
 #include <cstring>
@@ -21,6 +22,9 @@ namespace md
 		constexpr int g_maxPortAttempts = 20;
 		constexpr int g_publishIntervalMs = 16;
 		constexpr size_t g_maxMessageSize = 4096;
+		constexpr int g_soundIntervalMs = 20;			// send the sound this often
+		constexpr size_t g_soundRingFrames = 1 << 15;	// most sound held: 0.68 s at 48 kHz
+		constexpr int g_soundIdleMs = 500;				// no block for this long: nothing to offer
 
 		// --- SHA-1 and base64, needed for the WebSocket handshake only ---
 
@@ -118,6 +122,7 @@ namespace md
 
 	RemotePanelServer::RemotePanelServer(const MachineModel _model, const int _port, Callbacks _callbacks)
 		: m_model(_model), m_port(_port), m_callbacks(std::move(_callbacks))
+		, m_soundRing(g_soundRingFrames)
 	{
 	}
 
@@ -155,6 +160,7 @@ namespace md
 
 		m_exit = false;
 		m_publisherThread = std::make_unique<std::thread>([this] { publisherThreadFunc(); });
+		m_soundThread = std::make_unique<std::thread>([this] { soundThreadFunc(); });
 		LOGNET(networkLib::LogLevel::Info, "Remote panel listening on port " << m_port);
 		return true;
 	}
@@ -183,6 +189,9 @@ namespace md
 		if(m_publisherThread && m_publisherThread->joinable())
 			m_publisherThread->join();
 		m_publisherThread.reset();
+		if(m_soundThread && m_soundThread->joinable())
+			m_soundThread->join();
+		m_soundThread.reset();
 	}
 
 	size_t RemotePanelServer::getClientCount() const
@@ -280,6 +289,7 @@ namespace md
 		const auto wasWebsocket = _client->websocket.load();
 		_client->websocket = false;
 		_client->closed = true;
+		wantSound(*_client, false);
 		if(_client->stream)
 			_client->stream->close();
 		// a panel that goes away must not leave keys held down on the machine
@@ -469,7 +479,7 @@ namespace md
 				fragmented.append(payload.begin(), payload.end());
 				if(fin)
 				{
-					handleMessage(fragmented);
+					handleMessage(_client, fragmented);
 					fragmented.clear();
 				}
 				break;
@@ -486,7 +496,7 @@ namespace md
 		return true;
 	}
 
-	void RemotePanelServer::handleMessage(const std::string& _message)
+	void RemotePanelServer::handleMessage(Client& _client, const std::string& _message)
 	{
 		std::istringstream ss(_message);
 		std::string type;
@@ -501,8 +511,18 @@ namespace md
 				c->lastState.clear();
 				c->lastMachineInfo.clear();
 				c->lastSceneInfo.clear();
+				c->lastRate = -1;
 			}
 			m_infoForce = true;
+			return;
+		}
+
+		if(type == "a")
+		{
+			int on = -1;
+			ss >> on;
+			if(on == 0 || on == 1)
+				wantSound(_client, on == 1);
 			return;
 		}
 
@@ -668,7 +688,26 @@ namespace md
 					if(c->websocket && !c->closed)
 						clients.push_back(c);
 			}
-			if(clients.empty() || !m_callbacks.snapshot)
+			if(clients.empty())
+				continue;
+
+			// the rate of the sound a page can ask for, told whenever it changes
+			const auto rate = static_cast<int>(m_streamRate.load(std::memory_order_acquire));
+			for(auto& c : clients)
+			{
+				if(c->lastRate == rate)
+					continue;
+				const auto text = "A " + std::to_string(rate);
+				if(!sendWebSocketFrame(*c, 1, reinterpret_cast<const uint8_t*>(text.data()), text.size()))
+				{
+					c->closed = true;
+					c->stream->close();
+					continue;
+				}
+				c->lastRate = rate;
+			}
+
+			if(!m_callbacks.snapshot)
 				continue;
 
 			const auto state = encodeState(m_model, m_callbacks.snapshot());
@@ -710,6 +749,113 @@ namespace md
 					continue;
 				c->lastState = state;
 				if(!sendWebSocketFrame(*c, 2, state.data(), state.size()))
+				{
+					c->closed = true;
+					c->stream->close();
+				}
+			}
+		}
+	}
+
+	void RemotePanelServer::feedAudio(const float* _left, const float* _right, const size_t _frames, const uint32_t _sampleRate)
+	{
+		m_feedRate.store(_sampleRate, std::memory_order_relaxed);
+		m_feedCount.fetch_add(1, std::memory_order_release);
+
+		if(!_left || !_frames || !_sampleRate || m_soundListeners.load(std::memory_order_acquire) <= 0)
+			return;
+		if(!_right)
+			_right = _left;
+
+		const auto size = m_soundRing.size();
+		const auto w = m_soundWrite.load(std::memory_order_relaxed);
+		const auto r = m_soundRead.load(std::memory_order_acquire);
+		// the sound thread is not taking it: this block goes, the ring keeps what it has
+		if(w - r + _frames > size)
+			return;
+
+		auto toInt16 = [](const float _v) -> uint32_t
+		{
+			// NaN goes to silence
+			const float v = _v >= 1.0f ? 1.0f : _v >= -1.0f ? _v : _v < -1.0f ? -1.0f : 0.0f;
+			return static_cast<uint16_t>(static_cast<int16_t>(std::lrint(v * 32767.0f)));
+		};
+		for(size_t i = 0; i < _frames; ++i)
+			m_soundRing[(w + i) & (size - 1)] = toInt16(_left[i]) | (toInt16(_right[i]) << 16);
+		m_soundWrite.store(w + _frames, std::memory_order_release);
+	}
+
+	void RemotePanelServer::wantSound(Client& _client, bool _on)
+	{
+		_on = _on && !_client.closed;
+		if(_client.sound.exchange(_on) == _on)
+			return;
+		m_soundListeners.fetch_add(_on ? 1 : -1, std::memory_order_acq_rel);
+	}
+
+	void RemotePanelServer::soundThreadFunc()
+	{
+		const auto idle = std::chrono::milliseconds(g_soundIdleMs);
+		const auto mask = m_soundRing.size() - 1;
+		std::vector<uint8_t> frame;
+		frame.reserve(1 + m_soundRing.size() * 4);
+		uint64_t lastCount = m_feedCount.load(std::memory_order_acquire);
+		auto lastFed = std::chrono::steady_clock::now() - idle;
+
+		while(!m_exit)
+		{
+			std::this_thread::sleep_for(std::chrono::milliseconds(g_soundIntervalMs));
+
+			// offer the sound only while blocks come: a stopped audio device or a host that suspends
+			// the plugin sends nothing, and a page would only run dry
+			const auto now = std::chrono::steady_clock::now();
+			const auto count = m_feedCount.load(std::memory_order_acquire);
+			if(count != lastCount)
+			{
+				lastCount = count;
+				lastFed = now;
+			}
+			const auto rate = now - lastFed < idle ? m_feedRate.load(std::memory_order_relaxed) : 0u;
+			m_streamRate.store(rate, std::memory_order_release);
+
+			const auto w = m_soundWrite.load(std::memory_order_acquire);
+			const auto r = m_soundRead.load(std::memory_order_relaxed);
+			if(w == r)
+				continue;
+			if(!rate || m_soundListeners.load(std::memory_order_acquire) <= 0)
+			{
+				m_soundRead.store(w, std::memory_order_release);	// nobody to send it to: none kept
+				continue;
+			}
+
+			const auto n = static_cast<size_t>(w - r);
+			frame.resize(1 + n * 4);
+			frame[0] = 'A';
+			for(size_t i = 0; i < n; ++i)
+			{
+				const auto v = m_soundRing[(r + i) & mask];
+				auto* const out = &frame[1 + i * 4];
+				out[0] = static_cast<uint8_t>(v);
+				out[1] = static_cast<uint8_t>(v >> 8);
+				out[2] = static_cast<uint8_t>(v >> 16);
+				out[3] = static_cast<uint8_t>(v >> 24);
+			}
+			m_soundRead.store(w, std::memory_order_release);
+
+			std::vector<std::shared_ptr<Client>> clients;
+			{
+				std::lock_guard lock(m_clientsMutex);
+				for(auto& c : m_clients)
+					if(c->websocket && !c->closed && c->sound)
+						clients.push_back(c);
+			}
+			for(auto& c : clients)
+			{
+				// a page whose socket is backed up (Wi-Fi fading, a tablet asleep) misses this block:
+				// waiting on it would hold up every other page
+				if(!c->stream->canWrite())
+					continue;
+				if(!sendWebSocketFrame(*c, 2, frame.data(), frame.size()))
 				{
 					c->closed = true;
 					c->stream->close();

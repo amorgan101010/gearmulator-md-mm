@@ -27,6 +27,9 @@
 	const track = el('div', 'rackTrack', 'TRACK --');
 	const tabs = el('div', 'rackTabs');
 	header.appendChild(title); header.appendChild(track); header.appendChild(tabs);
+	// panel.js's sound button sits here, clear of the scene strip, rather than in a corner of the screen
+	const soundButton = document.getElementById('soundButton');
+	if (soundButton) header.insertBefore(soundButton, tabs);
 	const accent = el('div', 'rackAccent');
 	const grid = el('div', 'rackGrid');
 	const hint = el('div', 'rackHint', 'Connecting...');

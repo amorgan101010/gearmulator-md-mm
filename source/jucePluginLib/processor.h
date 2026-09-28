@@ -13,6 +13,7 @@
 
 #include "bridgeLib/types.h"
 
+#include "synthLib/audioTypes.h"
 #include "synthLib/midiRoutingMatrix.h"
 #include "synthLib/plugin.h"
 
@@ -180,6 +181,10 @@ namespace pluginLib
 		// Every event that reaches addMidiEvent, before routing (MIDI, audio or
 		// message thread): lets a plugin note what arrived on its MIDI In.
 		virtual void observeMidiEvent(const synthLib::SMidiEvent&) {}
+		// Each block the device rendered, on the audio thread, before the output gain: lets a
+		// plugin pass its sound on (the remote panel streams it). Must not block.
+		virtual void observeOutput(const synthLib::TAudioOutputs&, size_t /*_numSamples*/,
+			double /*_sampleRate*/, bool /*_nonRealtime*/) {}
 
 		bool rebootDevice();
 

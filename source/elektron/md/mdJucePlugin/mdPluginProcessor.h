@@ -50,6 +50,8 @@ namespace mdJucePlugin
 		// and a dump nobody asked for (SEND on the machine), still go out.
 		bool sendToPhysicalOut(const synthLib::SMidiEvent& _ev) override;
 		void observeMidiEvent(const synthLib::SMidiEvent& _ev) override;
+		void observeOutput(const synthLib::TAudioOutputs& _outputs, size_t _numSamples, double _sampleRate,
+			bool _nonRealtime) override;
 
 		md::MachineModel getModel() const { return m_model; }
 		static md::MachineModel getCompiledProductModel();

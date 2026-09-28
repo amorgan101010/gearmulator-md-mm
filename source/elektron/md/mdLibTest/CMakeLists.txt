@@ -45,6 +45,15 @@ add_test(NAME mdTurboMidiUnitTest COMMAND mdTurboMidiUnitTest)
 set_tests_properties(mdTurboMidiUnitTest PROPERTIES LABELS "UnitTest;Midi")
 set_property(TARGET mdTurboMidiUnitTest PROPERTY FOLDER "Elektron")
 
+# The remote panel's sound stream over real sockets (Linux: MSG_NOSIGNAL), no firmware needed.
+if(UNIX AND NOT APPLE)
+	add_executable(mdRemotePanelSoundTest remotePanelSoundTest.cpp)
+	target_link_libraries(mdRemotePanelSoundTest PRIVATE mdLib Threads::Threads)
+	add_test(NAME mdRemotePanelSoundTest COMMAND mdRemotePanelSoundTest)
+	set_tests_properties(mdRemotePanelSoundTest PROPERTIES LABELS "UnitTest;RemotePanel" TIMEOUT 30)
+	set_property(TARGET mdRemotePanelSoundTest PROPERTY FOLDER "Elektron/test")
+endif()
+
 # Manual peer-register check for MD 1.63/MM 1.32b, independent of the sender.
 # Requires locally supplied ROM and cache/patch fixtures; no firmware is bundled.
 add_executable(mdTurboMidiFirmwareTest turboMidiFirmwareTest.cpp)

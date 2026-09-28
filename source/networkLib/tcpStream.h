@@ -20,6 +20,8 @@ namespace networkLib
 		void close() override;
 		bool isValid() const override;
 		bool flush() override;
+		// true if a write would not block right now (the socket has send buffer room)
+		bool canWrite() const;
 
 		auto* getPtypesStream() const { return m_stream; }
 
