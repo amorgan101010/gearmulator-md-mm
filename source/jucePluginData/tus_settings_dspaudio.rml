@@ -54,6 +54,16 @@
 			<input id="sliderGain" class="settings-slider-h" type="range" min="-24" max="24" step="1" value="0" style="width: 90%;"/>
 			<label id="labelGain">+6 dB</label>
 		</div>
+		<table class="settings-table" style="padding-top: 0.5em;">
+			<tr class="settings-tr">
+				<td class="settings-td">
+					<div id="btMuteOutput" class="settings-checkboxwithlabel">
+						<button id="button" class="settings-checkbox"/>
+						<label>Mute (a remote panel still plays)</label>
+					</div>
+				</td>
+			</tr>
+		</table>
 		<settingsspacer1/>
 		<h1>Resampler</h1>
 		<settingsspacer1/>

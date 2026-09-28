@@ -2,6 +2,7 @@
 
 #include <juce_audio_processors/juce_audio_processors.h>
 
+#include <algorithm>
 #include <atomic>
 #include <mutex>
 
@@ -118,6 +119,15 @@ namespace pluginLib
 
 		template<size_t N> void applyOutputGain(std::array<float*, N>& _buffers, const size_t _numSamples)
 		{
+			if(isOutputMuted())
+			{
+				for (float* buf : _buffers)
+				{
+					if (buf)
+						std::fill_n(buf, _numSamples, 0.0f);
+				}
+				return;
+			}
 			applyGain(_buffers, _numSamples, getOutputGain());
 		}
 
@@ -146,6 +156,16 @@ namespace pluginLib
 		void setOutputGain(const float _gain)
 		{
 			m_outputGain.store(_gain, std::memory_order_relaxed);
+		}
+		// Silences what the plugin hands the host, after observeOutput: a remote panel page still
+		// gets the sound. Not saved with the state, so a restart is never silent by surprise.
+		bool isOutputMuted() const
+		{
+			return m_outputMuted.load(std::memory_order_relaxed);
+		}
+		void setOutputMuted(const bool _muted)
+		{
+			m_outputMuted.store(_muted, std::memory_order_relaxed);
 		}
 		
 		bool setDspClockPercent(uint32_t _percent = 100);
@@ -278,6 +298,7 @@ namespace pluginLib
 		static_assert(std::atomic<float>::is_always_lock_free,
 			"Realtime output gain publication requires lock-free float atomics");
 		std::atomic<float> m_outputGain{1.0f};
+		std::atomic<bool> m_outputMuted{false};
 		float m_inputGain = 1.0f;
 		uint32_t m_dspClockPercent = 100;
 		float m_preferredDeviceSamplerate = 0.0f;
