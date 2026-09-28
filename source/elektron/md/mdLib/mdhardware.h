@@ -272,12 +272,22 @@ namespace md
 		// thread-safe, allocation-free, and never waits; false reports that the FIFO
 		// rejected the packet. Row state is retained for recovery, while pulse commands
 		// are best effort and may be retried. Both outcomes are visible via telemetry.
-		bool trySendPanelEvent(uint8_t _cmd, uint8_t _arg);
-		void sendPanelEvent(uint8_t _cmd, uint8_t _arg)
+		// A row snapshot is merged with what the other sources hold (PanelSourceRows): the one
+		// short wait is on that merge, shared only by the threads that send input, never the
+		// emulation thread.
+		bool trySendPanelEvent(uint8_t _cmd, uint8_t _arg, PanelSource _source = PanelSource::Editor);
+		void sendPanelEvent(uint8_t _cmd, uint8_t _arg, PanelSource _source = PanelSource::Editor)
 		{
-			(void)trySendPanelEvent(_cmd, _arg);
+			(void)trySendPanelEvent(_cmd, _arg, _source);
 		}
 		size_t getPendingPanelInputBytes() const;
+		// The input this machine drains. Device shares one across a state restore's hardware swap.
+		void setPanelInput(std::shared_ptr<PanelInput> _input)
+		{
+			m_panelInput = std::move(_input);
+			m_panelIn = &m_panelInput->queue();
+		}
+		const std::shared_ptr<PanelInput>& getPanelInput() const { return m_panelInput; }
 		size_t getPanelInputOverflowCount() const;
 		PanelInputQueueStatus getPanelInputStatus() const;
 
@@ -427,8 +437,14 @@ namespace md
 		size_t m_midiInByteCursor = 0;
 		RealtimeMidiByteQueue<64> m_realtimeMidiIn;
 
-		// Panel input events pending delivery to UART2 RX.
-		PanelInputQueue m_panelIn;
+		// Panel input events pending delivery to UART2 RX: the owning Device's (setPanelInput),
+		// so senders can reach it without the device lock. m_panelIn is its queue, kept as a plain
+		// pointer for the per-instruction checks.
+		std::shared_ptr<PanelInput> m_panelInput = std::make_shared<PanelInput>();
+		PanelInputQueue* m_panelIn = &m_panelInput->queue();
+		// The row snapshots the firmware has been sent, 0x20..0x26. Emulation thread only: MIDI pads
+		// press and release against it, so a pad hit leaves the keys a window or page holds down.
+		std::array<uint8_t, 7> m_panelDeliveredRows{};
 
 	};
 }

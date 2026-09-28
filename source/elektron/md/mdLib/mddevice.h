@@ -172,9 +172,9 @@ namespace md
 		}
 		// Panel interaction remains directed at the audible live machine while a
 		// replacement is prepared. It is intentionally ephemeral across the reboot.
-		bool sendPanelEvent(uint8_t _command, uint8_t _argument)
+		bool sendPanelEvent(uint8_t _command, uint8_t _argument, PanelSource _source = PanelSource::Editor)
 		{
-			return m_hardware->trySendPanelEvent(_command, _argument);
+			return m_hardware->trySendPanelEvent(_command, _argument, _source);
 		}
 		PanelInputQueueStatus getPanelInputStatus() const
 		{
@@ -184,6 +184,11 @@ namespace md
 		std::shared_ptr<FrontPanelPublisher> getFrontPanelPublisher() const
 		{
 			return m_frontPanelPublisher;
+		}
+		// Send panel input through this without the device lock (see PanelInput).
+		std::shared_ptr<PanelInput> getPanelInput() const
+		{
+			return m_panelInput;
 		}
 		FrontPanelPublishedState getFrontPanelPublishedState() const
 		{
@@ -250,6 +255,7 @@ namespace md
 		std::shared_ptr<FrontPanelPublisher> m_frontPanelPublisher;
 		std::shared_ptr<const PreparationContext> m_preparationContext;
 		std::unique_ptr<Hardware> m_hardware;
+		std::shared_ptr<PanelInput> m_panelInput;   // the first Hardware's, kept across swaps
 		std::unique_ptr<PreparedState> m_deferredPreparedState;
 		std::shared_ptr<const std::vector<uint8_t>> m_requestedState;
 		synthLib::StateType m_requestedStateType = synthLib::StateTypeGlobal;

@@ -188,14 +188,20 @@ namespace mdJucePlugin
 		auto& diagnostics = plugin.getRealtimeInstrumentation();
 		const auto model = static_cast<uint32_t>(getModel());
 		const auto token = diagnostics.beginPanelInput(model, _command, _argument);
-		const auto accepted = plugin.withDeviceLocked(
-			[&](synthLib::Device* const _device)
+		// The device lock is held by the audio thread for its whole block, so taking it for every
+		// press or detent made input wait up to a block, longer near realtime. The device's panel
+		// input outlives neither it nor a device switch unnoticed: fetch it again, under the lock,
+		// only when it has been retired.
+		if(!m_panelInput || m_panelInput->isRetired())
+		{
+			m_panelInput = plugin.withDeviceLocked([](synthLib::Device* const _device)
 			{
 				auto* const device = dynamic_cast<md::Device*>(_device);
-				if(!device)
-					return false;
-				return device->sendPanelEvent(_command, _argument);
+				return device ? device->getPanelInput() : std::shared_ptr<md::PanelInput>();
 			});
+		}
+		const bool accepted = m_panelInput
+			&& m_panelInput->trySend(_command, _argument, md::PanelSource::Editor);
 		diagnostics.endPanelInput(token, model, _command, _argument, accepted);
 		return accepted;
 	}
@@ -2342,21 +2348,9 @@ namespace mdJucePlugin
 			return;
 		const auto argument = static_cast<uint8_t>(_steps > 0 ? 0x01 : 0xff);
 		const auto count = std::min(std::abs(_steps), g_encoderBurstCap);
-		// The whole burst goes in under one device lock. Taking the lock waits for the audio thread to finish its
-		// block, so a lock per step made a burst wait for several blocks when the machine runs close to realtime.
-		auto& plugin = getProcessor().getPlugin();
-		auto& diagnostics = plugin.getRealtimeInstrumentation();
-		const auto model = static_cast<uint32_t>(getModel());
-		plugin.withDeviceLocked([&](synthLib::Device* const _device)
-		{
-			auto* const device = dynamic_cast<md::Device*>(_device);
-			for(int step = 0; step < count; ++step)
-			{
-				const auto token = diagnostics.beginPanelInput(model, *command, argument);
-				const bool accepted = device && device->sendPanelEvent(*command, argument);
-				diagnostics.endPanelInput(token, model, *command, argument, accepted);
-			}
-		});
+		// sendPanelEvent no longer takes the device lock, so a burst no longer waits for audio blocks.
+		for(int step = 0; step < count; ++step)
+			(void)sendPanelEvent(*command, argument);
 	}
 
 	void Editor::createLeds()

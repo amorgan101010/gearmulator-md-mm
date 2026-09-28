@@ -1075,25 +1075,26 @@ namespace md
 		m_mdLinkAwaitFresh = true;
 	}
 
-	bool Hardware::trySendPanelEvent(const uint8_t _cmd, const uint8_t _arg)
+	bool Hardware::trySendPanelEvent(const uint8_t _cmd, const uint8_t _arg, const PanelSource _source)
 	{
-		registerExternalInteraction();
-		return m_panelIn.tryPush(_cmd, _arg);
+		// Delivery registers the interaction (processUC), as it must for senders that reach the
+		// queue through PanelInput without this Hardware.
+		return m_panelInput->trySend(_cmd, _arg, _source);
 	}
 
 	size_t Hardware::getPendingPanelInputBytes() const
 	{
-		return m_panelIn.size();
+		return m_panelIn->size();
 	}
 
 	size_t Hardware::getPanelInputOverflowCount() const
 	{
-		return m_panelIn.overflowCount();
+		return m_panelIn->overflowCount();
 	}
 
 	PanelInputQueueStatus Hardware::getPanelInputStatus() const
 	{
-		return m_panelIn.status();
+		return m_panelIn->status();
 	}
 
 	void Hardware::processUC()
@@ -1110,11 +1111,13 @@ namespace md
 		// per-instruction case does not pay for the call.
 		if(!projectRestorePending && m_scheduledMidi.ready(m_schedUcCyclesDone))
 			pumpScheduledMidi();
-		if(!projectRestorePending && m_panelIn.hasPending())
+		if(!projectRestorePending && m_panelIn->hasPending())
 		{
 			PanelInputQueue::DrainBuffer panelInput;
 			const auto availablePackets = m_uc.availablePanelRxBytes() / 2;
-			const auto panelInputCount = m_panelIn.drain(panelInput, availablePackets);
+			const auto panelInputCount = m_panelIn->drain(panelInput, availablePackets);
+			if(panelInputCount)
+				registerExternalInteraction();
 			for(size_t i = 0; i < panelInputCount; ++i)
 			{
 				const auto& packet = panelInput[i];
@@ -1122,6 +1125,8 @@ namespace md
 				// space sampled above, so both bytes are guaranteed to fit together.
 				m_uc.queuePanelRx(packet.row);
 				m_uc.queuePanelRx(packet.mask);
+				if(PanelSourceRows::isRow(packet.row))
+					m_panelDeliveredRows[packet.row - 0x20] = packet.mask;
 				synthLib::RealtimeInstrumentation::recordCurrentPanelDelivery(
 					static_cast<uint32_t>(getModel()), packet.row, packet.mask);
 			}
@@ -1524,7 +1529,7 @@ namespace md
 						// Keep external input polling at each omitted instruction
 						// boundary; a producer still wakes the ordinary path.
 						for(; instructions < limit; ++instructions)
-							if(m_panelIn.hasPending() || !m_midiIn.empty()
+							if(m_panelIn->hasPending() || !m_midiIn.empty()
 								|| m_realtimeMidiIn.size() != 0
 								|| m_midiSysexTransfer.ownsMidiWire())
 								break;
@@ -1858,15 +1863,19 @@ namespace md
 						return;
 					const auto padIndex = static_cast<uint8_t>(event.b - 36);
 					const auto row = static_cast<uint8_t>(0x20 + (padIndex >> 3));
-					const auto mask = static_cast<uint8_t>(1u << (padIndex & 7));
+					// The packets are whole-row snapshots: press and release against what is
+					// already held there, or the release would let go of a trig someone is
+					// holding in the window or on a tablet.
+					const auto held = m_panelDeliveredRows[padIndex >> 3];
+					const auto mask = static_cast<uint8_t>(held | (1u << (padIndex & 7)));
 					m_uc.queuePanelRx(row);
 					m_uc.queuePanelRx(mask);
 					m_uc.queuePanelRx(row);
-					m_uc.queuePanelRx(0);
+					m_uc.queuePanelRx(held);
 					synthLib::RealtimeInstrumentation::recordCurrentPanelDelivery(
 						static_cast<uint32_t>(m_model), row, mask);
 					synthLib::RealtimeInstrumentation::recordCurrentPanelDelivery(
-						static_cast<uint32_t>(m_model), row, 0);
+						static_cast<uint32_t>(m_model), row, held);
 				}
 			}
 			else

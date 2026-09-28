@@ -145,11 +145,13 @@ namespace md
 		m_hardware = std::make_unique<Hardware>(_params.romData, _params.romName, m_model,
 			loadInitialPatchRam(_params, m_model, _initialPatchRam), m_frontPanelPublisher,
 			initialFlash.flash, initialFlash.cache);
+		m_panelInput = m_hardware->getPanelInput();
 	}
 
 	Device::~Device()
 	{
 		m_frontPanelPublisher->retire();
+		m_panelInput->retire();
 	}
 
 	bool Device::captureFactoryFlashCachePersistence(std::string& _filename,
@@ -515,6 +517,7 @@ namespace md
 
 		m_frontPanelPublisher->reset();
 		_prepared.m_hardware->setFrontPanelPublisher(m_frontPanelPublisher);
+		_prepared.m_hardware->setPanelInput(m_panelInput);
 		m_hardware.swap(_prepared.m_hardware);
 		++m_hardwareEpoch;
 		_prepared.m_committed = true;

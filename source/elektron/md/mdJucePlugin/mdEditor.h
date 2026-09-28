@@ -311,6 +311,8 @@ namespace mdJucePlugin
 		bool m_frontPanelSnapshotValid = false;
 		// Kept between frames: fetching it takes the device lock, which waits for the audio block to finish.
 		std::shared_ptr<md::FrontPanelPublisher> m_frontPanelPublisher;
+		// The device's panel input, kept between sends (see sendPanelEvent). Message thread only.
+		mutable std::shared_ptr<md::PanelInput> m_panelInput;
 		bool m_lcdChanged = true;
 		bool m_lcdInteractionInputChanged = true;
 		std::optional<lcdInteraction::State> m_lcdInteractionState;

@@ -577,11 +577,19 @@ namespace mdJucePlugin
 		md::RemotePanelServer::Callbacks callbacks;
 		callbacks.sendPanelEvent = [this](const uint8_t _command, const uint8_t _argument)
 		{
-			return getPlugin().withDeviceLocked([&](synthLib::Device* const _device)
+			// As the window does (Editor::sendPanelEvent): the device's panel input, fetched under
+			// the device lock only when there is none yet or it was retired.
+			std::lock_guard lock(m_remotePanelInputMutex);
+			if(!m_remotePanelInput || m_remotePanelInput->isRetired())
 			{
-				auto* const device = dynamic_cast<md::Device*>(_device);
-				return device ? device->sendPanelEvent(_command, _argument) : false;
-			});
+				m_remotePanelInput = getPlugin().withDeviceLocked([](synthLib::Device* const _device)
+				{
+					auto* const device = dynamic_cast<md::Device*>(_device);
+					return device ? device->getPanelInput() : std::shared_ptr<md::PanelInput>();
+				});
+			}
+			return m_remotePanelInput
+				&& m_remotePanelInput->trySend(_command, _argument, md::PanelSource::Remote);
 		};
 		callbacks.snapshot = [this]
 		{

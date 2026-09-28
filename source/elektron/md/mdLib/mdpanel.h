@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <mutex>
 #include <optional>
 
 #include "mdtypes.h"
@@ -134,6 +135,32 @@ namespace md
 		std::array<uint8_t, g_rowCount> m_masks{};
 	};
 
+	// Who sent a panel packet. The plugin window and the remote page each keep their own PanelRowState
+	// and send whole-row snapshots, so one of them must not release a key the other holds.
+	enum class PanelSource : uint8_t
+	{
+		Editor,
+		Remote,
+		Count
+	};
+
+	// Merges each source's row snapshots into the row the firmware sees: every key any source holds.
+	class PanelSourceRows
+	{
+	public:
+		static bool isRow(uint8_t _row) { return _row >= g_firstRow && _row <= g_lastRow; }
+
+		// Records `_source`'s snapshot of `_row`. -> the merged mask to send.
+		uint8_t set(PanelSource _source, uint8_t _row, uint8_t _mask);
+
+	private:
+		static constexpr uint8_t g_firstRow = 0x20;
+		static constexpr uint8_t g_lastRow = 0x26;
+		static constexpr size_t g_rowCount = g_lastRow - g_firstRow + 1;
+
+		std::array<std::array<uint8_t, g_rowCount>, static_cast<size_t>(PanelSource::Count)> m_masks{};
+	};
+
 	// Cross-thread ingress for complete UART2 panel packets. This is a bounded MPSC
 	// ring: any thread may tryPush(), while exactly one emulation thread drains it.
 	// It neither allocates nor waits. A full queue rejects the complete packet and
@@ -212,5 +239,39 @@ namespace md
 		std::atomic<size_t> m_droppedPulsePackets{0};
 		std::atomic<size_t> m_coalescedRowPackets{0};
 		std::atomic<size_t> m_recoveredRowPackets{0};
+	};
+
+	// A device's panel input: the queue its running Hardware drains and the sources' held rows.
+	// It is shared, so the window and the remote page can keep it and send without the device
+	// lock, which the audio thread holds for its whole block: under that lock a key press or knob
+	// turn waited up to a block, and longer when the machine ran close to realtime. The Device
+	// retires it when it goes away; a sender that finds it retired fetches the new device's one,
+	// under the lock, as the front-panel publisher is fetched.
+	class PanelInput
+	{
+	public:
+		// Queue a packet ([row][mask] or an encoder command). A row snapshot is merged with what
+		// the other sources hold. Thread-safe; the only wait is on that merge, which the emulation
+		// thread never takes.
+		bool trySend(uint8_t _command, uint8_t _argument, PanelSource _source)
+		{
+			if(!PanelSourceRows::isRow(_command))
+				return m_queue.tryPush(_command, _argument);
+			// Merge and queue under one lock, so two sources' snapshots are queued in the order
+			// they were merged and the last one queued is the whole truth.
+			std::lock_guard lock(m_mutex);
+			return m_queue.tryPush(_command, m_rows.set(_source, _command, _argument));
+		}
+		PanelInputQueue& queue() { return m_queue; }
+		const PanelInputQueue& queue() const { return m_queue; }
+
+		void retire() { m_retired.store(true, std::memory_order_release); }
+		bool isRetired() const { return m_retired.load(std::memory_order_acquire); }
+
+	private:
+		PanelInputQueue m_queue;
+		std::mutex m_mutex;
+		PanelSourceRows m_rows;
+		std::atomic<bool> m_retired{false};
 	};
 }

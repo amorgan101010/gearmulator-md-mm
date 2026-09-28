@@ -134,6 +134,9 @@ namespace mdJucePlugin
 		void timerCallback() override;
 
 		std::unique_ptr<synthLib::PerformanceReport> m_performanceReport;
+		// Before m_remotePanel: its thread calls sendPanelEvent, which uses these, until it is destroyed.
+		std::mutex m_remotePanelInputMutex;
+		std::shared_ptr<md::PanelInput> m_remotePanelInput;
 		std::unique_ptr<md::RemotePanelServer> m_remotePanel;
 		std::mutex m_remoteSlotNamesMutex;
 		std::vector<std::string> m_remoteSlotNames;

@@ -236,6 +236,18 @@ namespace md
 		return {_packet.row, rowMask};
 	}
 
+	uint8_t PanelSourceRows::set(const PanelSource _source, const uint8_t _row, const uint8_t _mask)
+	{
+		if(!isRow(_row) || _source >= PanelSource::Count)
+			return _mask;
+		const auto index = static_cast<size_t>(_row - g_firstRow);
+		m_masks[static_cast<size_t>(_source)][index] = _mask;
+		uint8_t merged = 0;
+		for(const auto& source : m_masks)
+			merged = static_cast<uint8_t>(merged | source[index]);
+		return merged;
+	}
+
 	PanelPacket PanelRowState::release(const PanelPacket& _packet)
 	{
 		if(_packet.row < g_firstRow || _packet.row > g_lastRow)
