@@ -829,6 +829,14 @@ namespace mdJucePlugin
 			const auto scene = _sideB ? bank.sceneB : bank.sceneA;
 			return controller.clearScene(kit, scene);
 		};
+		callbacks.getSceneEditSide = [this]
+		{
+			return dynamic_cast<const Controller&>(getController()).getSceneEditSide();
+		};
+		callbacks.setSceneEditSide = [this](const int _side)
+		{
+			dynamic_cast<Controller&>(getController()).setSceneEditSide(_side);
+		};
 
 		m_remotePanel = std::make_unique<md::RemotePanelServer>(m_model, port, std::move(callbacks));
 		if(!m_remotePanel->start())

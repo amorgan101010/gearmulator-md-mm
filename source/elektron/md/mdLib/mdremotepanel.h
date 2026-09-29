@@ -78,6 +78,10 @@ namespace md
 			std::function<bool(bool _sideB, PanelEncoder _encoder, int _steps)> editSceneParameter;
 			std::function<bool(bool _sideB)> clearSceneLock;
 			std::function<bool(bool _sideB)> clearScene;
+			// The side being edited (0 = A, 1 = B, -1 = none), shared with the editor. Without these the
+			// remote keeps a side of its own.
+			std::function<int()> getSceneEditSide;
+			std::function<void(int _side)> setSceneEditSide;
 		};
 
 		RemotePanelServer(MachineModel _model, int _port, Callbacks _callbacks);
@@ -152,7 +156,10 @@ namespace md
 		std::mutex m_inputMutex;
 		uint32_t m_infoTick = 0;
 		std::atomic<bool> m_infoForce{false};
-		std::atomic<int> m_sceneEditSide{-1};
+		std::atomic<int> m_sceneEditSide{-1};	// only when no getSceneEditSide callback is given
 		PanelRowState m_rows;
+
+		int sceneEditSide() const;
+		void setSceneEditSide(int _side);
 	};
 }

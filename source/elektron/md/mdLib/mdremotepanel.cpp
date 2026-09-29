@@ -131,6 +131,20 @@ namespace md
 		stop();
 	}
 
+	int RemotePanelServer::sceneEditSide() const
+	{
+		return m_callbacks.getSceneEditSide ? m_callbacks.getSceneEditSide()
+			: m_sceneEditSide.load(std::memory_order_acquire);
+	}
+
+	void RemotePanelServer::setSceneEditSide(const int _side)
+	{
+		if(m_callbacks.setSceneEditSide)
+			m_callbacks.setSceneEditSide(_side);
+		else
+			m_sceneEditSide.store(_side, std::memory_order_release);
+	}
+
 	bool RemotePanelServer::start()
 	{
 		if(m_tcpServer)
@@ -562,7 +576,7 @@ namespace md
 				int side = -1;
 				ss >> side;
 				if(side >= -1 && side <= 1)
-					m_sceneEditSide.store(side, std::memory_order_release);
+					setSceneEditSide(side);
 			}
 			else if(action == "assign")
 			{
@@ -591,13 +605,13 @@ namespace md
 			}
 			else if(action == "clear")
 			{
-				const auto side = m_sceneEditSide.load(std::memory_order_acquire);
+				const auto side = sceneEditSide();
 				if(side >= 0 && m_callbacks.clearSceneLock)
 					m_callbacks.clearSceneLock(side == 1);
 			}
 			else if(action == "erase")
 			{
-				const auto side = m_sceneEditSide.load(std::memory_order_acquire);
+				const auto side = sceneEditSide();
 				if(side >= 0 && m_callbacks.clearScene)
 					m_callbacks.clearScene(side == 1);
 			}
@@ -617,7 +631,7 @@ namespace md
 			const auto control = controlByName(name);
 			if(!control)
 				return;
-			const auto editSide = m_sceneEditSide.load(std::memory_order_acquire);
+			const auto editSide = sceneEditSide();
 			if(down && editSide >= 0
 				&& *control >= PanelControl::Trigger1
 				&& *control <= PanelControl::Trigger16)
@@ -626,7 +640,7 @@ namespace md
 					- static_cast<unsigned>(PanelControl::Trigger1));
 				if(m_callbacks.assignScene)
 					m_callbacks.assignScene(editSide == 1, scene);
-				m_sceneEditSide.store(-1, std::memory_order_release);
+				setSceneEditSide(-1);
 				m_infoForce.store(true, std::memory_order_release);
 				return;
 			}
@@ -643,7 +657,7 @@ namespace md
 			const auto encoder = encoderByName(name);
 			if(!encoder || delta == 0)
 				return;
-			const auto editSide = m_sceneEditSide.load(std::memory_order_acquire);
+			const auto editSide = sceneEditSide();
 			if(editSide >= 0 && *encoder >= PanelEncoder::DataEntryA
 				&& *encoder <= PanelEncoder::DataEntryH)
 			{
@@ -719,7 +733,7 @@ namespace md
 				machineInfo = "M " + m_callbacks.machineInfo();
 			const auto sceneInfo = m_callbacks.sceneInfo
 				? "C " + m_callbacks.sceneInfo(
-					m_sceneEditSide.load(std::memory_order_acquire))
+					sceneEditSide())
 				: std::string();
 
 			for(auto& c : clients)

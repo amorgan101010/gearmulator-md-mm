@@ -1,6 +1,7 @@
 #include "mdEditor.h"
 
 #include "mdController.h"
+#include "mdControlInput.h"
 #include "mdPanelAffordances.h"
 #include "mdLcdText.h"
 #include "mdMonomachineHelp.h"
@@ -55,6 +56,7 @@
 #include <iterator>
 #include <limits>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <tuple>
 #include <vector>
@@ -164,6 +166,7 @@ namespace mdJucePlugin
 
 	Editor::~Editor()
 	{
+		m_controlInput.reset();	// first: lines still queued for the message thread are dropped
 		juce::Desktop::getInstance().removeFocusChangeListener(this);
 		m_panelSteps.clear();
 		cancelPanelInputGestures();
@@ -394,7 +397,7 @@ namespace mdJucePlugin
 
 		const auto selectSide = [this](const int side)
 		{
-			m_sceneEditSide = m_sceneEditSide == side ? -1 : side;
+			m_controller.setSceneEditSide(sceneEditSide() == side ? -1 : side);
 			updateScenePresentation();
 		};
 		juceRmlUi::EventListener::AddClick(m_sceneSideA,
@@ -435,10 +438,10 @@ namespace mdJucePlugin
 			{
 				const auto kit = m_controller.getCurrentKitSlot();
 				if(kit >= m_controller.getSceneBankCount()
-					|| m_sceneEditSide < 0 || !m_lastSceneAddress)
+					|| sceneEditSide() < 0 || !m_lastSceneAddress)
 					return;
 				const auto bank = m_controller.getSceneBank(kit);
-				const auto scene = m_sceneEditSide == 0 ? bank.sceneA : bank.sceneB;
+				const auto scene = sceneEditSide() == 0 ? bank.sceneA : bank.sceneB;
 				m_controller.clearSceneLock(kit, scene, *m_lastSceneAddress);
 				updateScenePresentation();
 			});
@@ -448,16 +451,37 @@ namespace mdJucePlugin
 			juceRmlUi::EventListener::AddClick(clearScene, [this]
 			{
 				const auto kit = m_controller.getCurrentKitSlot();
-				if(kit >= m_controller.getSceneBankCount() || m_sceneEditSide < 0)
+				if(kit >= m_controller.getSceneBankCount() || sceneEditSide() < 0)
 					return;
 				const auto bank = m_controller.getSceneBank(kit);
-				const auto scene = m_sceneEditSide == 0 ? bank.sceneA : bank.sceneB;
+				const auto scene = sceneEditSide() == 0 ? bank.sceneA : bank.sceneB;
 				m_controller.clearScene(kit, scene);
 				m_lastSceneAddress.reset();
 				updateScenePresentation();
 			});
 		}
 		updateScenePresentation();
+	}
+
+	int Editor::sceneEditSide() const
+	{
+		return m_controller.getSceneEditSide();
+	}
+
+	bool Editor::assignSceneFromTrigger(const md::PanelControl _control)
+	{
+		// While A or B is being edited, a trig chooses that side's scene instead of reaching the machine,
+		// whether it was clicked, typed, or pressed from a controller.
+		if(!isTrigger(_control) || sceneEditSide() < 0)
+			return false;
+		const auto kit = m_controller.getCurrentKitSlot();
+		const auto scene = static_cast<uint8_t>(static_cast<unsigned>(_control)
+			- static_cast<unsigned>(md::PanelControl::Trigger1));
+		if(kit < m_controller.getSceneBankCount())
+			m_controller.assignScene(kit, sceneEditSide() == 1, scene);
+		m_controller.setSceneEditSide(-1);
+		updateScenePresentation();
+		return true;
 	}
 
 	void Editor::updateScenePresentation()
@@ -488,8 +512,8 @@ namespace mdJucePlugin
 		};
 		m_sceneSideA->SetInnerRML(sceneName(false));
 		m_sceneSideB->SetInnerRML(sceneName(true));
-		m_sceneSideA->SetClass("sceneEditing", m_sceneEditSide == 0);
-		m_sceneSideB->SetClass("sceneEditing", m_sceneEditSide == 1);
+		m_sceneSideA->SetClass("sceneEditing", sceneEditSide() == 0);
+		m_sceneSideB->SetClass("sceneEditing", sceneEditSide() == 1);
 		if(m_sceneMuteA)
 			m_sceneMuteA->SetClass("sceneMuted", bank.muteA);
 		if(m_sceneMuteB)
@@ -497,17 +521,17 @@ namespace mdJucePlugin
 		juceRmlUi::ElemValue::setValue(m_sceneFader, bank.fader, false);
 		if(m_sceneStatus)
 		{
-			if(m_sceneEditSide < 0)
+			if(sceneEditSide() < 0)
 				m_sceneStatus->SetInnerRML("Choose A or B; click again to leave edit mode");
 			else
 				m_sceneStatus->SetInnerRML(std::string("Turn an encoder to lock · click a trig to assign to ")
-					+ (m_sceneEditSide == 0 ? "A" : "B"));
+					+ (sceneEditSide() == 0 ? "A" : "B"));
 		}
 		if(m_sceneValue)
 		{
-			if(m_sceneEditSide >= 0 && m_lastSceneAddress)
+			if(sceneEditSide() >= 0 && m_lastSceneAddress)
 			{
-				const auto scene = m_sceneEditSide == 0 ? bank.sceneA : bank.sceneB;
+				const auto scene = sceneEditSide() == 0 ? bank.sceneA : bank.sceneB;
 				const auto value = bank.getLock(scene, *m_lastSceneAddress);
 				if(value >= 0)
 					m_sceneValue->SetInnerRML("LOCKED  T" + std::to_string(m_lastSceneAddress->track + 1)
@@ -524,7 +548,7 @@ namespace mdJucePlugin
 
 	bool Editor::editSceneParameter(const md::PanelEncoder _encoder, const int _steps)
 	{
-		if(m_sceneEditSide < 0
+		if(sceneEditSide() < 0
 			|| _steps == 0 || _encoder < md::PanelEncoder::DataEntryA
 			|| _encoder > md::PanelEncoder::DataEntryH)
 			return false;
@@ -542,7 +566,7 @@ namespace mdJucePlugin
 		const md::scene::Address address{static_cast<uint8_t>(track),
 			static_cast<uint8_t>(*page), index};
 		const auto bank = m_controller.getSceneBank(kit);
-		const auto scene = m_sceneEditSide == 0 ? bank.sceneA : bank.sceneB;
+		const auto scene = sceneEditSide() == 0 ? bank.sceneA : bank.sceneB;
 		if(!m_controller.editSceneParameter(kit, scene, address, _steps))
 			return false;
 		m_lastSceneAddress = address;
@@ -814,15 +838,8 @@ namespace mdJucePlugin
 			juceRmlUi::EventListener::Add(b, Rml::EventId::Mousedown,
 				[this, b, packet, control = pb.control](Rml::Event& _event)
 			{
-				if(isTrigger(control) && m_sceneEditSide >= 0)
+				if(assignSceneFromTrigger(control))
 				{
-					const auto kit = m_controller.getCurrentKitSlot();
-					const auto scene = static_cast<uint8_t>(static_cast<unsigned>(control)
-						- static_cast<unsigned>(md::PanelControl::Trigger1));
-					if(kit < m_controller.getSceneBankCount())
-						m_controller.assignScene(kit, m_sceneEditSide == 1, scene);
-					m_sceneEditSide = -1;
-					updateScenePresentation();
 					_event.StopPropagation();
 					return;
 				}
@@ -2463,7 +2480,7 @@ namespace mdJucePlugin
 			juceRmlUi::EventListener::Add(_knob, Rml::EventId::Mousedown,
 				[this, _knob, packet](Rml::Event& _event)
 				{
-					if(m_sceneEditSide >= 0
+					if(sceneEditSide() >= 0
 						&& juceRmlUi::helper::getKeyModAlt(_event))
 					{
 						_event.StopPropagation();
@@ -2532,7 +2549,7 @@ namespace mdJucePlugin
 
 	void Editor::emitEncoderSteps(const md::PanelEncoder _encoder, const int _steps)
 	{
-		if(m_sceneEditSide >= 0)
+		if(sceneEditSide() >= 0)
 		{
 			(void)editSceneParameter(_encoder, _steps);
 			return;
@@ -2803,8 +2820,13 @@ namespace mdJucePlugin
 		if(m_sceneSideA && (m_sceneDisplayedKit != m_controller.getCurrentKitSlot()
 			|| m_scenePresentationRevision != m_controller.getSceneRevision()))
 		{
-			m_sceneEditSide = -1;
-			m_lastSceneAddress.reset();
+			// A new kit has other scenes: stop editing. Any other change (the remote panel or the control
+			// input moved the fader, chose a side, added a lock) only needs showing; the edit side is shared.
+			if(m_sceneDisplayedKit != m_controller.getCurrentKitSlot())
+			{
+				m_controller.setSceneEditSide(-1);
+				m_lastSceneAddress.reset();
+			}
 			updateScenePresentation();
 		}
 		if(hadFrontPanelSnapshot && !m_frontPanelSnapshotValid)
@@ -3174,7 +3196,7 @@ namespace mdJucePlugin
 	void Editor::pushGamepadKnob(const GamepadTarget& _target, const double _nowMilliseconds)
 	{
 		releaseGamepadKnob();
-		if(m_sceneEditSide >= 0)
+		if(sceneEditSide() >= 0)
 			return;
 		const auto packet = md::panelEncoderPressPacket(getModel(), _target.encoder);
 		if(!packet)
@@ -3737,6 +3759,91 @@ namespace mdJucePlugin
 			[this](Rml::Event& _event) { onPanelKey(_event, true); });
 		juceRmlUi::EventListener::Add(document, Rml::EventId::Keyup,
 			[this](Rml::Event& _event) { onPanelKey(_event, false); });
+
+		m_controlInput = std::make_unique<ControlInput>(
+			getModel() == md::MachineModel::Monomachine ? "monomachine" : "machinedrum",
+			[this](const std::string& _line) { return handleControlLine(_line); });
+		if(!m_controlInput->start())
+		{
+			DBG("control input unavailable: " << m_controlInput->getError());
+			m_controlInput.reset();
+		}
+	}
+
+	std::string Editor::handleControlLine(const std::string& _line)
+	{
+		// One line from the control input (mdControlInput.h), on the message thread:
+		//   turn <A-H|LEVEL|SOUND> <n>   turn an encoder n detents; while A or B is edited, a scene lock
+		//   track <1-16>                 Machinedrum: select the track, as clicking under its LED does
+		//   scene <A|B>                  edit that side, or stop editing it, as clicking A or B does
+		//   scene fader <0-127>          move the crossfader (0 is A)
+		//   leds                         -> "leds " and the 14 panel LED banks 0x20-0x2d as hex, active low
+		std::istringstream ss(_line);
+		std::string verb;
+		ss >> verb;
+		if(verb == "turn")
+		{
+			std::string label;
+			int steps = 0;
+			ss >> label >> steps;
+			std::optional<md::PanelEncoder> encoder;
+			if(label.size() == 1 && label[0] >= 'A' && label[0] <= 'H')
+				encoder = static_cast<md::PanelEncoder>(static_cast<unsigned>(md::PanelEncoder::DataEntryA) + (label[0] - 'A'));
+			else if(label == "LEVEL" || label == "LEVEL/DATA")
+				encoder = md::PanelEncoder::Level;
+			else if(label == "SOUND")
+				encoder = md::PanelEncoder::SoundSelection;
+			// emitEncoderSteps sends at most a burst's worth at a time.
+			while(encoder && steps != 0)
+			{
+				const auto chunk = std::clamp(steps, -g_encoderBurstCap, g_encoderBurstCap);
+				emitEncoderSteps(*encoder, chunk);
+				steps -= chunk;
+			}
+		}
+		else if(verb == "track")
+		{
+			int track = 0;
+			ss >> track;
+			if(getModel() == md::MachineModel::Machinedrum && track >= 1 && track <= 16)
+				selectMachinedrumTrack(track - 1);
+		}
+		else if(verb == "scene")
+		{
+			std::string what;
+			ss >> what;
+			if(what == "A" || what == "B")
+			{
+				const int side = what == "A" ? 0 : 1;
+				m_controller.setSceneEditSide(sceneEditSide() == side ? -1 : side);
+				updateScenePresentation();
+			}
+			else if(what == "fader")
+			{
+				int value = -1;
+				ss >> value;
+				const auto kit = m_controller.getCurrentKitSlot();
+				if(value >= 0 && value <= 127 && kit < m_controller.getSceneBankCount())
+				{
+					m_controller.setSceneFader(kit, static_cast<uint8_t>(value));
+					updateScenePresentation();
+				}
+			}
+		}
+		else if(verb == "leds")
+		{
+			if(!m_frontPanelSnapshotValid)
+				return "leds none";
+			std::string reply = "leds ";
+			char hex[3];
+			for(uint8_t bank = 0x20; bank <= 0x2d; ++bank)
+			{
+				std::snprintf(hex, sizeof(hex), "%02x", m_frontPanelSnapshot.getLedBankRaw(bank));
+				reply += hex;
+			}
+			return reply;
+		}
+		return {};
 	}
 
 	void Editor::releaseKeyboardEncoderPress()
@@ -3868,7 +3975,7 @@ namespace mdJucePlugin
 			{
 				const auto [knob, encoder] = encoderKnob(*m_keyboardEncoder);
 				if(pressTurn && !m_keyboardEncoderPressPacket
-					&& m_sceneEditSide < 0)
+					&& sceneEditSide() < 0)
 				{
 					if(const auto packet = md::panelEncoderPressPacket(getModel(), encoder); packet && knob)
 					{
@@ -3918,7 +4025,7 @@ namespace mdJucePlugin
 			{
 				if(!m_keyboardEncoderTurned)
 				{
-					if(m_sceneEditSide < 0)
+					if(sceneEditSide() < 0)
 					if(const auto packet = md::panelEncoderPressPacket(getModel(), encoderKnob(i).second))
 					{
 						// Straight to the machine, as a click on the knob is: the firmware takes a
@@ -3956,6 +4063,8 @@ namespace mdJucePlugin
 			if(_down)
 			{
 				m_keyboardHeldKeys.push_back(key);
+				if(assignSceneFromTrigger(button.control))
+					return true;		// its release then lets go of nothing
 				// A keyboard can hold a bank key while pressing a step, so no bank latch is needed.
 				pressHeldControl(button.control, shift, true);
 			}

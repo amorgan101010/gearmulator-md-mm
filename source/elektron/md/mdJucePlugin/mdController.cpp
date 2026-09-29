@@ -256,6 +256,14 @@ namespace mdJucePlugin
 		return found == m_scenes.kits.end() ? md::scene::Bank{} : found->second;
 	}
 
+	void Controller::setSceneEditSide(const int _side)
+	{
+		const auto side = _side == 0 || _side == 1 ? _side : -1;
+		// The revision tells every view to show the new side.
+		if(m_sceneEditSide.exchange(side, std::memory_order_acq_rel) != side)
+			m_sceneRevision.fetch_add(1, std::memory_order_release);
+	}
+
 	bool Controller::assignScene(const uint8_t _kit, const bool _sideB,
 		const uint8_t _scene)
 	{

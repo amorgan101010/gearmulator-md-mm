@@ -55,6 +55,7 @@ namespace md
 namespace mdJucePlugin
 {
 	class Controller;
+	class ControlInput;
 	class PixelPerfectPanel;
 	struct EditorIdentityTestAccess;
 
@@ -146,6 +147,9 @@ namespace mdJucePlugin
 		void createButtons();
 		void createSceneControls();
 		void updateScenePresentation();
+		int sceneEditSide() const;	// the controller's: shared with the remote panel and the control input
+		bool assignSceneFromTrigger(md::PanelControl _control);
+		std::string handleControlLine(const std::string& _line);
 		bool editSceneParameter(md::PanelEncoder _encoder, int _steps);
 		void createPanelAffordances();
 		void bindPanelTarget(const char* _id, md::PanelControl _control);
@@ -385,7 +389,7 @@ namespace mdJucePlugin
 		Rml::Element* m_sceneFader = nullptr;
 		Rml::Element* m_sceneStatus = nullptr;
 		Rml::Element* m_sceneValue = nullptr;
-		int m_sceneEditSide = -1;	// 0 = A, 1 = B, -1 = normal panel operation
+		std::unique_ptr<ControlInput> m_controlInput;	// standalone only
 		uint8_t m_sceneDisplayedKit = 0xff;
 		uint64_t m_scenePresentationRevision = 0;
 		std::optional<md::scene::Address> m_lastSceneAddress;

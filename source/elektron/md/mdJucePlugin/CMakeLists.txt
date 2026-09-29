@@ -16,6 +16,7 @@ add_compile_definitions(MDMM_DIAGNOSTICS_REVISION="${MDMM_DIAGNOSTICS_REVISION}"
 
 set(SOURCES
 	mdController.cpp mdController.h
+	mdControlInput.cpp mdControlInput.h
 	mdEditor.cpp mdEditor.h
 	mdGamepad.cpp mdGamepad.h
 	mdGamepadAxes.h

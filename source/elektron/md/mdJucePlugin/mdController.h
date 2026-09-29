@@ -98,6 +98,10 @@ namespace mdJucePlugin
 		bool restoreAutomationSnapshot(const std::vector<uint8_t>& _snapshot);
 		md::scene::Bank getSceneBank(uint8_t _kit) const;
 		uint64_t getSceneRevision() const { return m_sceneRevision.load(std::memory_order_acquire); }
+		// Which side the scenes strip is editing: 0 = A, 1 = B, -1 = none. One for the editor, the remote
+		// panel and the control input alike, so each shows what the others chose.
+		int getSceneEditSide() const { return m_sceneEditSide.load(std::memory_order_acquire); }
+		void setSceneEditSide(int _side);
 		bool assignScene(uint8_t _kit, bool _sideB, uint8_t _scene);
 		bool setSceneFader(uint8_t _kit, uint8_t _value);
 		bool setSceneMuted(uint8_t _kit, bool _sideB, bool _muted);
@@ -234,6 +238,7 @@ namespace mdJucePlugin
 		mutable std::mutex m_sceneLock;
 		md::scene::Store m_scenes;
 		std::atomic<uint64_t> m_sceneRevision{0};
+		std::atomic<int> m_sceneEditSide{-1};
 		std::optional<md::scene::Address> m_lastSceneAddress;
 		std::map<md::scene::Address, uint8_t> m_sceneAppliedValues;
 		uint8_t m_sceneAppliedKit = 0xff;
