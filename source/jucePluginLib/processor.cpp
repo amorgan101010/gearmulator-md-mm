@@ -1,3 +1,4 @@
+#include <cstdlib>
 #include "processor.h"
 
 #include <algorithm>
@@ -54,6 +55,10 @@ namespace pluginLib
 		synthLib::RomLoader::addSearchPath(getPublicRomFolder());
 		synthLib::RomLoader::addSearchPath(synthLib::getModulePath(true));
 		synthLib::RomLoader::addSearchPath(synthLib::getModulePath(false));
+		// GEARMULATOR_PC_MUTED=1 starts with the output muted (a remote panel page still plays):
+		// how elektremu studio starts it for someone playing from its remote hub
+		if(const char* muted = std::getenv("GEARMULATOR_PC_MUTED"); muted && std::string(muted) == "1")
+			m_outputMuted.store(true, std::memory_order_relaxed);
 	}
 
 	Processor::~Processor()
