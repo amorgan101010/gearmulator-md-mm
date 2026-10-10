@@ -33,6 +33,7 @@ set(SOURCES
 	settingsSkin.cpp settingsSkin.h
 	settingsPlugin.cpp settingsPlugin.h
 	skin.h
+	standaloneWindowIcon.cpp standaloneWindowIcon.h
 )
 
 set(SOURCES_PM
