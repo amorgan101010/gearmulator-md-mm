@@ -204,7 +204,7 @@ namespace mcpServer
 		{
 			ToolDef tool;
 			tool.name = "set_parameter";
-			tool.description = "Set a parameter value by name";
+			tool.description = "Set a parameter value by name. Always sent to the device, also when the editor already shows that value";
 			tool.inputSchema.addProperty("name", "string", "Parameter name", true);
 			tool.inputSchema.addIntProperty("value", "New parameter value", true);
 			tool.inputSchema.addIntProperty("part", "Part number (0-15)", false, 0, 15);
@@ -224,7 +224,7 @@ namespace mcpServer
 				if (!param)
 					throw std::runtime_error("Parameter not found: " + name);
 
-				param->setUnnormalizedValueNotifyingHost(value, pluginLib::Parameter::Origin::Ui);
+				param->setUnnormalizedValueAndSend(value, pluginLib::Parameter::Origin::Ui);
 
 				auto result = JsonValue::object();
 				result.set("success", JsonValue::fromBool(true));
@@ -271,7 +271,7 @@ namespace mcpServer
 
 					if (param)
 					{
-						param->setUnnormalizedValueNotifyingHost(value, pluginLib::Parameter::Origin::Ui);
+						param->setUnnormalizedValueAndSend(value, pluginLib::Parameter::Origin::Ui);
 						r.set("success", JsonValue::fromBool(true));
 						r.set("value", JsonValue::fromInt(param->getUnnormalizedValue()));
 					}
