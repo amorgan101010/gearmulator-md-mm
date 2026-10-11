@@ -31,7 +31,7 @@ namespace mcpServer
 		{
 			headers["Access-Control-Allow-Origin"] = "*";
 			headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS";
-			headers["Access-Control-Allow-Headers"] = "Content-Type, Accept";
+			headers["Access-Control-Allow-Headers"] = "Content-Type, Accept, MCP-Protocol-Version";
 		}
 
 		std::string serialize() const

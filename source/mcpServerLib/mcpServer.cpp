@@ -94,6 +94,15 @@ namespace mcpServer
 		}
 
 		// MCP message endpoint - accept POST to /message, /mcp, and /sse (Streamable HTTP)
+		if ((_request.isGet() || _request.method == "DELETE") && _request.path == "/mcp")
+		{
+			// Stateless Streamable HTTP: no unsolicited server event stream or session deletion.
+			response.statusCode = 405;
+			response.statusText = "Method Not Allowed";
+			response.headers["Allow"] = "POST";
+			response.headers["Content-Length"] = "0";
+			return response;
+		}
 		if (_request.isPost() && (_request.path == "/message" || _request.path == "/mcp" || _request.path == "/sse"))
 		{
 			LOGNET(networkLib::LogLevel::Info, "MCP POST to " << _request.path << ", body: " << _request.body.substr(0, 200));
@@ -136,11 +145,19 @@ namespace mcpServer
 		}
 
 		LOGNET(networkLib::LogLevel::Info, "MCP method: " << rpcRequest->method << " (id: " << rpcRequest->id.toJsonString() << ")");
+		if (_request.path == "/mcp" && rpcRequest->isNotification())
+		{
+			// Streamable HTTP requires 202 with no JSON-RPC response for notifications.
+			response.statusCode = 202;
+			response.statusText = "Accepted";
+			response.headers["Content-Length"] = "0";
+			return response;
+		}
 
 		JsonRpcResponse rpcResponse;
 
 		if (rpcRequest->method == "initialize")
-			rpcResponse = handleInitialize(*rpcRequest);
+			rpcResponse = handleInitialize(*rpcRequest, _request.path == "/mcp");
 		else if (rpcRequest->method == "ping")
 			rpcResponse = handlePing(*rpcRequest);
 		else if (rpcRequest->method == "tools/list")
@@ -214,13 +231,14 @@ namespace mcpServer
 		removeSseClient(&_stream);
 	}
 
-	JsonRpcResponse McpServer::handleInitialize(const JsonRpcRequest& _request)
+	JsonRpcResponse McpServer::handleInitialize(const JsonRpcRequest& _request, const bool _streamable)
 	{
 		m_initialized = true;
 		LOGNET(networkLib::LogLevel::Info, "MCP session initialized");
 
 		auto result = JsonValue::object();
-		result.set("protocolVersion", JsonValue::fromString(g_mcpProtocolVersion));
+		result.set("protocolVersion", JsonValue::fromString(
+			_streamable ? g_mcpStreamableProtocolVersion : g_mcpProtocolVersion));
 
 		auto serverInfo = JsonValue::object();
 		serverInfo.set("name", JsonValue::fromString(m_serverName));

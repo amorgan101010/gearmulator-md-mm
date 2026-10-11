@@ -44,7 +44,7 @@ namespace mcpServer
 		void handleSseConnection(networkLib::Stream& _stream);
 
 		// MCP methods
-		JsonRpcResponse handleInitialize(const JsonRpcRequest& _request);
+		JsonRpcResponse handleInitialize(const JsonRpcRequest& _request, bool _streamable);
 		JsonRpcResponse handleToolsList(const JsonRpcRequest& _request);
 		JsonRpcResponse handleToolsCall(const JsonRpcRequest& _request);
 		JsonRpcResponse handlePing(const JsonRpcRequest& _request);
