@@ -725,7 +725,7 @@ namespace mdJucePlugin
 			tool.description = "Replace the rows of a stored Machinedrum song (and optionally its name). Rows use the fields get_song_rows returns; the END row is appended when missing. Returns the song as read back from the unit.";
 			tool.inputSchema.addIntProperty("song", "Song slot 0..31", true, 0, 31);
 			tool.inputSchema.addProperty("name", "string", "Song name, up to 16 ASCII characters", false);
-			tool.inputSchema.addProperty("rows", "array", "Array of {pattern: 0..127 (-1 END, -2 loop/jump/halt, -3 remark), kit, loops, jumpTo, muteMask: 16-bit track mask, tempo: BPM or null, start, end}; only pattern is required", true);
+			tool.inputSchema.addProperty("rows", "array", "Array of {pattern: 0..127 (-1 END, -2 loop/jump/halt, -3 remark), kit, loops: 0..63 repeats after the first play (the panel's REP minus 1), jumpTo, muteMask: 16-bit track mask, tempo: BPM or null, start, end}; only pattern is required", true);
 			tool.handler = [this](const Json& args)
 			{
 				const auto slot = intInRange(args.get("song"), 0, 31, "song");
