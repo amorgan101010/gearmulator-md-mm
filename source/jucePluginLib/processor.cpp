@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <thread>
 
 #include "dummydevice.h"
 #include "midiLearnManager.h"
@@ -70,8 +71,71 @@ namespace pluginLib
 		m_device.reset();
 	}
 
+	namespace
+	{
+		constexpr size_t g_sysexReplyCapacity = 512 * 1024;
+		constexpr size_t g_sysexReplyMaxCount = 256;
+	}
+
+	std::vector<std::vector<uint8_t>> Processor::sendSysexAndCollectReplies(const synthLib::SMidiEvent& _request,
+		const std::vector<uint8_t>& _prefix, const size_t _maxReplies, const int _timeoutMs)
+	{
+		std::lock_guard callerLock(m_sysexReplyCallerMutex);
+		{
+			std::lock_guard lock(m_sysexReplyMutex);
+			m_sysexReplyPrefix = _prefix;
+			m_sysexReplyBytes.clear();
+			m_sysexReplyBytes.reserve(g_sysexReplyCapacity);
+			m_sysexReplyEnds.clear();
+			m_sysexReplyEnds.reserve(g_sysexReplyMaxCount);
+			m_sysexReplyMax = std::clamp<size_t>(_maxReplies, 1, g_sysexReplyMaxCount);
+			m_sysexReplyCollecting.store(true, std::memory_order_release);
+		}
+		addMidiEvent(_request);
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(_timeoutMs);
+		while(std::chrono::steady_clock::now() < deadline)
+		{
+			{
+				std::lock_guard lock(m_sysexReplyMutex);
+				if(m_sysexReplyEnds.size() >= m_sysexReplyMax)
+					break;
+			}
+			std::this_thread::sleep_for(std::chrono::milliseconds(2));
+		}
+		std::lock_guard lock(m_sysexReplyMutex);
+		m_sysexReplyCollecting.store(false, std::memory_order_release);
+		std::vector<std::vector<uint8_t>> replies;
+		size_t begin = 0;
+		for(const auto end : m_sysexReplyEnds)
+		{
+			replies.emplace_back(m_sysexReplyBytes.begin() + static_cast<std::ptrdiff_t>(begin),
+				m_sysexReplyBytes.begin() + static_cast<std::ptrdiff_t>(end));
+			begin = end;
+		}
+		return replies;
+	}
+
+	void Processor::collectSysexReply(const synthLib::SysexBuffer& _sysex)
+	{
+		// Audio thread. The caller holds this lock only for a few instructions; if it does right now, it is
+		// either still setting up or already done, and this message is not part of its answer.
+		std::unique_lock lock(m_sysexReplyMutex, std::try_to_lock);
+		if(!lock.owns_lock() || !m_sysexReplyCollecting.load(std::memory_order_acquire))
+			return;
+		if(m_sysexReplyEnds.size() >= m_sysexReplyMax
+			|| m_sysexReplyBytes.size() + _sysex.size() > m_sysexReplyBytes.capacity()
+			|| _sysex.size() < m_sysexReplyPrefix.size()
+			|| !std::equal(m_sysexReplyPrefix.begin(), m_sysexReplyPrefix.end(), _sysex.begin()))
+			return;
+		m_sysexReplyBytes.insert(m_sysexReplyBytes.end(), _sysex.begin(), _sysex.end());
+		m_sysexReplyEnds.push_back(m_sysexReplyBytes.size());
+	}
+
 	void Processor::addMidiEvent(const synthLib::SMidiEvent& _ev)
 	{
+		if(_ev.source == synthLib::MidiEventSource::Device && !_ev.sysex.empty()
+			&& m_sysexReplyCollecting.load(std::memory_order_acquire))
+			collectSysexReply(_ev.sysex);
 		observeMidiEvent(_ev);
 		// Process through MIDI Learn translator first
 		if (_ev.source != synthLib::MidiEventSource::Device)

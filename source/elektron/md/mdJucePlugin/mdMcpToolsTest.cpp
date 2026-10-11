@@ -172,6 +172,26 @@ int main()
 			&& song.get("rows").getArrayElement(0).get("tempo").getDouble() == 120.0,
 			"Song dump was not decoded correctly");
 
+		// send_sysex returns what the device answers: only messages matching the prefix, up to maxReplies
+		auto replyFeeder = std::async(std::launch::async, [&processor]
+		{
+			std::this_thread::sleep_for(std::chrono::milliseconds(150));
+			for(const uint8_t id : {0x72, 0x52, 0x52})
+			{
+				synthLib::SMidiEvent reply(synthLib::MidiEventSource::Device);
+				reply.sysex = {0xf0, 0x00, 0x20, 0x3c, 0x02, 0x00, id, 0x05, 0xf7};
+				processor.addMidiEvent(reply);
+			}
+		});
+		const auto answered = call(port, "send_sysex", "{\"hex\":\"F0 00 20 3C 02 00 53 05 F7\","
+			"\"waitForReplyMs\":3000,\"maxReplies\":2,\"replyPrefix\":\"F0 00 20 3C 02 00 52\"}");
+		replyFeeder.get();
+		require(answered.get("replies").getArraySize() == 2
+			&& answered.get("replies").getArrayElement(0).getString() == "F0 00 20 3C 02 00 52 05 F7",
+			"send_sysex did not return the device's replies");
+		require(!call(port, "send_sysex", "{\"hex\":\"F0 00 20 3C 02 00 53 05 F7\"}").hasProperty("replies"),
+			"send_sysex without a wait should not report replies");
+
 		const auto started = call(port, "start_audio_capture", "{\"seconds\":1}");
 		const auto path = started.get("path").getString().toStdString();
 		require(!path.empty(), "MCP capture did not return a path");

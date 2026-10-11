@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <atomic>
 #include <mutex>
+#include <vector>
 
 #include "bypassBuffer.h"
 #include "controller.h"
@@ -78,6 +79,11 @@ namespace pluginLib
 
 		void addMidiEvent(const synthLib::SMidiEvent& _ev);
 		bool tryAddRealtimeMidiEvent(const synthLib::SMidiEvent& _ev);
+		// Sends a SysEx message to the device and returns the SysEx messages the device sends back: up to
+		// _maxReplies of those starting with _prefix (any, if empty), or fewer when _timeoutMs runs out.
+		// Blocks the caller, never the audio thread. Audio processing must be running.
+		std::vector<std::vector<uint8_t>> sendSysexAndCollectReplies(const synthLib::SMidiEvent& _request,
+			const std::vector<uint8_t>& _prefix, size_t _maxReplies, int _timeoutMs);
 		// Several legacy controllers batch preset parameter updates and then ask the
 		// wrapper to republish the finished program in one host-visible operation.
 		void notifyHostOfProgramChange();
@@ -290,11 +296,22 @@ namespace pluginLib
 		std::vector<synthLib::SMidiEvent> m_midiOut;
 
 	private:
+		void collectSysexReply(const synthLib::SysexBuffer& _sysex);
 		void requestLatencyUpdate();
 		void recoverInvalidDevice();
 		void addHostMidiFeedback(const synthLib::SMidiEvent& _event);
 
 		const Properties m_properties;
+
+		// sendSysexAndCollectReplies: the buffers are sized before collecting starts, so the audio thread
+		// only copies into them.
+		std::mutex m_sysexReplyCallerMutex;
+		std::mutex m_sysexReplyMutex;
+		std::atomic<bool> m_sysexReplyCollecting{false};
+		std::vector<uint8_t> m_sysexReplyPrefix;
+		std::vector<uint8_t> m_sysexReplyBytes;
+		std::vector<size_t> m_sysexReplyEnds;
+		size_t m_sysexReplyMax = 0;
 		static_assert(std::atomic<float>::is_always_lock_free,
 			"Realtime output gain publication requires lock-free float atomics");
 		std::atomic<float> m_outputGain{1.0f};
