@@ -357,8 +357,9 @@ namespace mdJucePlugin
 				item.set("jumpTo", Json::fromInt(row[3]));
 				item.set("muteMask", Json::fromInt((row[4] << 8) | row[5]));
 				const auto tempoRaw = (row[6] << 8) | row[7];
-				// 0xffff: the row leaves the tempo alone
-				item.set("tempo", tempoRaw == 0xffff ? Json::null() : Json::fromDouble(tempoRaw / 30.0));
+				// 0xffff: the row leaves the tempo alone. Otherwise BPM * 24, as in the set-tempo SysEx:
+				// a row written as 138 * 30 played at 172.5 BPM on OS 1.63.
+				item.set("tempo", tempoRaw == 0xffff ? Json::null() : Json::fromDouble(tempoRaw / 24.0));
 				item.set("start", Json::fromInt(row[8]));
 				item.set("end", Json::fromInt(row[9]));
 				rows.append(item);
@@ -408,7 +409,7 @@ namespace mdJucePlugin
 					if((!tempoValue.isInt() && !tempoValue.isDouble())
 						|| tempoValue.getDouble() < 30.0 || tempoValue.getDouble() > 300.0)
 						throw std::runtime_error("tempo must be 30..300 BPM, or null to leave it unchanged");
-					tempo = static_cast<int>(std::lround(tempoValue.getDouble() * 30.0));
+					tempo = static_cast<int>(std::lround(tempoValue.getDouble() * 24.0));
 				}
 				append({static_cast<uint8_t>(pattern), static_cast<uint8_t>(optional("kit", 0, 63, 0)),
 					static_cast<uint8_t>(optional("loops", 0, 63, 0)),

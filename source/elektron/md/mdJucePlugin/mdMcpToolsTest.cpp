@@ -162,7 +162,7 @@ int main()
 		songDump[6] = 0x69; songDump[7] = 2; songDump[8] = 2;
 		songDump[9] = 1; songDump[0x1A] = 0x40;
 		songDump[0x1B] = 0x7f; songDump[0x1C] = 1; songDump[0x1D] = 2;
-		songDump[0x21] = 0x0e; songDump[0x23] = 0x10;
+		songDump[0x21] = 0x0b; songDump[0x23] = 0x40;	// 2880 = 120 BPM * 24
 		songDump[0x25] = 15; songDump.back() = 0xf7;
 		auto songFeeder = feedDump(songDump);
 		const auto song = call(port, "get_song_rows", "{\"song\":1}");
