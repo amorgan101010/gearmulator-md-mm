@@ -561,16 +561,19 @@ namespace mdJucePlugin
 	std::vector<uint8_t> AudioPluginAudioProcessor::requestMcpDump(
 		const uint8_t _requestId, const uint8_t _replyId, const int _slot)
 	{
-		if(m_model != md::MachineModel::Machinedrum || _slot < 0 || _slot > 127
+		const bool monomachine = m_model == md::MachineModel::Monomachine;
+		// pattern on both; song on the Machinedrum, kit on the Monomachine
+		if(_slot < 0 || _slot > 127
 			|| !((_requestId == 0x68 && _replyId == 0x67)
-				|| (_requestId == 0x6a && _replyId == 0x69)))
-			throw std::runtime_error("Invalid Machinedrum dump request");
+				|| (!monomachine && _requestId == 0x6a && _replyId == 0x69)
+				|| (monomachine && _requestId == 0x53 && _replyId == 0x52)))
+			throw std::runtime_error("Invalid dump request");
 		std::lock_guard requestLock(m_mcpDumpRequestMutex);
 		m_mcpDumpReplyId.store(_replyId, std::memory_order_relaxed);
 		m_mcpDumpSlot.store(static_cast<uint8_t>(_slot), std::memory_order_relaxed);
 		m_mcpDumpState.store(1, std::memory_order_release);
 		synthLib::SMidiEvent event(synthLib::MidiEventSource::Editor);
-		event.sysex = {0xf0, 0x00, 0x20, 0x3c, 0x02, 0x00,
+		event.sysex = {0xf0, 0x00, 0x20, 0x3c, static_cast<uint8_t>(monomachine ? 0x03 : 0x02), 0x00,
 			_requestId, static_cast<uint8_t>(_slot), 0xf7};
 		// Through the processor, so the reply counts as editor-requested and stays off MIDI OUT.
 		addMidiEvent(event);
@@ -588,7 +591,7 @@ namespace mdJucePlugin
 		while(m_mcpDumpState.load(std::memory_order_acquire) == 2)
 			std::this_thread::sleep_for(1ms);
 		m_mcpDumpState.store(0, std::memory_order_release);
-		throw std::runtime_error("Timed out waiting for Machinedrum dump; keep audio processing active");
+		throw std::runtime_error("Timed out waiting for the dump; keep audio processing active");
 	}
 
 	std::vector<uint8_t> AudioPluginAudioProcessor::writeMcpDump(const std::vector<uint8_t>& _dump)
@@ -624,7 +627,7 @@ namespace mdJucePlugin
 		const auto folder = juce::File(juce::String::fromUTF8(getDataFolder().c_str())).getChildFile("mcp-captures");
 		if(folder.createDirectory().failed())
 			throw std::runtime_error("Could not create MCP capture folder");
-		capture->path = folder.getNonexistentChildFile("machinedrum", ".wav").getFullPathName().toStdString();
+		capture->path = folder.getNonexistentChildFile(m_model == md::MachineModel::Monomachine ? "monomachine" : "machinedrum", ".wav").getFullPathName().toStdString();
 		const auto path = capture->path;
 		std::lock_guard lock(m_mcpAudioMutex);
 		if(m_mcpAudioCapture)

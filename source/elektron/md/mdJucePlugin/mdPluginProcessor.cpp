@@ -655,11 +655,13 @@ namespace mdJucePlugin
 		// The environment switch is also useful in hosts without an open editor.
 		if(getPlugin().getRealtimeInstrumentation().isEnabled())
 			setPerformanceDiagnosticsEnabled(true);
-		if(m_model == md::MachineModel::Machinedrum)
-			setMcpToolsRegistrar([this](mcpServer::McpServer& _server)
-			{
+		setMcpToolsRegistrar([this](mcpServer::McpServer& _server)
+		{
+			if(m_model == md::MachineModel::Machinedrum)
 				registerMcpTools(_server);
-			});
+			else
+				registerMonomachineMcpTools(_server);
+		});
 	}
 
 	juce::AudioProcessor::BusesProperties AudioPluginAudioProcessor::createBusesProperties()

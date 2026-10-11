@@ -96,6 +96,8 @@ namespace mdJucePlugin
 		std::vector<uint8_t> requestMcpDump(uint8_t _requestId, uint8_t _replyId, int _slot);
 		// Sends a pattern/song dump and returns it once the slot reads back identical.
 		std::vector<uint8_t> writeMcpDump(const std::vector<uint8_t>& _dump);
+		// Monomachine: opens SYSEX RECEIVE from the panel, sends a pattern dump, returns it as read back.
+		std::vector<uint8_t> writeMonomachineMcpDump(const std::vector<uint8_t>& _dump);
 		std::string startMcpAudioCapture(double _seconds);
 		std::string stopMcpAudioCapture();
 		// true when the running OS is not the stock image (community X.xx builds add machines)
@@ -170,6 +172,7 @@ namespace mdJucePlugin
 		std::mutex m_mcpAudioMutex;
 		std::unique_ptr<McpAudioCapture> m_mcpAudioCapture;
 		void registerMcpTools(mcpServer::McpServer& _server);
+		void registerMonomachineMcpTools(mcpServer::McpServer& _server);
 		std::mutex m_remoteSlotNamesMutex;
 		std::vector<std::string> m_remoteSlotNames;
 		uint32_t m_remoteSlotNamesTime = 0;

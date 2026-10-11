@@ -36,6 +36,8 @@ set(SOURCES
 	mdProductSkins.h
 	mdPluginProcessor.cpp mdPluginProcessor.h
 	mdMcpTools.cpp
+	mdMonomachineDump.h
+	mdMonomachineMcpTools.cpp
 	mdStorageImage.cpp mdStorageImage.h
 	mdPluginEntry.cpp
 
