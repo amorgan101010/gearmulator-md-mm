@@ -141,6 +141,7 @@ namespace md
 	{
 		Editor,
 		Remote,
+		Mcp,
 		Count
 	};
 

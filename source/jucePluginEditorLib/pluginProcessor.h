@@ -4,7 +4,8 @@
 
 #include <memory>
 #include <optional>
-namespace mcpServer { class McpPluginServer; }
+#include <functional>
+namespace mcpServer { class McpPluginServer; class McpServer; }
 
 namespace jucePluginEditorLib
 {
@@ -50,6 +51,8 @@ namespace jucePluginEditorLib
 
 		mcpServer::McpPluginServer* getMcpServer() const { return m_mcpServer.get(); }
 		void setMcpServerEnabled(bool _enabled);
+		// Product-specific tools are installed on the current server and every later restart.
+		void setMcpToolsRegistrar(std::function<void(mcpServer::McpServer&)> _registrar);
 
 	protected:
 		enum class ConfigMode
@@ -78,5 +81,6 @@ namespace jucePluginEditorLib
 		std::optional<bool> m_forceSoftwareRendererForSession;
 
 		std::unique_ptr<mcpServer::McpPluginServer> m_mcpServer;
+		std::function<void(mcpServer::McpServer&)> m_mcpToolsRegistrar;
 	};
 }

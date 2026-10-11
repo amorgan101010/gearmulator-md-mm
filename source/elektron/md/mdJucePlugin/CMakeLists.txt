@@ -35,6 +35,7 @@ set(SOURCES
 	mdProductSkinPolicy.h
 	mdProductSkins.h
 	mdPluginProcessor.cpp mdPluginProcessor.h
+	mdMcpTools.cpp
 	mdStorageImage.cpp mdStorageImage.h
 	mdPluginEntry.cpp
 
@@ -311,6 +312,9 @@ if(BUILD_TESTING)
 	endfunction()
 
 	add_md_automation_firmware_test(mdSysexLifecycleTest mdSysexLifecycleTest.cpp)
+	add_md_automation_firmware_test(mdMcpToolsTest mdMcpToolsTest.cpp)
+	add_test(NAME mdMcpToolsTest COMMAND mdMcpToolsTest)
+	set_tests_properties(mdMcpToolsTest PROPERTIES LABELS "Integration;MCP" TIMEOUT 60)
 	add_test(NAME mdSysexLifecycleTest COMMAND mdSysexLifecycleTest)
 	set_tests_properties(mdSysexLifecycleTest PROPERTIES
 		LABELS "Integration;FirmwareTest" SKIP_RETURN_CODE 77 TIMEOUT 600)

@@ -25,6 +25,9 @@
 #include "juce_audio_plugin_client/Standalone/juce_StandaloneFilterWindow.h"
 
 #include <cstdlib>
+#include <algorithm>
+#include <cmath>
+#include <cstring>
 #include <memory>
 #include <optional>
 #include <utility>
@@ -210,6 +213,10 @@ namespace mdJucePlugin
 
 	void AudioPluginAudioProcessor::observeMidiEvent(const synthLib::SMidiEvent& _ev)
 	{
+		if(_ev.a == synthLib::M_START || _ev.a == synthLib::M_CONTINUE)
+			m_observedTransportState.store(1, std::memory_order_release);
+		else if(_ev.a == synthLib::M_STOP)
+			m_observedTransportState.store(0, std::memory_order_release);
 		const auto reply = replyTo(elektronId(_ev));
 		if(reply < 0)
 			return;
@@ -227,11 +234,55 @@ namespace mdJucePlugin
 		if(m_remotePanel)
 			m_remotePanel->feedAudio(_outputs[0], _outputs[1], _numSamples,
 				_nonRealtime ? 0 : static_cast<uint32_t>(std::lround(_sampleRate)));
+		if(m_mcpAudioMutex.try_lock())
+		{
+			if(auto* const capture = m_mcpAudioCapture.get())
+			{
+				if(_outputs[0] && _numSamples && std::lround(_sampleRate) == capture->sampleRate)
+				{
+					const auto remaining = capture->pcm.size() / 2 - capture->framesWritten;
+					const auto count = std::min(_numSamples, remaining);
+					const auto* const right = _outputs[1] ? _outputs[1] : _outputs[0];
+					for(size_t i = 0; i < count; ++i)
+					{
+						const auto sample = [](const float _value)
+						{
+							return static_cast<int16_t>(std::lrint(std::clamp(
+								std::isfinite(_value) ? _value : 0.0f, -1.0f, 1.0f) * 32767.0f));
+						};
+						capture->pcm[(capture->framesWritten + i) * 2] = sample(_outputs[0][i]);
+						capture->pcm[(capture->framesWritten + i) * 2 + 1] = sample(right[i]);
+					}
+					capture->framesWritten += count;
+				}
+			}
+			m_mcpAudioMutex.unlock();
+		}
 	}
 
 	bool AudioPluginAudioProcessor::sendToPhysicalOut(const synthLib::SMidiEvent& _ev)
 	{
+		if(_ev.source == synthLib::MidiEventSource::Device)
+		{
+			if(_ev.a == synthLib::M_START || _ev.a == synthLib::M_CONTINUE)
+				m_observedTransportState.store(1, std::memory_order_release);
+			else if(_ev.a == synthLib::M_STOP)
+				m_observedTransportState.store(0, std::memory_order_release);
+		}
 		const auto id = elektronId(_ev);
+		if(_ev.source == synthLib::MidiEventSource::Device && id >= 0
+			&& id == m_mcpDumpReplyId.load(std::memory_order_relaxed)
+			&& _ev.sysex.size() >= 11 && _ev.sysex[9] == m_mcpDumpSlot.load(std::memory_order_relaxed)
+			&& _ev.sysex.size() <= m_mcpDumpBuffer.size())
+		{
+			int waiting = 1;
+			if(m_mcpDumpState.compare_exchange_strong(waiting, 2, std::memory_order_acq_rel))
+			{
+				m_mcpDumpSize = _ev.sysex.size();
+				std::memcpy(m_mcpDumpBuffer.data(), _ev.sysex.data(), m_mcpDumpSize);
+				m_mcpDumpState.store(3, std::memory_order_release);
+			}
+		}
 		if(_ev.source != synthLib::MidiEventSource::Device || id < 0)
 			return true;
 		// asked for on MIDI In: answer on MIDI OUT
@@ -604,6 +655,11 @@ namespace mdJucePlugin
 		// The environment switch is also useful in hosts without an open editor.
 		if(getPlugin().getRealtimeInstrumentation().isEnabled())
 			setPerformanceDiagnosticsEnabled(true);
+		if(m_model == md::MachineModel::Machinedrum)
+			setMcpToolsRegistrar([this](mcpServer::McpServer& _server)
+			{
+				registerMcpTools(_server);
+			});
 	}
 
 	juce::AudioProcessor::BusesProperties AudioPluginAudioProcessor::createBusesProperties()
@@ -621,6 +677,7 @@ namespace mdJucePlugin
 
 	AudioPluginAudioProcessor::~AudioPluginAudioProcessor()
 	{
+		setMcpServerEnabled(false);
 		stopTimer();
 		m_remotePanel.reset();
 		m_performanceReport.reset();

@@ -493,6 +493,15 @@ namespace mdJucePlugin
 			event.sysex = toPluginSysex(md::automation::sysex::statusRequest(m_model,
 				md::automation::sysex::StatusParameter::CurrentTrack));
 			sendMidiEvent(event);
+			// The panel's LEDs identify a page, but the pattern number comes from firmware.
+			if(m_currentPattern.load(std::memory_order_acquire) < 0
+				|| now - m_lastPatternPollMs >= 1000)
+			{
+				m_lastPatternPollMs = now;
+				event.sysex = toPluginSysex(md::automation::sysex::statusRequest(m_model,
+					md::automation::sysex::StatusParameter::Pattern));
+				sendMidiEvent(event);
+			}
 		}
 		if(m_automationReady.load(std::memory_order_acquire))
 		{
@@ -1114,6 +1123,7 @@ namespace mdJucePlugin
 				return true;
 			}
 			case md::automation::sysex::StatusParameter::Pattern:
+				m_currentPattern.store(status->value, std::memory_order_release);
 				return true;
 			case md::automation::sysex::StatusParameter::CurrentTrack:
 				m_currentTrack.store(status->value, std::memory_order_release);
@@ -1178,6 +1188,8 @@ namespace mdJucePlugin
 			else if(status->parameter == md::automation::sysex::StatusParameter::Kit
 				|| status->parameter == md::automation::sysex::StatusParameter::Pattern)
 			{
+				if(status->parameter == md::automation::sysex::StatusParameter::Pattern)
+					m_currentPattern.store(status->value, std::memory_order_release);
 				requestKitState();
 			}
 		}

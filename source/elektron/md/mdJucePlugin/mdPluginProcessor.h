@@ -88,6 +88,16 @@ namespace mdJucePlugin
 		// to the machine's current track. Returns false while the current track is unknown.
 		bool assignMachineToCurrentTrack(uint16_t _machineId);
 		int getCurrentTrack();
+		int getObservedTransportState() const { return m_observedTransportState.load(std::memory_order_acquire); }
+		md::FrontPanel getMcpPanelSnapshot();
+		bool sendMcpPanelControl(md::PanelControl _control, bool _down);
+		bool sendMcpPanelEncoder(md::PanelEncoder _encoder, int _steps);
+		bool selectMcpTrack(int _track);
+		std::vector<uint8_t> requestMcpDump(uint8_t _requestId, uint8_t _replyId, int _slot);
+		// Sends a pattern/song dump and returns it once the slot reads back identical.
+		std::vector<uint8_t> writeMcpDump(const std::vector<uint8_t>& _dump);
+		std::string startMcpAudioCapture(double _seconds);
+		std::string stopMcpAudioCapture();
 		// true when the running OS is not the stock image (community X.xx builds add machines)
 		bool isExtendedOs() const;
 		// Machinedrum UW sample slots as stored in the emulated machine
@@ -139,7 +149,27 @@ namespace mdJucePlugin
 		// Before m_remotePanel: its thread calls sendPanelEvent, which uses these, until it is destroyed.
 		std::mutex m_remotePanelInputMutex;
 		std::shared_ptr<md::PanelInput> m_remotePanelInput;
+		std::mutex m_mcpPanelMutex;
+		md::PanelRowState m_mcpPanelRows;
+		std::atomic<int> m_observedTransportState{-1}; // MIDI start/continue/stop, -1 until observed
+		std::mutex m_mcpDumpRequestMutex;
+		std::atomic<int> m_mcpDumpState{0}; // idle, waiting, writing, ready
+		std::atomic<uint8_t> m_mcpDumpReplyId{0};
+		std::atomic<uint8_t> m_mcpDumpSlot{0};
+		std::array<uint8_t, 8192> m_mcpDumpBuffer{};
+		size_t m_mcpDumpSize = 0;
 		std::unique_ptr<md::RemotePanelServer> m_remotePanel;
+		struct McpAudioCapture
+		{
+			std::vector<int16_t> pcm;
+			size_t framesWritten = 0;
+			size_t droppedBlocks = 0;
+			uint32_t sampleRate = 0;
+			std::string path;
+		};
+		std::mutex m_mcpAudioMutex;
+		std::unique_ptr<McpAudioCapture> m_mcpAudioCapture;
+		void registerMcpTools(mcpServer::McpServer& _server);
 		std::mutex m_remoteSlotNamesMutex;
 		std::vector<std::string> m_remoteSlotNames;
 		uint32_t m_remoteSlotNamesTime = 0;

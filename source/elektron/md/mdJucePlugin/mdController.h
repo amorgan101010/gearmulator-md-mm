@@ -78,6 +78,7 @@ namespace mdJucePlugin
 
 		// Current track of the machine (polled via status request 0x22), -1 while unknown.
 		int getCurrentTrack() const { return m_currentTrack.load(std::memory_order_acquire); }
+		int getCurrentPattern() const { return m_currentPattern.load(std::memory_order_acquire); }
 		uint8_t getCurrentKitSlot() const { return m_currentKit.load(std::memory_order_acquire); }
 		uint16_t getSceneBankCount() const
 		{
@@ -209,7 +210,9 @@ namespace mdJucePlugin
 		std::atomic<bool> m_automationReady{false};
 		std::atomic<uint64_t> m_lastStatePollMs{0};
 		std::atomic<int> m_currentTrack{-1};
+		std::atomic<int> m_currentPattern{-1};
 		uint64_t m_lastTrackPollMs = 0;
+		uint64_t m_lastPatternPollMs = 0;
 		std::atomic<uint64_t> m_kitDumpRequestRevision{0};
 		std::atomic<bool> m_forceApplyRequestedKitDump{false};
 		// Unfulfilled baseline/reload intent survives retry status barriers and
