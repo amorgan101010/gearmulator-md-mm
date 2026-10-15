@@ -19,30 +19,30 @@ namespace mdGolden
 
 	inline constexpr Entry g_entries[] =
 	{
-		{ "MM", "idle", 0xb18910aa787e8383ull, 0x975f1fc495faa255ull, 0x999e36f297cf7dceull },	// 0 non-zero samples, 1037 MIDI events
-		{ "MM", "machine 000 GND-GND", 0xb18910aa787e8383ull, 0x5c87d27b22e412bfull, 0xb0da47352e162ea9ull },	// 0 non-zero samples, 77 MIDI events
-		{ "MM", "machine 001 GND-SIN", 0xb5fd497bc585aeabull, 0xaf91217e287db927ull, 0x999e36f297cf7dceull },	// 87902 non-zero samples, 76 MIDI events
-		{ "MM", "machine 002 GND-NOIS", 0x3a15d6d458205ab4ull, 0x908d2b14b39a7e18ull, 0x9cd900ae79fba7feull },	// 88064 non-zero samples, 77 MIDI events
-		{ "MM", "machine 004 SWAVE-SAW", 0x6ea9ae4c2a141773ull, 0x5879a60d8af3478aull, 0xc188a332db270442ull },	// 88064 non-zero samples, 77 MIDI events
-		{ "MM", "machine 005 SWAVE-PULS", 0xe33e8c0b406815e5ull, 0xec692687ab3e4247ull, 0x03a96d1f2de52bd0ull },	// 88064 non-zero samples, 77 MIDI events
-		{ "MM", "machine 014 SWAVE-ENS", 0x6c5e93de174e4155ull, 0xa4636def4472854aull, 0x7b316e59aab9e3f5ull },	// 88064 non-zero samples, 76 MIDI events
-		{ "MM", "machine 003 SID-6581", 0xc4a7447ab469febfull, 0x9bbc829d7d4a0664ull, 0x742d74907b54cdc2ull },	// 88064 non-zero samples, 77 MIDI events
-		{ "MM", "machine 006 DPRO-WAVE", 0x6f5f1a3dc70b1c86ull, 0xcb3f1de705197913ull, 0x5d3b429ea37d3ef0ull },	// 88064 non-zero samples, 77 MIDI events
-		{ "MM", "machine 007 DPRO-BBOX", 0xe933fa80866cf375ull, 0x9d00163577706887ull, 0x4072d636ba806326ull },	// 87976 non-zero samples, 76 MIDI events
-		{ "MM", "machine 032 DPRO-DDRW", 0x991add2995b67297ull, 0x25fe8a659716c69dull, 0x1528a39ee3dff4ecull },	// 88056 non-zero samples, 77 MIDI events
-		{ "MM", "machine 033 DPRO-DENS", 0x26953cc2808638f2ull, 0x3d31b4d344b6101aull, 0x72629bb9fb93af74ull },	// 88063 non-zero samples, 77 MIDI events
-		{ "MM", "machine 008 FM+-STAT", 0x007e51f0dfba0016ull, 0x3fb436ea5381446aull, 0xecfb086866548cdfull },	// 88064 non-zero samples, 77 MIDI events
-		{ "MM", "machine 009 FM+-PAR", 0x2f9e0f806d343ed4ull, 0x0d8bba2e0c55eec1ull, 0xc26c98f504ae2498ull },	// 88064 non-zero samples, 76 MIDI events
-		{ "MM", "machine 010 FM+-DYN", 0x5f1f77635e8088d9ull, 0x36e4e939c6825c12ull, 0x89f8f3b221f7f764ull },	// 88064 non-zero samples, 77 MIDI events
-		{ "MM", "machine 011 VO-VO-6", 0x4cae18bc51cf9859ull, 0x99bd341699b8ec81ull, 0xa170e24e20604f35ull },	// 88064 non-zero samples, 77 MIDI events
-		{ "MM", "machine 012 FX-THRU", 0xe6c8e31911524cd2ull, 0xee563de1a68a9ff9ull, 0x15e99557afc2eba4ull },	// 87598 non-zero samples, 77 MIDI events
-		{ "MM", "machine 013 FX-REVERB", 0x6f17e990c19a998eull, 0x9e3aae0bfd50d5baull, 0x54f3a45d57299c24ull },	// 81365 non-zero samples, 76 MIDI events
-		{ "MM", "machine 015 FX-CHORUS", 0x958423ef9560accbull, 0x091c7bd5ff742f56ull, 0x8bf2a054c46c2440ull },	// 46157 non-zero samples, 77 MIDI events
-		{ "MM", "machine 016 FX-DYNAMIX", 0xc077cc72498179ffull, 0x843946e2b80b6c23ull, 0x7e1b17c7788ad80cull },	// 43972 non-zero samples, 77 MIDI events
-		{ "MM", "machine 017 FX-RINGMOD", 0x85d6d4585ad5d9eeull, 0x7136618464601b5cull, 0x0f044524c3f33f21ull },	// 3542 non-zero samples, 76 MIDI events
-		{ "MM", "sequencer pattern", 0xa06684c65b1e617eull, 0xa02dc7c88e5784aeull, 0x008bddbfab11a4b8ull },	// 352255 non-zero samples, 477 MIDI events
-		{ "MM", "restored pattern", 0xb003811b2910471bull, 0xd4d1a96c4164e6f6ull, 0x008bddbfab11a4b8ull },	// 352254 non-zero samples, 1231 MIDI events
-		{ "MM", "screen navigation", 0xaedac3154f8a0383ull, 0xef374f3855dfb2beull, 0xc42ba2e7c23b4aaeull },	// 0 non-zero samples, 335 MIDI events
+		{ "MM", "idle", 0xb18910aa787e8383ull, 0x1efe950671a5f70bull, 0x999e36f297cf7dceull },	// 0 non-zero samples, 1037 MIDI events
+		{ "MM", "machine 000 GND-GND", 0xb18910aa787e8383ull, 0x9e97c7299b9561f2ull, 0xb0da47352e162ea9ull },	// 0 non-zero samples, 77 MIDI events
+		{ "MM", "machine 001 GND-SIN", 0xfdec6da779445338ull, 0x1e3498ff0a2ace62ull, 0x999e36f297cf7dceull },	// 87870 non-zero samples, 76 MIDI events
+		{ "MM", "machine 002 GND-NOIS", 0x2ff53750d21a5667ull, 0xe92460a97a5a92f8ull, 0x9cd900ae79fba7feull },	// 88064 non-zero samples, 77 MIDI events
+		{ "MM", "machine 004 SWAVE-SAW", 0x126c001d03d11824ull, 0xc08c4c00d44e7613ull, 0xc188a332db270442ull },	// 88063 non-zero samples, 77 MIDI events
+		{ "MM", "machine 005 SWAVE-PULS", 0x7395d0a8a054bba7ull, 0x1957a0ea53763cb0ull, 0x03a96d1f2de52bd0ull },	// 88064 non-zero samples, 77 MIDI events
+		{ "MM", "machine 014 SWAVE-ENS", 0x3877557d544d3af3ull, 0x63cfd44cf56f720aull, 0x7b316e59aab9e3f5ull },	// 88064 non-zero samples, 76 MIDI events
+		{ "MM", "machine 003 SID-6581", 0x9eb8027eaa60cc83ull, 0xf899bf8664fab715ull, 0x742d74907b54cdc2ull },	// 88064 non-zero samples, 77 MIDI events
+		{ "MM", "machine 006 DPRO-WAVE", 0x1c0b90935c9576b9ull, 0xe82f1c6f30c16a06ull, 0x5d3b429ea37d3ef0ull },	// 88064 non-zero samples, 77 MIDI events
+		{ "MM", "machine 007 DPRO-BBOX", 0x18f8ad7a3ab41ef5ull, 0x536df77af55d6fabull, 0x4072d636ba806326ull },	// 88010 non-zero samples, 76 MIDI events
+		{ "MM", "machine 032 DPRO-DDRW", 0x6025b4e119841b36ull, 0x679b25ee2c08247bull, 0x1528a39ee3dff4ecull },	// 88060 non-zero samples, 77 MIDI events
+		{ "MM", "machine 033 DPRO-DENS", 0x61691e302947d7d4ull, 0x52e2cb1950f93075ull, 0x72629bb9fb93af74ull },	// 88064 non-zero samples, 77 MIDI events
+		{ "MM", "machine 008 FM+-STAT", 0x6ea19ed1a0281610ull, 0x0788932541436e51ull, 0xecfb086866548cdfull },	// 88064 non-zero samples, 77 MIDI events
+		{ "MM", "machine 009 FM+-PAR", 0x65b675ae147fad8aull, 0x4ec8f4372a5a56f8ull, 0xc26c98f504ae2498ull },	// 88064 non-zero samples, 76 MIDI events
+		{ "MM", "machine 010 FM+-DYN", 0x6319f3af481e1ad5ull, 0xb2e89ddb8b2dfb53ull, 0x89f8f3b221f7f764ull },	// 88064 non-zero samples, 77 MIDI events
+		{ "MM", "machine 011 VO-VO-6", 0xc289a028ec80e951ull, 0xe4487bf756db38dfull, 0xa170e24e20604f35ull },	// 88064 non-zero samples, 77 MIDI events
+		{ "MM", "machine 012 FX-THRU", 0x42d6e372ef0a5f0dull, 0xf9aaf7462da2b0c3ull, 0x15e99557afc2eba4ull },	// 87394 non-zero samples, 77 MIDI events
+		{ "MM", "machine 013 FX-REVERB", 0xe80b3a5cf3c0e78full, 0xe17afe75e9201165ull, 0x54f3a45d57299c24ull },	// 58388 non-zero samples, 76 MIDI events
+		{ "MM", "machine 015 FX-CHORUS", 0x137c3bf34daa3880ull, 0x24a4ee5b06482ee2ull, 0x8bf2a054c46c2440ull },	// 264 non-zero samples, 77 MIDI events
+		{ "MM", "machine 016 FX-DYNAMIX", 0xb18910aa787e8383ull, 0x16481d730c6ecb68ull, 0x7e1b17c7788ad80cull },	// 0 non-zero samples, 77 MIDI events
+		{ "MM", "machine 017 FX-RINGMOD", 0xb18910aa787e8383ull, 0x0e252653939035d8ull, 0x0f044524c3f33f21ull },	// 0 non-zero samples, 76 MIDI events
+		{ "MM", "sequencer pattern", 0xb8d737d65e6fe0f7ull, 0xbc6d1c6959dbd031ull, 0x008bddbfab11a4b8ull },	// 352256 non-zero samples, 477 MIDI events
+		{ "MM", "restored pattern", 0x27af873232f1a14cull, 0x066de6fa82f03145ull, 0x008bddbfab11a4b8ull },	// 352254 non-zero samples, 1231 MIDI events
+		{ "MM", "screen navigation", 0xaedac3154f8a0383ull, 0x80e59d3c7936c993ull, 0xc42ba2e7c23b4aaeull },	// 0 non-zero samples, 335 MIDI events
 		{ "MD", "idle", 0xb18910aa787e8383ull, 0x1aa8cdb4437d3ce3ull, 0xced06548dea6d04aull },	// 0 non-zero samples, 16 MIDI events
 		{ "MD", "machine 000 GND---", 0xfc94017490eac5bbull, 0x1659833ff3d44398ull, 0x949e9a7a8aafc061ull },	// 87515 non-zero samples, 479 MIDI events
 		{ "MD", "machine 001 GND-SN", 0x2cc46b91bfd2b08dull, 0x14650fb0739d0383ull, 0xb916babfc029da3bull },	// 88064 non-zero samples, 0 MIDI events
