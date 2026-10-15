@@ -20,6 +20,10 @@
 //                                      the scheduler synchronises the processors, and require every
 //                                      scenario to change, apart from the few that are silent by design
 //
+// MD_GOLDEN_WAV_DIR=<dir> also writes each scenario's main stereo output (outputs 1 and 2) to
+// <dir>/<model>-<scenario>.wav, 32-bit float at 44.1 kHz, for listening to a change before
+// adopting new references. The files are the firmware's output: keep them out of the tree.
+//
 // Both checking modes first prove the comparison can fail: corrupted, missing and extra reference
 // values must each be reported.
 //
@@ -42,9 +46,11 @@
 #include "emulatedBudget.h"
 #include "sdsTestData.h"
 #include "baseLib/filesystem.h"
+#include "synthLib/wavWriter.h"
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -158,6 +164,8 @@ namespace
 			Result r{m_model == md::MachineModel::Monomachine ? "MM" : "MD", _scenario};
 			Fnv audio, midi;
 			m_haveLast = false;
+			static const char* const wavDir = std::getenv("MD_GOLDEN_WAV_DIR");
+			std::vector<float> stereo;
 			std::vector<synthLib::SMidiEvent> midiOut;
 			const auto blocks = _frames / m_block;
 			for(uint32_t b = 0; b < blocks; ++b)
@@ -211,9 +219,24 @@ namespace
 							++r.activeSamples;
 					}
 				}
+				if(wavDir)
+				{
+					for(uint32_t i = 0; i < m_block; ++i)
+						for(size_t ch = 0; ch < 2; ++ch)
+							stereo.push_back(i < words[ch].size()
+								? static_cast<float>(static_cast<int32_t>(words[ch][i] << 8) >> 8) / 8388608.0f : 0.0f);
+				}
 			}
 			r.audio = audio.value;
 			r.midi = midi.value;
+			if(wavDir)
+			{
+				std::string name = r.model + "-" + _scenario;
+				for(auto& c : name)
+					if(!std::isalnum(static_cast<unsigned char>(c)) && c != '-' && c != '+')
+						c = '_';
+				synthLib::WavWriter().write(std::string(wavDir) + "/" + name + ".wav", 32, true, 2, 44100, stereo);
+			}
 
 			// The screen at the end of the scenario: machine names, parameter pages, menus.
 			const auto panel = m_hw.getFrontPanelSnapshot();
