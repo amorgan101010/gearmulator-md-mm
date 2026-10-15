@@ -9,13 +9,19 @@
 
 #include "mdLib/mddevice.h"
 #include "mdLib/mdhardware.h"
+#include "mdLib/mdmachines.h"
+#include "mdLib/mdremotepanel.h"
 #include "mdLib/mdromloader.h"
 #include "mdLib/mdtypes.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstring>
 #include <exception>
+#include <fstream>
 #include <memory>
+#include <mutex>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -33,6 +39,32 @@ struct gm_device
 	std::vector<synthLib::SMidiEvent> midiIn;
 	std::vector<synthLib::SMidiEvent> midiOut;
 	std::vector<float> silence;	// stands in for a single null input channel
+
+	// Remote panel. Its threads read the panel input and the front-panel publisher, which the
+	// unit swaps on a deferred state restore: panelMutex orders those reads against the swap.
+	std::unique_ptr<md::RemotePanelServer> remote;
+	std::mutex panelMutex;
+	// SysEx posted from other threads (the panel page, a host's MIDI thread), for the next render:
+	// the render thread checks a flag and then only try-locks.
+	std::mutex remoteSysexMutex;
+	std::vector<std::vector<uint8_t>> remoteSysex;
+	std::vector<std::vector<uint8_t>> remoteSysexTaken;
+	std::atomic<bool> sysexPosted{false};
+
+	bool postSysex(const uint8_t* _data, const size_t _size)
+	{
+		const std::lock_guard lock(remoteSysexMutex);
+		if(remoteSysex.size() >= 256)
+			return false;
+		remoteSysex.emplace_back(_data, _data + _size);
+		sysexPosted.store(true, std::memory_order_release);
+		return true;
+	}
+
+	~gm_device()
+	{
+		remote.reset();	// joins its threads before the unit goes
+	}
 };
 
 namespace
@@ -224,7 +256,30 @@ extern "C"
 					_d.midiIn.pop_back();
 			}
 
+			// SysEx from the remote page, if its lock is free right now (never wait on the audio
+			// thread); it goes in at frame 0 of this block.
+			if(_d.sysexPosted.load(std::memory_order_acquire))
+			{
+				std::unique_lock lock(_d.remoteSysexMutex, std::try_to_lock);
+				if(lock.owns_lock())
+				{
+					_d.remoteSysexTaken.swap(_d.remoteSysex);
+					_d.sysexPosted.store(false, std::memory_order_relaxed);
+				}
+			}
+			// Ahead of the block's own events (they are in frame order; these are at frame 0).
+			for(auto it = _d.remoteSysexTaken.rbegin(); it != _d.remoteSysexTaken.rend(); ++it)
+			{
+				synthLib::SMidiEvent e(synthLib::MidiEventSource::Editor);
+				e.sysex.assign(it->begin(), it->end());	// SysEx allocates by nature; the page sends it rarely
+				_d.midiIn.insert(_d.midiIn.begin(), std::move(e));
+			}
+			_d.remoteSysexTaken.clear();
+
 			_d.device.process(inputs, outputs, _io->frames, _d.midiIn, _d.midiOut);
+
+			if(_d.remote && _io->outputs[0] && _io->outputs[1])
+				_d.remote->feedAudio(_io->outputs[0], _io->outputs[1], _io->frames, md::g_samplerate);
 
 			_io->midi_out_count = 0;
 			_io->midi_out_data_size = 0;
@@ -319,6 +374,109 @@ extern "C"
 		return _device && _device->device.hasDeferredStateRestore() ? 1 : 0;
 	}
 
+	GM_API gm_status gm_device_remote_panel_start(gm_device* _device, const gm_remote_panel_info* _info, int32_t* _boundPort)
+	{
+		return guarded(_device, [&](gm_device& _d)
+		{
+			if(!_info || _info->struct_size < sizeof(gm_remote_panel_info) || !_info->resource_dir)
+				return fail(&_d, GM_ERROR_ARGUMENT, "remote panel needs an info struct with resource_dir");
+			if(_d.remote)
+				return fail(&_d, GM_ERROR_REJECTED, "the remote panel is already running");
+			const std::string dir = _info->resource_dir;
+			md::RemotePanelServer::Callbacks callbacks;
+			gm_device* const d = &_d;
+			callbacks.sendPanelEvent = [d](const uint8_t _command, const uint8_t _argument)
+			{
+				const std::lock_guard lock(d->panelMutex);
+				const auto input = d->device.getPanelInput();
+				return input && input->trySend(_command, _argument, md::PanelSource::Remote);
+			};
+			callbacks.snapshot = [d]
+			{
+				const std::lock_guard lock(d->panelMutex);
+				return d->device.getFrontPanelSnapshot();
+			};
+			callbacks.sendSysex = [d](const std::vector<uint8_t>& _sysex)
+			{
+				if(!_sysex.empty())
+					d->postSysex(_sysex.data(), _sysex.size());
+			};
+			callbacks.resource = [dir](const std::string& _path, std::string& _data, std::string& _mime)
+			{
+				// No skins here: the page's optional skin sheet is empty.
+				if(_path == "skin/remote.css")
+				{
+					_data.clear();
+					_mime = "text/css";
+					return true;
+				}
+				if(_path.empty() || _path.find("..") != std::string::npos || _path.rfind("skin/", 0) == 0)
+					return false;
+				std::ifstream file(dir + "/" + _path, std::ios::binary);
+				if(!file)
+					return false;
+				std::ostringstream content;
+				content << file.rdbuf();
+				_data = content.str();
+				_mime.clear();
+				return true;
+			};
+			const auto model = _d.model;
+			// The machine selector needs the current track, which the plug-in learns from its
+			// controller; a headless unit does not know it, so the catalogue says -1 and assigning
+			// from the page is off.
+			callbacks.machineInfo = [model]
+			{
+				return md::machines::toJson(model, false, -1, {});
+			};
+			callbacks.assignMachine = [](uint16_t)
+			{
+				return false;
+			};
+			auto server = std::make_unique<md::RemotePanelServer>(_d.model, _info->port, std::move(callbacks));
+			if(!server->start())
+				return fail(&_d, GM_ERROR_REJECTED, "no free port for the remote panel");
+			if(_boundPort)
+				*_boundPort = server->getPort();
+			_d.remote = std::move(server);
+			return GM_OK;
+		});
+	}
+
+	GM_API gm_status gm_device_post_sysex(gm_device* _device, const uint8_t* _data, const uint32_t _size)
+	{
+		// Thread-safe by design, so not through guarded(): it must not touch _device->error,
+		// which belongs to the device's own thread.
+		if(!_device || !_data || _size < 2 || _data[0] != 0xf0 || _data[_size - 1] != 0xf7)
+			return GM_ERROR_ARGUMENT;
+		try
+		{
+			return _device->postSysex(_data, _size) ? GM_OK : GM_ERROR_REJECTED;
+		}
+		catch(...)
+		{
+			return GM_ERROR_INTERNAL;
+		}
+	}
+
+	GM_API void gm_device_remote_panel_stop(gm_device* _device)
+	{
+		if(!_device)
+			return;
+		try
+		{
+			_device->remote.reset();
+		}
+		catch(...)
+		{
+		}
+	}
+
+	GM_API int32_t gm_device_remote_panel_clients(const gm_device* _device)
+	{
+		return _device && _device->remote ? static_cast<int32_t>(_device->remote->getClientCount()) : 0;
+	}
+
 	GM_API gm_status gm_device_service_restore(gm_device* _device)
 	{
 		return guarded(_device, [&](gm_device& _d)
@@ -338,6 +496,7 @@ extern "C"
 					"The deferred project state failed validation; the live machine was not changed.");
 				return fail(&_d, GM_ERROR_STATE, "the deferred state failed validation");
 			}
+			const std::lock_guard panelLock(_d.panelMutex);
 			if(!_d.device.commitDeferredStateRestore(*prepared, generation))
 				return fail(&_d, GM_ERROR_STATE, "the deferred state could not be committed");
 			return GM_OK;

@@ -155,6 +155,32 @@ GM_API int gm_device_is_restore_pending(const gm_device* device);
    again later. GM_ERROR_STATE: the candidate failed; the running unit is unchanged. */
 GM_API gm_status gm_device_service_restore(gm_device* device);
 
+/* ---- Remote front panel (additive to version 1) --------------------------------------------
+
+   The unit's front panel as a web page: an HTTP server on 127.0.0.1-reachable `port` (or the next
+   free one) serving the panel app from `resource_dir` and a WebSocket that pushes the LCD and LEDs
+   and takes button, encoder and SysEx input (the protocol of md::RemotePanelServer). It runs on
+   threads of its own; button and encoder input go to the unit's panel queue, SysEx is handed to
+   the next render, and the main outputs are streamed to pages that ask (sound) from render.
+   start and stop are control calls (not concurrently with render or destroy); destroy stops it. */
+typedef struct gm_remote_panel_info
+{
+	uint32_t struct_size;
+	int32_t port;				/* first port to try */
+	const char* resource_dir;	/* folder with index.html / index-mm.html, panel.js, ... (UTF-8) */
+} gm_remote_panel_info;
+
+GM_API gm_status gm_device_remote_panel_start(gm_device* device, const gm_remote_panel_info* info, int32_t* bound_port);
+GM_API void gm_device_remote_panel_stop(gm_device* device);
+
+/* Posts a complete SysEx message (F0 .. F7) for the unit's MIDI IN, delivered at frame 0 of the
+   next render. Unlike the rest of this API it may be called from any thread, concurrently with
+   render: for a host whose MIDI arrives on a thread of its own. GM_ERROR_REJECTED: 256 messages
+   are already waiting. */
+GM_API gm_status gm_device_post_sysex(gm_device* device, const uint8_t* data, uint32_t size);
+/* Pages currently connected. */
+GM_API int32_t gm_device_remote_panel_clients(const gm_device* device);
+
 #ifdef __cplusplus
 }
 #endif
