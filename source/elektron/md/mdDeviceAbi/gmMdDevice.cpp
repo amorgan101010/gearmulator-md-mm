@@ -241,7 +241,10 @@ extern "C"
 					continue;
 				}
 				std::memcpy(_io->midi_out_data + _io->midi_out_data_size, bytes, size);
-				_io->midi_out[_io->midi_out_count++] = {e.offset, size, _io->midi_out_data_size};
+				// The unit stamps a byte with the first sample at or after its UART time, so a byte
+				// sent in the block's last fraction of a frame lands on frame == frames: clamp it in.
+				const uint32_t frame = std::min(e.offset, _io->frames ? _io->frames - 1 : 0u);
+				_io->midi_out[_io->midi_out_count++] = {frame, size, _io->midi_out_data_size};
 				_io->midi_out_data_size += size;
 			}
 			return GM_OK;

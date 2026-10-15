@@ -117,6 +117,8 @@ static Run play(gm_device* device, double seconds)
 		}
 		run.midiOut += io.midi_out_count;
 		CHECK(io.midi_out_dropped == 0, "MIDI out dropped %u", io.midi_out_dropped);
+		for(uint32_t i = 0; i < io.midi_out_count; ++i)
+			CHECK(midiOut[i].frame < BLOCK, "MIDI out at frame %u of a %u-frame block", midiOut[i].frame, BLOCK);
 		for(int ch = 0; ch < 6; ++ch)
 			for(uint32_t i = 0; i < BLOCK; ++i)
 			{

@@ -82,7 +82,8 @@ typedef struct gm_midi_event
 } gm_midi_event;
 
 /* A MIDI message the unit sent: its bytes are data_offset .. data_offset + size in the
-   caller's data buffer. */
+   caller's data buffer. frame is within the block (0 .. frames - 1), so a host can pass it
+   on as another unit's midi_in frame unchanged. */
 typedef struct gm_midi_out_event
 {
 	uint32_t frame;
