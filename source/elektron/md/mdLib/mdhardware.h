@@ -177,6 +177,9 @@ namespace md
 		Dsp& getDspMixer()    { return m_dspMixer; }	// DSP1, index 0 (main/output)
 
 		void processUC();
+		// Sizes the output buffers for host blocks of up to _frames ahead of real-time use, so the
+		// first processAudio of that size does not allocate. Output is unaffected.
+		void reserveBlockSize(uint32_t _frames) { ensureBufferSize(_frames); }
 		void processAudio(uint32_t _frames, uint32_t _latency);
 		void processAudio(const synthLib::TAudioOutputs& _outputs, uint32_t _frames, uint32_t _latency);
 		void processAudio(const synthLib::TAudioInputs& _inputs,
