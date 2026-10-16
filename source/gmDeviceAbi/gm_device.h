@@ -115,6 +115,23 @@ typedef int32_t gm_status;
    - status: controller RAM pages 00, 01, 02 and B7, 4 * 256 bytes, as of a render at most
      about 12 ms of audio ago. */
 
+/* GM_MODEL_MACHINEDRUM's and GM_MODEL_MONOMACHINE's formats (libgm_md):
+   - state: the plug-in's device state (patch RAM; the MM's user flash window; the MD's flash
+     sectors that differ from its factory baseline).
+   - control messages: front-panel packets, 2 bytes [command, argument], as the panel bus carries
+     them: a row snapshot (command 0x20.., argument the mask of keys held; merged with the other
+     rows this host holds) or an encoder command (argument a signed step count). Applied at the
+     start of the render they arrive in (the panel UART is far slower than a block). Other sizes
+     are ignored.
+   - status: the remote panel's state frame: LCD controller VRAM [half 0..1][page 0..7][column
+     0..63], 1024 bytes (each byte 8 vertical pixels, LSB at the top), then the 14 LED bank bytes
+     0x20..0x2d as the bus carries them (active low). Published after every render.
+   - state snapshot: read_state_snapshot asks the render thread for a copy of the state-bearing
+     memory (taken after the next render, without allocating) and returns the newest copy,
+     encoded on the caller's thread into exactly what get_state returns. GM_ERROR_REJECTED until
+     the first copy exists and while a restored state is being applied. The MD's encoding takes
+     tens of milliseconds. */
+
 typedef struct gm_rom_image
 {
 	uint32_t role;				/* GM_ROM_* */

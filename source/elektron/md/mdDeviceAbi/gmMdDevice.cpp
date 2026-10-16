@@ -10,11 +10,13 @@
 #include "mdLib/mddevice.h"
 #include "mdLib/mdhardware.h"
 #include "mdLib/mdmachines.h"
+#include "mdLib/mdpanel.h"
 #include "mdLib/mdremotepanel.h"
 #include "mdLib/mdromloader.h"
 #include "mdLib/mdtypes.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cstring>
 #include <exception>
@@ -39,6 +41,88 @@ struct gm_device
 	std::vector<synthLib::SMidiEvent> midiIn;
 	std::vector<synthLib::SMidiEvent> midiOut;
 	std::vector<float> silence;	// stands in for a single null input channel
+	std::vector<uint8_t> rom;	// the firmware image: the flash baseline a state is encoded against
+
+	// GM_CAP_CONTROLS: rows the host's control events hold (render thread only).
+	md::PanelSourceRows controlRows;
+
+	// GM_CAP_STATUS, state snapshots. A reader asks (requested); the render thread copies the
+	// state-bearing memory into the slot no reader holds, after a render, and publishes it; the
+	// reader encodes the published slot on its own thread. Two slots: the writer only writes the
+	// one that is not published, and skips while the reader holds it.
+	struct SnapshotSlot
+	{
+		md::Hardware::StateSnapshot data;
+		uint64_t captureId = 0;
+		bool recopy = true;		// render thread: copy everything (a new machine, or a restore)
+	};
+	std::array<SnapshotSlot, 2> slots;
+	std::atomic<int> published{-1};
+	std::atomic<int> reading{-1};
+	std::atomic<bool> snapshotRequested{false};
+	std::atomic<bool> snapshotInvalidationRequested{false};
+	uint64_t snapshotEpoch = 0; // distinguishes state replacements with reset write counters
+	uint64_t snapshotCaptureId = 0;
+	uint64_t capturedEpoch = ~uint64_t{0};
+	uint64_t capturedPatchRamWrites = ~uint64_t{0};
+	uint64_t capturedFlashWrites = ~uint64_t{0};
+	bool capturedFactoryBaseline = false;
+	std::mutex snapshotReaderMutex;		// readers among themselves only
+	std::vector<uint8_t> snapshotEncoded;	// reader side: the last encoded state
+	std::vector<uint8_t> snapshotCandidate;	// reader side: candidate used to compare exact state bytes
+	uint64_t snapshotEncodedCaptureId = ~uint64_t{0};
+	uint64_t snapshotGeneration = 0;	// reader side: changes only when the encoded persistent bytes change
+
+	void takeSnapshotIfAsked()
+	{
+		// Restore calls can originate on the control thread while render continues. Keep the
+		// snapshot epoch and slot bookkeeping render-owned; the control side only invalidates the
+		// published pointer and asks this thread to force a fresh copy.
+		if(snapshotInvalidationRequested.load(std::memory_order_acquire)
+			&& snapshotInvalidationRequested.exchange(false, std::memory_order_acq_rel))
+		{
+			++snapshotEpoch;
+			for(auto& slot : slots)
+				slot.recopy = true;
+		}
+		if(!snapshotRequested.load(std::memory_order_acquire)
+			|| device.isProjectStateRestorePending())
+			return;
+		const int p = published.load(std::memory_order_seq_cst);
+		const int w = p == 0 ? 1 : 0;
+		if(reading.load(std::memory_order_seq_cst) == w)
+			return;	// a reader still holds it; try after the next render
+		auto& slot = slots[w];
+		if(slot.recopy)
+		{
+			slot.data.patchRamWrites = ~uint64_t{0};
+			slot.data.flashWrites = ~uint64_t{0};
+			slot.data.hasFactoryBaseline = false;
+			slot.recopy = false;
+		}
+		if(!device.getHardware().captureStateSnapshot(slot.data))
+			return;
+		if(capturedEpoch != snapshotEpoch
+			|| capturedPatchRamWrites != slot.data.patchRamWrites
+			|| capturedFlashWrites != slot.data.flashWrites
+			|| capturedFactoryBaseline != slot.data.hasFactoryBaseline)
+		{
+			++snapshotCaptureId;
+			capturedEpoch = snapshotEpoch;
+			capturedPatchRamWrites = slot.data.patchRamWrites;
+			capturedFlashWrites = slot.data.flashWrites;
+			capturedFactoryBaseline = slot.data.hasFactoryBaseline;
+		}
+		slot.captureId = snapshotCaptureId;
+		snapshotRequested.store(false, std::memory_order_relaxed);
+		published.store(w, std::memory_order_seq_cst);
+	}
+
+	void invalidateSnapshots()
+	{
+		snapshotInvalidationRequested.store(true, std::memory_order_release);
+		published.store(-1, std::memory_order_seq_cst);
+	}
 
 	// Remote panel. Its threads read the panel input and the front-panel publisher, which the
 	// unit swaps on a deferred state restore: panelMutex orders those reads against the swap.
@@ -116,7 +200,11 @@ namespace
 	}
 
 	constexpr uint32_t g_commonCapabilities = GM_CAP_MIDI_OUT | GM_CAP_ADVANCE | GM_CAP_PANEL_INPUT
-		| GM_CAP_STATE | GM_CAP_POST_SYSEX | GM_CAP_REMOTE_PANEL;
+		| GM_CAP_STATE | GM_CAP_POST_SYSEX | GM_CAP_REMOTE_PANEL | GM_CAP_CONTROLS | GM_CAP_STATUS;
+
+	// read_status: the LCD controller VRAM [half 0..1][page 0..7][column 0..63], then the LED
+	// banks 0x20..0x2d as the panel bus carries them (active low): the remote panel's state frame.
+	constexpr size_t g_statusSize = 2 * 8 * 64 + md::FrontPanel::g_ledBankCount;
 
 	uint32_t modelCapabilities(const md::MachineModel _model)
 	{
@@ -198,6 +286,9 @@ extern "C"
 			auto device = std::make_unique<gm_device>(params, model);
 			if(!device->device.isValid())
 				return GM_ERROR_FIRMWARE;
+			device->rom = params.romData;
+			for(auto& slot : device->slots)
+				device->device.getHardware().sizeStateSnapshot(slot.data);
 			device->midiIn.reserve(g_midiEventReserve);
 			device->midiOut.reserve(g_midiEventReserve);
 			device->device.reserveMidiEventCapacity(g_midiEventReserve);
@@ -313,7 +404,30 @@ extern "C"
 			}
 			_d.remoteSysexTaken.clear();
 
+			// Control events: front-panel packets, [command, argument]. A row snapshot (0x20..) is
+			// merged with the rows this host holds, then queued like the plug-in's window does, without
+			// its lock: this thread is the device's. A block's packets go in before it renders.
+			if(_io->struct_size >= sizeof(gm_render_io) && _io->control_in_count)
+			{
+				if(!_io->control_in)
+					return fail(&_d, GM_ERROR_ARGUMENT, "control_in is null");
+				const auto input = _d.device.getPanelInput();
+				for(uint32_t i = 0; i < _io->control_in_count; ++i)
+				{
+					const auto& c = _io->control_in[i];
+					if(c.frame >= _io->frames)
+						return fail(&_d, GM_ERROR_ARGUMENT, "a control event lies outside the block");
+					if(c.size != 2 || !c.data || !input)
+						continue;	// not a panel packet: ignored, as the format says
+					const uint8_t command = c.data[0];
+					const uint8_t argument = md::PanelSourceRows::isRow(command)
+						? _d.controlRows.set(md::PanelSource::Remote, command, c.data[1]) : c.data[1];
+					(void)input->queue().tryPush(command, argument);
+				}
+			}
+
 			_d.device.process(inputs, outputs, _io->frames, _d.midiIn, _d.midiOut);
+			_d.takeSnapshotIfAsked();
 
 			if(_d.remote && _io->outputs[0] && _io->outputs[1])
 				_d.remote->feedAudio(_io->outputs[0], _io->outputs[1], _io->frames, md::g_samplerate);
@@ -399,9 +513,14 @@ extern "C"
 			if(!_data || !_size)
 				return fail(&_d, GM_ERROR_ARGUMENT, "empty state");
 			const std::vector<uint8_t> state(_data, _data + _size);
+			_d.invalidateSnapshots();
 			if(!_d.device.setState(state, synthLib::StateTypeGlobal))
 				return fail(&_d, GM_ERROR_STATE, _d.device.projectStateRestoreError().empty()
 					? "the state could not be applied" : _d.device.projectStateRestoreError().c_str());
+			// Close the race with a render that consumed the pre-restore invalidation just before
+			// setState finished. The next render will recopy the applied state (or wait for a
+			// deferred restore to commit).
+			_d.invalidateSnapshots();
 			return GM_OK;
 		});
 	}
@@ -534,10 +653,101 @@ extern "C"
 				return fail(&_d, GM_ERROR_STATE, "the deferred state failed validation");
 			}
 			const std::lock_guard panelLock(_d.panelMutex);
+			_d.invalidateSnapshots();
 			if(!_d.device.commitDeferredStateRestore(*prepared, generation))
 				return fail(&_d, GM_ERROR_STATE, "the deferred state could not be committed");
 			return GM_OK;
 		});
+	}
+
+	// Any thread, concurrently with render (GM_CAP_STATUS).
+	static gm_status gmMdReadStatus(const gm_device* _device, uint8_t* _buffer, const size_t _capacity, size_t* _size, uint64_t* _generation)
+	{
+		if(!_device || !_size)
+			return GM_ERROR_ARGUMENT;
+		*_size = g_statusSize;
+		if(!_buffer)
+			return GM_OK;
+		if(_capacity < g_statusSize)
+			return GM_ERROR_CAPACITY;
+		const auto publisher = _device->device.getFrontPanelPublisher();
+		md::FrontPanelPublishedState state;
+		uint64_t generation = 0;
+		if(!publisher || !publisher->tryReadPublishedState(state, generation))
+			return GM_ERROR_REJECTED;
+		size_t at = 0;
+		for(uint32_t half = 0; half < 2; ++half)
+			for(uint32_t page = 0; page < 8; ++page)
+				for(uint32_t col = 0; col < 64; ++col)
+					_buffer[at++] = state.panel.getLcdVram(half, page, col);
+		for(uint32_t bank = 0; bank < md::FrontPanel::g_ledBankCount; ++bank)
+			_buffer[at++] = state.panel.getLedBankRaw(static_cast<md::FrontPanel::LedBank>(md::FrontPanel::g_firstLedBank + bank));
+		if(_generation)
+			*_generation = generation;
+		return GM_OK;
+	}
+
+	// Any thread, concurrently with render (GM_CAP_STATUS). Asks the render thread for a fresh
+	// snapshot and answers with the newest one it has published, encoded here (tens of ms for the
+	// MD's flash). GM_ERROR_REJECTED until the first snapshot exists (the render after the first
+	// call) and while a restored state is being applied.
+	static gm_status gmMdReadStateSnapshot(const gm_device* _device, uint8_t* _buffer, const size_t _capacity, size_t* _size, uint64_t* _generation)
+	{
+		if(!_device || !_size)
+			return GM_ERROR_ARGUMENT;
+		auto& d = const_cast<gm_device&>(*_device);	// the snapshot machinery is the reader's mutable side
+		try
+		{
+			d.snapshotRequested.store(true, std::memory_order_release);
+			const std::lock_guard lock(d.snapshotReaderMutex);
+			int p = -1;
+			for(;;)
+			{
+				p = d.published.load(std::memory_order_seq_cst);
+				if(p < 0)
+					return GM_ERROR_REJECTED;
+				d.reading.store(p, std::memory_order_seq_cst);
+				if(d.published.load(std::memory_order_seq_cst) == p)
+					break;
+			}
+			const auto& slot = d.slots[static_cast<size_t>(p)];
+			bool ok = true;
+			if(slot.captureId != d.snapshotEncodedCaptureId)
+			{
+				d.snapshotCandidate.clear();
+				ok = md::Device::encodeStateSnapshot(d.snapshotCandidate, slot.data, d.model, d.rom);
+				if(ok)
+				{
+					// Write counters say when bytes may have changed. They can also move on a
+					// same-value write or a restore of identical state, so the public generation
+					// follows the encoded persistent bytes, not those counters.
+					if(d.snapshotEncoded != d.snapshotCandidate)
+					{
+						d.snapshotEncoded.swap(d.snapshotCandidate);
+						++d.snapshotGeneration;
+					}
+					d.snapshotEncodedCaptureId = slot.captureId;
+				}
+			}
+			const auto generation = d.snapshotGeneration;
+			d.reading.store(-1, std::memory_order_seq_cst);
+			if(!ok)
+				return GM_ERROR_STATE;
+			*_size = d.snapshotEncoded.size();
+			if(_generation)
+				*_generation = generation;
+			if(!_buffer)
+				return GM_OK;
+			if(_capacity < d.snapshotEncoded.size())
+				return GM_ERROR_CAPACITY;
+			std::copy(d.snapshotEncoded.begin(), d.snapshotEncoded.end(), _buffer);
+			return GM_OK;
+		}
+		catch(...)
+		{
+			d.reading.store(-1, std::memory_order_seq_cst);
+			return GM_ERROR_INTERNAL;
+		}
 	}
 
 	GM_API gm_status gm_get_device_api(const uint32_t _abiMajor, const gm_device_api** _api)
@@ -567,8 +777,8 @@ extern "C"
 			gm_device_remote_panel_start,
 			gm_device_remote_panel_stop,
 			gm_device_remote_panel_clients,
-			nullptr,	// read_status: no GM_CAP_STATUS
-			nullptr,	// read_state_snapshot
+			gmMdReadStatus,
+			gmMdReadStateSnapshot,
 		};
 		if(!_api)
 			return GM_ERROR_ARGUMENT;
