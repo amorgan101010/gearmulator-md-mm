@@ -308,6 +308,12 @@ target_link_libraries(mmPatternRepro PRIVATE mdLib)
 # Local tool (not a test): records one note so its pitch can be tracked over time.
 add_executable(mmPitchProbe mmPitchProbe.cpp)
 target_link_libraries(mmPitchProbe PRIVATE mdLib)
+# Drives the front panel, then plays noise into the audio inputs: a local tool, and with --check
+# the Monomachine audio-input test.
+add_executable(mmInputProbe mmInputProbe.cpp)
+target_link_libraries(mmInputProbe PRIVATE mdLib)
+add_test(NAME mmAudioInputFirmwareTest COMMAND mmInputProbe --check)
+set_tests_properties(mmAudioInputFirmwareTest PROPERTIES LABELS "Firmware" SKIP_RETURN_CODE 77)
 add_executable(mdmmLcdCapture mdmmLcdCapture.cpp ../mdJucePlugin/mdLcdInteractionModel.cpp)
 target_link_libraries(mdmmLcdCapture PRIVATE mdLib)
 
