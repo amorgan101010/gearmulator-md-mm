@@ -159,7 +159,24 @@ extern "C"
 		if(!_device)
 			return GM_ERROR_ARGUMENT;
 		*_device = nullptr;
-		if(!_info || _info->struct_size < sizeof(gm_device_create_info) || !_info->rom || !_info->rom_size)
+		// Minor 0-2 callers pass the struct without images and flags.
+		if(!_info || _info->struct_size < offsetof(gm_device_create_info, images))
+			return GM_ERROR_ARGUMENT;
+		const uint8_t* rom = _info->rom;
+		size_t romSize = _info->rom_size;
+		if(!rom && _info->struct_size >= sizeof(gm_device_create_info) && _info->images)
+		{
+			// The one image may come as GM_ROM_MAIN instead.
+			for(uint32_t i = 0; i < _info->image_count; ++i)
+			{
+				if(_info->images[i].role == GM_ROM_MAIN)
+				{
+					rom = _info->images[i].data;
+					romSize = _info->images[i].size;
+				}
+			}
+		}
+		if(!rom || !romSize)
 			return GM_ERROR_ARGUMENT;
 		if(_info->model != GM_MODEL_MACHINEDRUM && _info->model != GM_MODEL_MONOMACHINE)
 			return GM_ERROR_ARGUMENT;
@@ -168,7 +185,7 @@ extern "C"
 			const auto model = _info->model == GM_MODEL_MONOMACHINE
 				? md::MachineModel::Monomachine : md::MachineModel::Machinedrum;
 			synthLib::DeviceCreateParams params;
-			params.romData.assign(_info->rom, _info->rom + _info->rom_size);
+			params.romData.assign(rom, rom + romSize);
 			// A label only, never opened. md::RomData counts a ROM without a name as invalid, and an
 			// invalid ROM sends state restore to RomLoader::findROM, which searches the disk.
 			params.romName = "gm_device";
@@ -217,8 +234,10 @@ extern "C"
 		_info->sample_rate = md::g_samplerate;
 		_info->input_channels = 2;
 		_info->output_channels = 6;
-		if(_info->struct_size >= sizeof(gm_device_info))
+		if(_info->struct_size >= offsetof(gm_device_info, firmware_id))
 			_info->capabilities = modelCapabilities(_device->model);
+		if(_info->struct_size >= sizeof(gm_device_info))
+			_info->firmware_id = nullptr;	// the ROM's model is checked, its release is not
 		return GM_OK;
 	}
 

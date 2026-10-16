@@ -38,6 +38,8 @@
  *   0  the core functions.
  *   1  remote front panel and post_sysex (were added without a version step; see GM_CAP_*).
  *   2  gm_get_device_api, GM_CAP_*, gm_device_info.capabilities.
+ *   3  GM_MODEL_DRUMSTATION; ROM images with roles and create flags in gm_device_create_info;
+ *      gm_device_info.firmware_id.
  */
 #ifndef GM_DEVICE_H
 #define GM_DEVICE_H
@@ -56,7 +58,7 @@ extern "C" {
 #endif
 
 #define GM_DEVICE_ABI_VERSION 1u
-#define GM_DEVICE_ABI_MINOR 2u
+#define GM_DEVICE_ABI_MINOR 3u
 
 /* Capabilities. In gm_device_api.capabilities: what the library implements (its optional table
    entries are non-null exactly when their bit is set). In gm_device_info.capabilities: what one
@@ -80,8 +82,25 @@ typedef int32_t gm_status;
 #define GM_ERROR_CAPACITY  -5	/* an output buffer was too small; see the reported size */
 #define GM_ERROR_INTERNAL  -6	/* anything else; the device should be destroyed */
 
-#define GM_MODEL_MACHINEDRUM 1u
-#define GM_MODEL_MONOMACHINE 2u
+/* Models, one registry for every device library. */
+#define GM_MODEL_MACHINEDRUM 1u		/* libgm_md */
+#define GM_MODEL_MONOMACHINE 2u		/* libgm_md */
+#define GM_MODEL_DRUMSTATION 3u		/* libgm_drumstation */
+
+/* Roles of the ROM images a unit is created from (minor 3). */
+#define GM_ROM_MAIN    0u	/* a unit with one image; libgm_md also takes it as rom/rom_size */
+#define GM_ROM_DS_U15  1u	/* DrumStation controller program, 32 KiB */
+#define GM_ROM_DS_U28  2u	/* DrumStation DSP code and samples, 512 KiB */
+
+typedef struct gm_rom_image
+{
+	uint32_t role;				/* GM_ROM_* */
+	const uint8_t* data;		/* copied */
+	size_t size;
+} gm_rom_image;
+
+/* gm_device_create_info.flags (minor 3) */
+#define GM_CREATE_ALLOW_UNKNOWN_FIRMWARE (1u << 0)	/* accept images whose checksum no known release has */
 
 typedef struct gm_device gm_device;
 
@@ -89,8 +108,12 @@ typedef struct gm_device_create_info
 {
 	uint32_t struct_size;		/* sizeof(gm_device_create_info) */
 	uint32_t model;				/* GM_MODEL_* */
-	const uint8_t* rom;			/* the firmware image; copied */
+	const uint8_t* rom;			/* the firmware image; copied. Null when images are given. */
 	size_t rom_size;
+	/* minor 3 */
+	const gm_rom_image* images;	/* for units with several images; image_count entries */
+	uint32_t image_count;
+	uint32_t flags;				/* GM_CREATE_* */
 } gm_device_create_info;
 
 typedef struct gm_device_info
@@ -101,6 +124,8 @@ typedef struct gm_device_info
 	uint32_t input_channels;
 	uint32_t output_channels;
 	uint32_t capabilities;		/* GM_CAP_* this unit supports (minor 2; 0 from older libraries) */
+	const char* firmware_id;	/* the release the ROMs were recognised as, e.g. "drumstation-v1.2";
+								   null when the library does not check (minor 3); static */
 } gm_device_info;
 
 /* A MIDI message. frame is relative to the start of the render call it travels with. */

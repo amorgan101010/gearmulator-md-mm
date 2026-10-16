@@ -51,8 +51,21 @@ static gm_device* boot(const unsigned char* rom, size_t romSize, uint32_t model)
 	info.rom = rom;
 	info.rom_size = romSize;
 	gm_device* device = NULL;
-	const gm_status status = gm_device_create(&info, &device);
+	gm_status status = gm_device_create(&info, &device);
 	CHECK(status == GM_OK && device, "create returned %d", status);
+	{
+		/* Minor 3: the same ROM as a GM_ROM_MAIN image creates the unit too. */
+		const gm_rom_image image = {GM_ROM_MAIN, rom, romSize};
+		gm_device_create_info byImage = info;
+		byImage.rom = NULL;
+		byImage.rom_size = 0;
+		byImage.images = &image;
+		byImage.image_count = 1;
+		gm_device* other = NULL;
+		status = gm_device_create(&byImage, &other);
+		CHECK(status == GM_OK && other, "create from a GM_ROM_MAIN image returned %d", status);
+		gm_device_destroy(other);
+	}
 	if(!device)
 		return NULL;
 	/* 20 emulated seconds in 256-frame steps, as mdmmBench boots. */
@@ -143,7 +156,7 @@ static void testErrors(const unsigned char* otherRom, size_t otherSize, uint32_t
 	CHECK(gm_device_create(NULL, &device) == GM_ERROR_ARGUMENT && device == NULL, "null info");
 	gm_device_create_info info;
 	memset(&info, 0, sizeof(info));
-	info.struct_size = sizeof(info) - 1;
+	info.struct_size = offsetof(gm_device_create_info, images) - 1;	/* shorter than any minor's */
 	info.model = model;
 	info.rom = otherRom;
 	info.rom_size = otherSize;
@@ -188,6 +201,11 @@ static void testModel(const char* name, const unsigned char* rom, size_t romSize
 		old.struct_size = offsetof(gm_device_info, capabilities);
 		CHECK(gm_device_get_info(a, &old) == GM_OK && old.output_channels == 6
 			&& old.capabilities == 0xabababab, "a minor-0 info struct must be accepted and not written past");
+		memset(&old, 0xab, sizeof(old));
+		old.struct_size = offsetof(gm_device_info, firmware_id);
+		CHECK(gm_device_get_info(a, &old) == GM_OK && old.capabilities == info.capabilities
+			&& *(const unsigned char*)&old.firmware_id == 0xab, "a minor-2 info struct must not be written past");
+		CHECK(info.firmware_id == NULL, "libgm_md does not identify the release");
 	}
 
 	/* Render guards. */
