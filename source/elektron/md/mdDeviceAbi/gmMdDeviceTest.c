@@ -8,6 +8,8 @@
  */
 #include "gmDeviceAbi/gm_device.h"
 
+#include <stddef.h>
+
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -174,6 +176,19 @@ static void testModel(const char* name, const unsigned char* rom, size_t romSize
 	info.struct_size = sizeof(info);
 	CHECK(gm_device_get_info(a, &info) == GM_OK && info.sample_rate == RATE && info.output_channels == 6
 		&& info.input_channels == 2 && info.model == model, "info");
+	{
+		/* Per-unit capabilities sit inside the library's, and a minor-0 sized struct still works. */
+		const gm_device_api* api = NULL;
+		CHECK(gm_get_device_api(GM_DEVICE_ABI_VERSION, &api) == GM_OK && api, "api");
+		CHECK(api && (info.capabilities & ~api->capabilities) == 0, "unit caps 0x%x outside library caps", info.capabilities);
+		CHECK((info.capabilities & GM_CAP_STATE) && (info.capabilities & GM_CAP_MIDI_OUT), "unit caps 0x%x", info.capabilities);
+		CHECK(!!(info.capabilities & GM_CAP_DEFERRED_RESTORE) == (model == GM_MODEL_MACHINEDRUM), "deferred restore bit");
+		gm_device_info old;
+		memset(&old, 0xab, sizeof(old));
+		old.struct_size = offsetof(gm_device_info, capabilities);
+		CHECK(gm_device_get_info(a, &old) == GM_OK && old.output_channels == 6
+			&& old.capabilities == 0xabababab, "a minor-0 info struct must be accepted and not written past");
+	}
 
 	/* Render guards. */
 	{
@@ -242,6 +257,35 @@ static void testModel(const char* name, const unsigned char* rom, size_t romSize
 int main(void)
 {
 	CHECK(gm_abi_version() == GM_DEVICE_ABI_VERSION, "abi version %u", gm_abi_version());
+	{
+		/* Negotiation: the table matches the named exports, and its optional entries are null
+		   exactly when their capability bit is clear. */
+		const gm_device_api* api = (const gm_device_api*)1;
+		CHECK(gm_get_device_api(GM_DEVICE_ABI_VERSION + 1, &api) == GM_ERROR_REJECTED && api == NULL, "other major");
+		CHECK(gm_get_device_api(GM_DEVICE_ABI_VERSION, NULL) == GM_ERROR_ARGUMENT, "null out");
+		CHECK(gm_get_device_api(GM_DEVICE_ABI_VERSION, &api) == GM_OK && api, "api");
+		if(api)
+		{
+			CHECK(api->struct_size == sizeof(gm_device_api) && api->abi_major == GM_DEVICE_ABI_VERSION
+				&& api->abi_minor == GM_DEVICE_ABI_MINOR && api->implementation, "api header");
+			CHECK(api->create == gm_device_create && api->destroy == gm_device_destroy && api->render == gm_device_render
+				&& api->get_info == gm_device_get_info && api->prepare == gm_device_prepare
+				&& api->send_midi == gm_device_send_midi && api->last_error == gm_device_last_error
+				&& api->is_audio_ready == gm_device_is_audio_ready && api->is_midi_ready == gm_device_is_midi_ready,
+				"core entries");
+			const uint32_t c = api->capabilities;
+#define CAP_MATCHES(bit, entry) (!!(c & (bit)) == ((entry) != NULL))
+			CHECK(CAP_MATCHES(GM_CAP_ADVANCE, api->advance) && CAP_MATCHES(GM_CAP_PANEL_INPUT, api->send_panel)
+				&& CAP_MATCHES(GM_CAP_STATE, api->get_state) && CAP_MATCHES(GM_CAP_STATE, api->set_state)
+				&& CAP_MATCHES(GM_CAP_DEFERRED_RESTORE, api->service_restore)
+				&& CAP_MATCHES(GM_CAP_DEFERRED_RESTORE, api->is_restore_pending)
+				&& CAP_MATCHES(GM_CAP_POST_SYSEX, api->post_sysex)
+				&& CAP_MATCHES(GM_CAP_REMOTE_PANEL, api->remote_panel_start)
+				&& CAP_MATCHES(GM_CAP_REMOTE_PANEL, api->remote_panel_stop)
+				&& CAP_MATCHES(GM_CAP_REMOTE_PANEL, api->remote_panel_clients), "caps 0x%x vs entries", c);
+#undef CAP_MATCHES
+		}
+	}
 	const char* mdPath = getenv("GEARMULATOR_MD_FIRMWARE_BIN");
 	const char* mmPath = getenv("GEARMULATOR_MM_FIRMWARE_BIN");
 	size_t mdSize = 0, mmSize = 0;

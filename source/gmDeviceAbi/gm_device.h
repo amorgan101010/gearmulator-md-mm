@@ -20,9 +20,24 @@
  * - Real time: after gm_device_prepare, gm_device_render and gm_device_send_panel do not allocate,
  *   lock or log, except that MIDI carrying SysEx may allocate (in or out). Create, destroy, state
  *   and gm_device_send_midi are control calls and may allocate.
- * - Versioning: gm_abi_version() returns GM_DEVICE_ABI_VERSION of the library. Structs begin
- *   with struct_size; the library reads only the fields that size covers, so a struct may grow
- *   at the end in a later version without breaking older callers.
+ * - Versioning: gm_abi_version() returns GM_DEVICE_ABI_VERSION of the library, the major
+ *   version: a change there breaks callers. Structs begin with struct_size; the library reads
+ *   and writes only the fields that size covers, so a struct may grow at the end in a later minor
+ *   version without breaking older callers.
+ * - Negotiation: a host asks gm_get_device_api for the major version it was built for and gets a
+ *   table of the library's functions, its minor version and its capabilities (GM_CAP_*). An
+ *   optional function a library lacks is null in the table and its bit is clear; a host checks
+ *   the bits it needs once, instead of finding out from a missing symbol. gm_device_info says
+ *   which of those a given unit (model) supports. The table is the supported way in: a process
+ *   may hold several device libraries (dlopen RTLD_LOCAL), whose same-named exports would
+ *   otherwise interpose on each other. The named exports remain for version 1 callers.
+ * - This header is the one definition. The Rust bindings are generated from it (bindgen in the
+ *   studio's gm-device build); nothing restates it by hand.
+ *
+ * Minor versions of major 1:
+ *   0  the core functions.
+ *   1  remote front panel and post_sysex (were added without a version step; see GM_CAP_*).
+ *   2  gm_get_device_api, GM_CAP_*, gm_device_info.capabilities.
  */
 #ifndef GM_DEVICE_H
 #define GM_DEVICE_H
@@ -41,6 +56,20 @@ extern "C" {
 #endif
 
 #define GM_DEVICE_ABI_VERSION 1u
+#define GM_DEVICE_ABI_MINOR 2u
+
+/* Capabilities. In gm_device_api.capabilities: what the library implements (its optional table
+   entries are non-null exactly when their bit is set). In gm_device_info.capabilities: what one
+   unit supports. A bit is a promise about behaviour, not only that a function exists. */
+#define GM_CAP_AUDIO_INPUT       (1u << 0)	/* render reads inputs; input_channels > 0 */
+#define GM_CAP_MIDI_OUT          (1u << 1)	/* render can return midi_out events */
+#define GM_CAP_ADVANCE           (1u << 2)	/* advance */
+#define GM_CAP_PANEL_INPUT       (1u << 3)	/* send_panel */
+#define GM_CAP_STATE             (1u << 4)	/* get_state / set_state */
+#define GM_CAP_DEFERRED_RESTORE  (1u << 5)	/* is_restore_pending / service_restore can be needed */
+#define GM_CAP_POST_SYSEX        (1u << 6)	/* post_sysex, from any thread */
+#define GM_CAP_REMOTE_PANEL      (1u << 7)	/* remote_panel_start / _stop / _clients */
+#define GM_CAP_RATE_PROVISIONAL  (1u << 8)	/* sample_rate is not established against hardware */
 
 typedef int32_t gm_status;
 #define GM_OK               0
@@ -71,6 +100,7 @@ typedef struct gm_device_info
 	uint32_t sample_rate;		/* the unit's own rate in Hz; render runs at this rate */
 	uint32_t input_channels;
 	uint32_t output_channels;
+	uint32_t capabilities;		/* GM_CAP_* this unit supports (minor 2; 0 from older libraries) */
 } gm_device_info;
 
 /* A MIDI message. frame is relative to the start of the render call it travels with. */
@@ -180,6 +210,45 @@ GM_API void gm_device_remote_panel_stop(gm_device* device);
 GM_API gm_status gm_device_post_sysex(gm_device* device, const uint8_t* data, uint32_t size);
 /* Pages currently connected. */
 GM_API int32_t gm_device_remote_panel_clients(const gm_device* device);
+
+/* ---- Negotiation (minor 2) ---------------------------------------------------------------- */
+
+typedef struct gm_device_api
+{
+	uint32_t struct_size;		/* sizeof the library's table; read no entry past it */
+	uint32_t abi_major;			/* GM_DEVICE_ABI_VERSION */
+	uint32_t abi_minor;			/* GM_DEVICE_ABI_MINOR of the library */
+	uint32_t capabilities;		/* GM_CAP_* of the library: the union of its models' */
+	const char* implementation;	/* e.g. "libgm_md: Machinedrum, Monomachine"; static */
+
+	/* Always present. */
+	gm_status (*create)(const gm_device_create_info* info, gm_device** device);
+	void (*destroy)(gm_device* device);
+	const char* (*last_error)(const gm_device* device);
+	gm_status (*get_info)(const gm_device* device, gm_device_info* info);
+	gm_status (*prepare)(gm_device* device, uint32_t max_frames);
+	gm_status (*render)(gm_device* device, gm_render_io* io);
+	gm_status (*send_midi)(gm_device* device, const uint8_t* data, uint32_t size);
+	int (*is_audio_ready)(const gm_device* device);
+	int (*is_midi_ready)(const gm_device* device);
+
+	/* Null unless the GM_CAP_ bit named is set. */
+	gm_status (*advance)(gm_device* device, uint32_t frames);					/* ADVANCE */
+	gm_status (*send_panel)(gm_device* device, uint8_t row, uint8_t mask);		/* PANEL_INPUT */
+	gm_status (*get_state)(gm_device* device, uint8_t* buffer, size_t capacity, size_t* size);	/* STATE */
+	gm_status (*set_state)(gm_device* device, const uint8_t* data, size_t size);	/* STATE */
+	int (*is_restore_pending)(const gm_device* device);							/* DEFERRED_RESTORE */
+	gm_status (*service_restore)(gm_device* device);								/* DEFERRED_RESTORE */
+	gm_status (*post_sysex)(gm_device* device, const uint8_t* data, uint32_t size);	/* POST_SYSEX */
+	gm_status (*remote_panel_start)(gm_device* device, const gm_remote_panel_info* info, int32_t* bound_port);	/* REMOTE_PANEL */
+	void (*remote_panel_stop)(gm_device* device);								/* REMOTE_PANEL */
+	int32_t (*remote_panel_clients)(const gm_device* device);					/* REMOTE_PANEL */
+} gm_device_api;
+
+/* The library's function table for a host built against major version `abi_major`. GM_OK and
+   *api set (static, valid while the library is loaded); GM_ERROR_REJECTED if the library does not
+   implement that major version, *api null. Any thread, any time. */
+GM_API gm_status gm_get_device_api(uint32_t abi_major, const gm_device_api** api);
 
 #ifdef __cplusplus
 }

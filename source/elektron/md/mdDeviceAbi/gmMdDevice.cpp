@@ -115,6 +115,20 @@ namespace
 		}
 	}
 
+	constexpr uint32_t g_commonCapabilities = GM_CAP_MIDI_OUT | GM_CAP_ADVANCE | GM_CAP_PANEL_INPUT
+		| GM_CAP_STATE | GM_CAP_POST_SYSEX | GM_CAP_REMOTE_PANEL;
+
+	uint32_t modelCapabilities(const md::MachineModel _model)
+	{
+		// The Machinedrum plays its input (INP-GA, measured with the studio's gm-audio-edge). The
+		// Monomachine takes input too, but no output from it has been shown (FX-THRU stays
+		// silent), so it does not claim GM_CAP_AUDIO_INPUT. Only a Machinedrum state can need its
+		// factory-flash baseline booted first.
+		return _model == md::MachineModel::Machinedrum
+			? g_commonCapabilities | GM_CAP_AUDIO_INPUT | GM_CAP_DEFERRED_RESTORE
+			: g_commonCapabilities;
+	}
+
 	bool toEvent(synthLib::SMidiEvent& _event, const uint8_t* _data, const uint32_t _size, const uint32_t _frame)
 	{
 		if(!_data || !_size)
@@ -196,12 +210,15 @@ extern "C"
 
 	GM_API gm_status gm_device_get_info(const gm_device* _device, gm_device_info* _info)
 	{
-		if(!_device || !_info || _info->struct_size < sizeof(gm_device_info))
+		// Minor 0 callers pass the struct without capabilities.
+		if(!_device || !_info || _info->struct_size < offsetof(gm_device_info, capabilities))
 			return GM_ERROR_ARGUMENT;
 		_info->model = _device->model == md::MachineModel::Monomachine ? GM_MODEL_MONOMACHINE : GM_MODEL_MACHINEDRUM;
 		_info->sample_rate = md::g_samplerate;
 		_info->input_channels = 2;
 		_info->output_channels = 6;
+		if(_info->struct_size >= sizeof(gm_device_info))
+			_info->capabilities = modelCapabilities(_device->model);
 		return GM_OK;
 	}
 
@@ -501,5 +518,44 @@ extern "C"
 				return fail(&_d, GM_ERROR_STATE, "the deferred state could not be committed");
 			return GM_OK;
 		});
+	}
+
+	GM_API gm_status gm_get_device_api(const uint32_t _abiMajor, const gm_device_api** _api)
+	{
+		static const gm_device_api api = {
+			sizeof(gm_device_api),
+			GM_DEVICE_ABI_VERSION,
+			GM_DEVICE_ABI_MINOR,
+			modelCapabilities(md::MachineModel::Machinedrum) | modelCapabilities(md::MachineModel::Monomachine),
+			"libgm_md: Machinedrum, Monomachine",
+			gm_device_create,
+			gm_device_destroy,
+			gm_device_last_error,
+			gm_device_get_info,
+			gm_device_prepare,
+			gm_device_render,
+			gm_device_send_midi,
+			gm_device_is_audio_ready,
+			gm_device_is_midi_ready,
+			gm_device_advance,
+			gm_device_send_panel,
+			gm_device_get_state,
+			gm_device_set_state,
+			gm_device_is_restore_pending,
+			gm_device_service_restore,
+			gm_device_post_sysex,
+			gm_device_remote_panel_start,
+			gm_device_remote_panel_stop,
+			gm_device_remote_panel_clients,
+		};
+		if(!_api)
+			return GM_ERROR_ARGUMENT;
+		if(_abiMajor != GM_DEVICE_ABI_VERSION)
+		{
+			*_api = nullptr;
+			return GM_ERROR_REJECTED;
+		}
+		*_api = &api;
+		return GM_OK;
 	}
 }

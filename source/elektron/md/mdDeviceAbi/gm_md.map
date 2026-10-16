@@ -1,6 +1,7 @@
 GM_DEVICE_1 {
 	global:
 		gm_abi_version;
+		gm_get_device_api;
 		gm_device_*;
 	local:
 		*;
