@@ -48,7 +48,7 @@ set_property(TARGET mdTurboMidiUnitTest PROPERTY FOLDER "Elektron")
 # The remote panel's sound stream over real sockets (Linux: MSG_NOSIGNAL), no firmware needed.
 if(UNIX AND NOT APPLE)
 	add_executable(mdRemotePanelSoundTest remotePanelSoundTest.cpp)
-	target_link_libraries(mdRemotePanelSoundTest PRIVATE mdLib Threads::Threads)
+	target_link_libraries(mdRemotePanelSoundTest PRIVATE mdRemotePanel Threads::Threads)
 	add_test(NAME mdRemotePanelSoundTest COMMAND mdRemotePanelSoundTest)
 	set_tests_properties(mdRemotePanelSoundTest PROPERTIES LABELS "UnitTest;RemotePanel" TIMEOUT 30)
 	set_property(TARGET mdRemotePanelSoundTest PROPERTY FOLDER "Elektron/test")

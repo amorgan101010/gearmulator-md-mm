@@ -1,0 +1,6 @@
+GM_MD_PANEL_1 {
+	global:
+		gm_md_panel_*;
+	local:
+		*;
+};

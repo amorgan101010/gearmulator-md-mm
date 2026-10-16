@@ -4,7 +4,8 @@ cmake_minimum_required(VERSION 3.15)
 # (source/gmDeviceAbi/gm_device.h), for in-process hosts such as the studio engine.
 # Only the gm_* functions are exported; everything from mdLib and below stays internal.
 add_library(gm_md SHARED gmMdDevice.cpp ../../../gmDeviceAbi/gm_device.h)
-target_link_libraries(gm_md PRIVATE mdLib)
+# mdRemotePanel only for the deprecated GM_CAP_REMOTE_PANEL; hosts use libgm_md_panel instead.
+target_link_libraries(gm_md PRIVATE mdLib mdRemotePanel)
 target_include_directories(gm_md PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/../../..)
 set_target_properties(gm_md PROPERTIES
 	CXX_VISIBILITY_PRESET hidden

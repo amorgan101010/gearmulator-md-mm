@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.15)
 
 add_subdirectory(mdLib)
 add_subdirectory(mdDeviceAbi)
+add_subdirectory(mdPanelService)
 
 if(BUILD_TESTING)
 	add_subdirectory(mdLibTest)

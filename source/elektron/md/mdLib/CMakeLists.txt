@@ -22,7 +22,6 @@ set(SOURCES
 	mdsysexautomation.cpp mdsysexautomation.h
 	mdrealtimemidiqueue.h
 	mdpanel.cpp mdpanel.h
-	mdremotepanel.cpp mdremotepanel.h
 	mdsdsencode.cpp mdsdsencode.h
 	mdsampledirectory.cpp mdsampledirectory.h
 	mdmachines.cpp mdmachines.h
@@ -46,11 +45,18 @@ set(SOURCES
 target_sources(mdLib PRIVATE ${SOURCES})
 source_group("source" FILES ${SOURCES})
 
-target_link_libraries(mdLib PUBLIC hardwareLib dsp56kEmu networkLib)
+target_link_libraries(mdLib PUBLIC hardwareLib dsp56kEmu)
 target_compile_definitions(mdLib PUBLIC
 	MD_TRANSPORT_DIAGNOSTICS=$<BOOL:${MD_TRANSPORT_DIAGNOSTICS}>)
 
 set_property(TARGET mdLib PROPERTY FOLDER "Elektron")
+
+# The remote front panel's web server owns sockets, threads and files, so it is a library of its
+# own: the device core (mdLib, and libgm_md built on it) needs none of that. The plug-in links it;
+# hosts of libgm_md use libgm_md_panel (mdPanelService).
+add_library(mdRemotePanel STATIC mdremotepanel.cpp mdremotepanel.h)
+target_link_libraries(mdRemotePanel PUBLIC mdLib networkLib)
+set_property(TARGET mdRemotePanel PROPERTY FOLDER "Elektron")
 
 target_include_directories(mdLib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)
 
