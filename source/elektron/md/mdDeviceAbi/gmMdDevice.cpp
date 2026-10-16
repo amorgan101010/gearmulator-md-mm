@@ -120,13 +120,14 @@ namespace
 
 	uint32_t modelCapabilities(const md::MachineModel _model)
 	{
-		// The Machinedrum plays its input (INP-GA, measured with the studio's gm-audio-edge). The
-		// Monomachine takes input too, but no output from it has been shown (FX-THRU stays
-		// silent), so it does not claim GM_CAP_AUDIO_INPUT. Only a Machinedrum state can need its
-		// factory-flash baseline booted first.
+		// Both play their inputs, measured with the studio's gm-audio-edge: the Machinedrum through
+		// INP-GA (199 frames), the Monomachine through an FX machine whose EDIT KIT INPUT is INP
+		// A, B or AB (140 frames; mdLibTest/mmInputProbe). An FX machine left on its default input,
+		// NEIBOR, passes nothing. Only a Machinedrum state can need its factory-flash baseline
+		// booted first.
 		return _model == md::MachineModel::Machinedrum
 			? g_commonCapabilities | GM_CAP_AUDIO_INPUT | GM_CAP_DEFERRED_RESTORE
-			: g_commonCapabilities;
+			: g_commonCapabilities | GM_CAP_AUDIO_INPUT;
 	}
 
 	bool toEvent(synthLib::SMidiEvent& _event, const uint8_t* _data, const uint32_t _size, const uint32_t _frame)

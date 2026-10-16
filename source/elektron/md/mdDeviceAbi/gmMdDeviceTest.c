@@ -196,6 +196,7 @@ static void testModel(const char* name, const unsigned char* rom, size_t romSize
 		CHECK(api && (info.capabilities & ~api->capabilities) == 0, "unit caps 0x%x outside library caps", info.capabilities);
 		CHECK((info.capabilities & GM_CAP_STATE) && (info.capabilities & GM_CAP_MIDI_OUT), "unit caps 0x%x", info.capabilities);
 		CHECK(!!(info.capabilities & GM_CAP_DEFERRED_RESTORE) == (model == GM_MODEL_MACHINEDRUM), "deferred restore bit");
+		CHECK((info.capabilities & GM_CAP_AUDIO_INPUT) && info.input_channels == 2, "audio input bit");
 		gm_device_info old;
 		memset(&old, 0xab, sizeof(old));
 		old.struct_size = offsetof(gm_device_info, capabilities);
