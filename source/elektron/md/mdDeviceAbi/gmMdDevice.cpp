@@ -267,7 +267,7 @@ extern "C"
 	{
 		return guarded(_device, [&](gm_device& _d)
 		{
-			if(!_io || _io->struct_size < sizeof(gm_render_io) || !_io->outputs)
+			if(!_io || _io->struct_size < offsetof(gm_render_io, control_in) || !_io->outputs)
 				return fail(&_d, GM_ERROR_ARGUMENT, "render needs an io struct with outputs");
 			if(!_d.maxFrames || _io->frames > _d.maxFrames)
 				return fail(&_d, GM_ERROR_ARGUMENT, "frames exceed the prepared block size");
@@ -566,6 +566,8 @@ extern "C"
 			gm_device_remote_panel_start,
 			gm_device_remote_panel_stop,
 			gm_device_remote_panel_clients,
+			nullptr,	// read_status: no GM_CAP_STATUS
+			nullptr,	// read_state_snapshot
 		};
 		if(!_api)
 			return GM_ERROR_ARGUMENT;

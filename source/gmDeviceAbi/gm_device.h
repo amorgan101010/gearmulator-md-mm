@@ -41,6 +41,8 @@
  *   3  GM_MODEL_DRUMSTATION; ROM images with roles and create flags in gm_device_create_info;
  *      gm_device_info.firmware_id.
  *   4  GM_CAP_MIDI_IN_PACED.
+ *   5  GM_CAP_CONTROLS (gm_render_io.control_in) and GM_CAP_STATUS (read_status,
+ *      read_state_snapshot in the table).
  */
 #ifndef GM_DEVICE_H
 #define GM_DEVICE_H
@@ -59,7 +61,7 @@ extern "C" {
 #endif
 
 #define GM_DEVICE_ABI_VERSION 1u
-#define GM_DEVICE_ABI_MINOR 4u
+#define GM_DEVICE_ABI_MINOR 5u
 
 /* Capabilities. In gm_device_api.capabilities: what the library implements (its optional table
    entries are non-null exactly when their bit is set). In gm_device_info.capabilities: what one
@@ -76,6 +78,10 @@ extern "C" {
 #define GM_CAP_MIDI_IN_PACED     (1u << 9)	/* the unit takes MIDI IN bytes at the UART rate itself, from
 											   a message's frame on: a host modelling a cable passes
 											   a message on when its first byte has arrived (minor 4) */
+#define GM_CAP_CONTROLS          (1u << 10)	/* render takes control_in: the unit's own control messages,
+											   stamped like MIDI (minor 5) */
+#define GM_CAP_STATUS            (1u << 11)	/* read_status / read_state_snapshot, from any thread
+											   (minor 5) */
 
 typedef int32_t gm_status;
 #define GM_OK               0
@@ -95,6 +101,19 @@ typedef int32_t gm_status;
 #define GM_ROM_MAIN    0u	/* a unit with one image; libgm_md also takes it as rom/rom_size */
 #define GM_ROM_DS_U15  1u	/* DrumStation controller program, 32 KiB */
 #define GM_ROM_DS_U28  2u	/* DrumStation DSP code and samples, 512 KiB */
+
+/* GM_MODEL_DRUMSTATION's formats:
+   - state: "DSEE", format version 1 (uint32 little-endian), then the 2 KiB EEPROM image
+     (B000..B7FF: user programs, MIDI channels, last program); the standalone panel keeps the
+     same image in a file of its own.
+   - control messages: its desktop panel's, F0 7D <op> ... F7, as the standalone engine's control
+     socket takes them: 'B' port bit down, 'S' column bit high, 'K' row column pressed,
+     'A' channel value, 'L' hi lo value (a voice level in the program image), 'P' hi lo value mask
+     (a program byte), 'T' count ops... (a sequencer batch: controllers, notes and parameter locks,
+     timed against the board's MIDI IN UART). The output stage ('G', 'X') and readback ('Q', 'C')
+     are the host's, not the device's.
+   - status: controller RAM pages 00, 01, 02 and B7, 4 * 256 bytes, as of a render at most
+     about 12 ms of audio ago. */
 
 typedef struct gm_rom_image
 {
@@ -150,6 +169,17 @@ typedef struct gm_midi_out_event
 	uint32_t data_offset;
 } gm_midi_out_event;
 
+/* A control message for the unit (minor 5, GM_CAP_CONTROLS): what its front panel or another
+   control surface does, in the device's own format (see the model's notes above). It is applied
+   just before frame `frame` is computed, after that frame's midi_in. It never enters the unit's
+   MIDI IN. */
+typedef struct gm_control_event
+{
+	uint32_t frame;
+	uint32_t size;
+	const uint8_t* data;
+} gm_control_event;
+
 typedef struct gm_render_io
 {
 	uint32_t struct_size;
@@ -165,6 +195,9 @@ typedef struct gm_render_io
 	uint32_t midi_out_data_capacity;
 	uint32_t midi_out_data_size;	/* out: bytes written */
 	uint32_t midi_out_dropped;	/* out: events that did not fit and were discarded */
+	/* minor 5; read only from a struct_size that covers them, and by a unit with GM_CAP_CONTROLS */
+	const gm_control_event* control_in;	/* sorted by frame; may be null when control_in_count is 0 */
+	uint32_t control_in_count;
 } gm_render_io;
 
 GM_API uint32_t gm_abi_version(void);
@@ -272,6 +305,15 @@ typedef struct gm_device_api
 	gm_status (*remote_panel_start)(gm_device* device, const gm_remote_panel_info* info, int32_t* bound_port);	/* REMOTE_PANEL */
 	void (*remote_panel_stop)(gm_device* device);								/* REMOTE_PANEL */
 	int32_t (*remote_panel_clients)(const gm_device* device);					/* REMOTE_PANEL */
+
+	/* minor 5; read only from a struct_size that covers them. A copy of the unit's status (what a
+	   panel shows; the model's notes say what is in it) or of its state (what get_state would
+	   return), as of a recent render. Any thread, concurrently with render: render publishes
+	   without waiting, so a reader that keeps meeting a publish gets GM_ERROR_REJECTED and tries
+	   later. generation changes when the content may have (status: every publish; state: when
+	   it changed). A null buffer asks for *size; GM_ERROR_CAPACITY if capacity is short of it. */
+	gm_status (*read_status)(const gm_device* device, uint8_t* buffer, size_t capacity, size_t* size, uint64_t* generation);		/* STATUS */
+	gm_status (*read_state_snapshot)(const gm_device* device, uint8_t* buffer, size_t capacity, size_t* size, uint64_t* generation);	/* STATUS */
 } gm_device_api;
 
 /* The library's function table for a host built against major version `abi_major`. GM_OK and

@@ -219,6 +219,12 @@ static void testModel(const char* name, const unsigned char* rom, size_t romSize
 		io.outputs = outputs;
 		CHECK(gm_device_render(a, &io) == GM_ERROR_ARGUMENT, "frames over prepare accepted");
 		CHECK(strlen(gm_device_last_error(a)) > 0, "no error message");
+		/* A minor-4 host's struct ends before control_in; both units render it, so they stay alike. */
+		io.frames = BLOCK;
+		io.struct_size = offsetof(gm_render_io, control_in);
+		CHECK(gm_device_render(a, &io) == GM_OK && gm_device_render(b, &io) == GM_OK, "a minor-4 render struct refused");
+		io.struct_size = offsetof(gm_render_io, control_in) - 1;
+		CHECK(gm_device_render(a, &io) == GM_ERROR_ARGUMENT, "a struct shorter than any minor's accepted");
 	}
 
 	/* The Monomachine needs a machine on its tracks to sound: GND-SIN on all six. */
