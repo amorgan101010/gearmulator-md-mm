@@ -40,6 +40,7 @@
  *   2  gm_get_device_api, GM_CAP_*, gm_device_info.capabilities.
  *   3  GM_MODEL_DRUMSTATION; ROM images with roles and create flags in gm_device_create_info;
  *      gm_device_info.firmware_id.
+ *   4  GM_CAP_MIDI_IN_PACED.
  */
 #ifndef GM_DEVICE_H
 #define GM_DEVICE_H
@@ -58,7 +59,7 @@ extern "C" {
 #endif
 
 #define GM_DEVICE_ABI_VERSION 1u
-#define GM_DEVICE_ABI_MINOR 3u
+#define GM_DEVICE_ABI_MINOR 4u
 
 /* Capabilities. In gm_device_api.capabilities: what the library implements (its optional table
    entries are non-null exactly when their bit is set). In gm_device_info.capabilities: what one
@@ -72,6 +73,9 @@ extern "C" {
 #define GM_CAP_POST_SYSEX        (1u << 6)	/* post_sysex, from any thread */
 #define GM_CAP_REMOTE_PANEL      (1u << 7)	/* remote_panel_start / _stop / _clients */
 #define GM_CAP_RATE_PROVISIONAL  (1u << 8)	/* sample_rate is not established against hardware */
+#define GM_CAP_MIDI_IN_PACED     (1u << 9)	/* the unit takes MIDI IN bytes at the UART rate itself, from
+											   a message's frame on: a host modelling a cable passes
+											   a message on when its first byte has arrived (minor 4) */
 
 typedef int32_t gm_status;
 #define GM_OK               0
