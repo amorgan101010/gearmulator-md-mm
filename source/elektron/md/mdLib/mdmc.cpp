@@ -125,7 +125,6 @@ namespace md
 		m_sim.setTransmitCallback(Sim::g_uartMidi, [this](const uint8_t _b)
 		{
 			{
-				const std::scoped_lock lock(m_midiTxMutex);
 				auto& producer = m_midiTxBuffers[m_midiTxProducerIndex];
 				if(producer.size < producer.bytes.size())
 				{
@@ -153,13 +152,11 @@ namespace md
 
 	std::vector<uint8_t> Microcontroller::copyPatchRam() const
 	{
-		std::shared_lock lock(m_patchRamMutex);
 		return m_patchRam;
 	}
 
 	bool Microcontroller::copyPatchRamRange(uint8_t* const _destination, const size_t _offset, const size_t _size) const
 	{
-		std::shared_lock lock(m_patchRamMutex);
 		if(!_destination || _offset > m_patchRam.size() || _size > m_patchRam.size() - _offset)
 			return false;
 		std::copy_n(m_patchRam.begin() + static_cast<std::ptrdiff_t>(_offset), _size, _destination);
@@ -170,13 +167,12 @@ namespace md
 	{
 		if(_data.size() != m_patchRam.size())
 			return false;
-		std::unique_lock lock(m_patchRamMutex);
 		m_patchRam = _data;
+		++m_patchRamWrites;
 		return true;
 	}
 	std::vector<uint8_t> Microcontroller::copyFlashData() const
 	{
-		std::shared_lock lock(m_flashMutex);
 		return m_flashData;
 	}
 
@@ -186,7 +182,6 @@ namespace md
 			|| m_flashData.size() < memorymap::g_flashFull.offset(
 				memorymap::g_mmUserFlash.end))
 			return {};
-		std::shared_lock lock(m_flashMutex);
 		const auto begin = m_flashData.begin() + memorymap::g_flashFull.offset(
 			memorymap::g_mmUserFlash.begin);
 		return {begin, begin + memorymap::g_mmUserFlash.size()};
@@ -202,6 +197,26 @@ namespace md
 		return true;
 	}
 
+	bool Microcontroller::copyPatchRamRealtime(std::vector<uint8_t>& _destination) const
+	{
+		if(_destination.size() != m_patchRam.size())
+			return false;
+		std::copy(m_patchRam.begin(), m_patchRam.end(), _destination.begin());
+		return true;
+	}
+
+	bool Microcontroller::copyStateFlashRealtime(std::vector<uint8_t>& _destination) const
+	{
+		if(m_model == MachineModel::Monomachine)
+		{
+			const auto begin = memorymap::g_flashFull.offset(memorymap::g_mmUserFlash.begin);
+			return copyFlashDataRangeRealtime(_destination.data(), begin, _destination.size())
+				&& _destination.size() == memorymap::g_mmUserFlash.size();
+		}
+		return _destination.size() == m_flashData.size()
+			&& copyFlashDataRangeRealtime(_destination.data(), 0, _destination.size());
+	}
+
 	uint64_t Microcontroller::flashIdleCycles() const
 	{
 		return m_flashDirty && getCycles() >= m_lastFlashWriteCycle
@@ -213,9 +228,10 @@ namespace md
 	{
 		if(m_model != MachineModel::Machinedrum || _data.size() != m_flashData.size())
 			return false;
-		std::unique_lock flashLock(m_flashMutex);
 		m_flashData = _data;
 		m_flashCommands = {};
+		++m_flashWrites;
+		++m_patchRamWrites;
 		m_immPageAddress = 0xffffffffu;
 		m_immPageData = nullptr;
 		m_flashDirty = _dirty;
@@ -230,9 +246,10 @@ namespace md
 		if(m_model != MachineModel::Machinedrum || m_model != _other.m_model
 			|| m_flashData.size() != _other.m_flashData.size())
 			return false;
-		std::scoped_lock lock(m_flashMutex, _other.m_flashMutex);
 		m_flashData.swap(_other.m_flashData);
 		std::swap(m_flashDirty, _other.m_flashDirty);
+		++m_flashWrites;
+		++m_patchRamWrites;
 		m_flashCommands = {};
 		_other.m_flashCommands = {};
 		m_immPageAddress = 0xffffffffu;
@@ -254,17 +271,12 @@ namespace md
 			|| _flash.size() != m_flashData.size()
 			|| _patchRam.size() != m_patchRam.size())
 			return StateImagePublishResult::Invalid;
-		std::unique_lock flashLock(m_flashMutex, std::try_to_lock);
-		if(!flashLock.owns_lock())
-			return StateImagePublishResult::Busy;
-		std::unique_lock patchLock(m_patchRamMutex, std::try_to_lock);
-		if(!patchLock.owns_lock())
-			return StateImagePublishResult::Busy;
-		// This is called only by the scheduler owner between executed instructions.
-		// With both host snapshot locks held, every observer sees complete backing
-		// stores rather than an incrementally modified or concurrently exchanged one.
+		// This is called only by the scheduler owner between executed instructions, and
+		// nothing else reads the backing stores while it runs (see m_patchRam in mdmc.h).
 		m_flashData.swap(_flash);
 		m_patchRam.swap(_patchRam);
+		++m_flashWrites;
+		++m_patchRamWrites;
 		m_flashCommands = {};
 		m_immPageAddress = 0xffffffffu;
 		m_immPageData = nullptr;
@@ -274,13 +286,11 @@ namespace md
 	}
 	void Microcontroller::readMidiOut(std::vector<synthLib::SMidiEvent>& _midiOut, const uint64_t _nativeOrigin)
 	{
-		// MidiBufferParser is stateful (including partial messages), so only one
-		// consumer may detach and parse a UART batch at a time.
-		const std::scoped_lock drainLock(m_midiTxDrainMutex);
+		// The UART producer (the transmit callback in the constructor) and this drain both run on
+		// the emulation thread: readMidiOut is called only from Device::process, after the unit ran.
 		size_t drainIndex = 0;
 		bool discontinuity = false;
 		{
-			const std::scoped_lock lock(m_midiTxMutex);
 			if(m_midiTxBuffers[m_midiTxProducerIndex].size == 0)
 				return;
 			std::swap(m_midiTxProducerIndex, m_midiTxDrainIndex);
@@ -834,10 +844,6 @@ namespace md
 		if(memorymap::g_sim.contains(_addr))		return m_sim.read8(memorymap::g_sim.offset(_addr));
 		if(memorymap::g_dsp1Hdi08.contains(_addr))	return m_hdi08Dsp1.read8(static_cast<mc68k::PeriphAddress>(memorymap::g_dsp1Hdi08.offset(_addr)));
 		if(memorymap::g_dsp2Hdi08.contains(_addr))	return m_hdi08Dsp2.read8(static_cast<mc68k::PeriphAddress>(memorymap::g_dsp2Hdi08.offset(_addr)));
-		const bool patchRam = memorymap::isPatchRam(_addr);
-		std::shared_lock patchLock(m_patchRamMutex, std::defer_lock);
-		if(patchRam)
-			patchLock.lock();
 		const auto r = resolve(_addr);
 		if(r.peripheral)					{ logPeripheral(_addr, 0, 1, false); return 0; }
 		if(!r.data || r.offset >= r.size)	return 0;
@@ -865,10 +871,6 @@ namespace md
 		if(memorymap::g_sim.contains(_addr))		return m_sim.read16(memorymap::g_sim.offset(_addr));
 		if(memorymap::g_dsp1Hdi08.contains(_addr))	return m_hdi08Dsp1.read16(static_cast<mc68k::PeriphAddress>(memorymap::g_dsp1Hdi08.offset(_addr)));
 		if(memorymap::g_dsp2Hdi08.contains(_addr))	return m_hdi08Dsp2.read16(static_cast<mc68k::PeriphAddress>(memorymap::g_dsp2Hdi08.offset(_addr)));
-		const bool patchRam = memorymap::isPatchRam(_addr);
-		std::shared_lock patchLock(m_patchRamMutex, std::defer_lock);
-		if(patchRam)
-			patchLock.lock();
 		const auto r = resolve(_addr);
 		if(r.peripheral)						{ logPeripheral(_addr, 0, 2, false); return 0; }
 		if(!r.data || (r.offset + 1) >= r.size)	return 0;
@@ -896,14 +898,12 @@ namespace md
 		}
 		if(memorymap::g_dsp1Hdi08.contains(_addr))	{ m_hdi08Dsp1.write8(static_cast<mc68k::PeriphAddress>(memorymap::g_dsp1Hdi08.offset(_addr)), _val); return; }
 		if(memorymap::g_dsp2Hdi08.contains(_addr))	{ m_hdi08Dsp2.write8(static_cast<mc68k::PeriphAddress>(memorymap::g_dsp2Hdi08.offset(_addr)), _val); return; }
-		const bool patchRam = memorymap::isPatchRam(_addr);
-		std::unique_lock patchLock(m_patchRamMutex, std::defer_lock);
-		if(patchRam)
-			patchLock.lock();
 		const auto r = resolve(_addr);
 		if(r.peripheral)								{ logPeripheral(_addr, _val, 1, true); return; }
 		if(!r.writable || !r.data || r.offset >= r.size)	return;
 		r.data[r.offset] = _val;
+		if(memorymap::isPatchRam(_addr))
+			++m_patchRamWrites;
 	}
 
 	void Microcontroller::write16(const uint32_t _addr, const uint16_t _val)
@@ -927,7 +927,6 @@ namespace md
 			{
 				if(const auto operation = m_flashCommands.write16(offset, _val))
 				{
-					std::unique_lock flashLock(m_flashMutex);
 					bool changed = false;
 					if(operation->type == FlashCommandDecoder::Operation::Type::ProgramWord
 						&& operation->offset + 1 < m_flashData.size())
@@ -954,6 +953,7 @@ namespace md
 					if(changed)
 					{
 						m_flashDirty = true;
+						++m_flashWrites;
 						m_lastFlashWriteCycle = getCycles();
 						m_immPageAddress = 0xffffffffu;
 						m_immPageData = nullptr;
@@ -979,22 +979,20 @@ namespace md
 			const auto offset = memorymap::g_flashFull.contains(_addr)
 				? memorymap::g_flashFull.offset(_addr)
 				: memorymap::g_flashLow.offset(_addr);
-			std::unique_lock flashLock(m_flashMutex);
 			m_monomachineFlash->write(offset, _val);
 			m_flashDirty = true;
+			++m_flashWrites;
 			m_lastFlashWriteCycle = getCycles();
 			m_immPageAddress = 0xffffffffu;
 			m_immPageData = nullptr;
 			return;
 		}
-		const bool patchRam = memorymap::isPatchRam(_addr);
-		std::unique_lock patchLock(m_patchRamMutex, std::defer_lock);
-		if(patchRam)
-			patchLock.lock();
 		const auto r = resolve(_addr);
 		if(r.peripheral)										{ logPeripheral(_addr, _val, 2, true); return; }
 		if(!r.writable || !r.data || (r.offset + 1) >= r.size)	return;
 		mc68k::memoryOps::writeU16(r.data, r.offset, _val);
+		if(memorymap::isPatchRam(_addr))
+			++m_patchRamWrites;
 	}
 
 	uint16_t Microcontroller::readImm16(const uint32_t _addr)

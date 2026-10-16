@@ -283,6 +283,19 @@ namespace md
 			stateHardware->flashBaseline(), stateHardware->flashBaseline(), m_model, _type);
 	}
 
+	bool Device::encodeStateSnapshot(std::vector<uint8_t>& _state, const Hardware::StateSnapshot& _snapshot,
+		const MachineModel _model, const std::vector<uint8_t>& _rom)
+	{
+		// The branches of getState, for a machine with no restore pending (captureStateSnapshot
+		// refuses one) and no plug-in factory cache.
+		if(_model == MachineModel::Monomachine)
+			return encodeState(_state, _snapshot.patchRam, _model, synthLib::StateTypeGlobal, _snapshot.flash);
+		if(_snapshot.hasFactoryBaseline)
+			return encodeStateWithFactoryBaseline(_state, _snapshot.patchRam, _snapshot.flash,
+				_snapshot.factoryBaseline, _rom, _model, synthLib::StateTypeGlobal);
+		return encodeState(_state, _snapshot.patchRam, _snapshot.flash, _rom, _rom, _model, synthLib::StateTypeGlobal);
+	}
+
 	bool Device::setState(const std::vector<uint8_t>& _state, synthLib::StateType _type)
 	{
 		auto transaction = beginStateTransaction(

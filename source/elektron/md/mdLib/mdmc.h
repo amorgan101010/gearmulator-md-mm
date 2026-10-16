@@ -8,7 +8,6 @@
 #include <map>
 #include <memory>
 #include <mutex>
-#include <shared_mutex>
 #include <unordered_map>
 #include <vector>
 
@@ -161,6 +160,14 @@ namespace md
 		bool copyFlashDataRangeRealtime(uint8_t* _destination, size_t _offset,
 			size_t _size) const;
 		bool flashDirty() const { return m_flashDirty; }
+		// Writes so far (emulation thread; read there too): a host's state snapshot copies patch RAM
+		// or flash again only when its counter moved.
+		uint64_t patchRamWrites() const { return m_patchRamWrites; }
+		uint64_t flashWrites() const { return m_flashWrites; }
+		// Copies the patch RAM / the flash a state carries (MD: all of it; MM: the user window) into
+		// _destination, which must already be sized; emulation thread (or the unit not running).
+		bool copyPatchRamRealtime(std::vector<uint8_t>& _destination) const;
+		bool copyStateFlashRealtime(std::vector<uint8_t>& _destination) const;
 		uint64_t flashIdleCycles() const;
 		// Optional diagnostic observation of decoded NOR operations. The observer
 		// runs synchronously under the flash lock and must not reenter this device.
@@ -213,8 +220,9 @@ namespace md
 		// copy without changing the user's ROM file or another plug-in instance.
 		std::vector<uint8_t> m_flashData;
 		std::unique_ptr<hwLib::Am29f> m_monomachineFlash;
-		mutable std::shared_mutex m_flashMutex;
 		bool m_flashDirty = false;
+		uint64_t m_patchRamWrites = 0;
+		uint64_t m_flashWrites = 0;
 		uint64_t m_lastFlashWriteCycle = 0;
 
 		Sim m_sim;	// on-chip SIM peripheral window (MBAR base 0x300000)
@@ -225,11 +233,9 @@ namespace md
 			size_t size = 0;
 		};
 
-		// UART production swaps between two fixed buffers. The producer mutex protects
-		// both the active index and its write cursor; the drain mutex serializes the
-		// stateful MIDI parser while a detached buffer is consumed.
-		mutable std::mutex m_midiTxMutex;
-		std::mutex m_midiTxDrainMutex;
+		// UART production swaps between two fixed buffers. The producer (the MIDI UART's
+		// transmit callback) and the drain (readMidiOut, from Device::process) are both the
+		// emulation thread, so neither takes a lock. (They took two mutexes until 2026-10-16.)
 		std::array<MidiTxBuffer, 2> m_midiTxBuffers;
 		size_t m_midiTxProducerIndex = 0;
 		size_t m_midiTxDrainIndex = 1;
@@ -246,8 +252,15 @@ namespace md
 
 		// RAM regions. Bytes are stored in natural (big-endian / 68k) order, matching
 		// the firmware image, so mc68k::memoryOps read/write helpers work directly.
+		// Patch RAM and flash are read and written by the emulation thread with no lock. Everything
+		// else that reads or replaces them (copyPatchRam, copyFlashData, replace*, exchange*, state
+		// encoding) runs while the unit does not run: under the plug-in's device lock, which
+		// process() also holds, or, through the device ABI, as a control call on the device's own
+		// thread. A host that wants them while the unit runs takes the device's published state
+		// snapshot instead. (These were std::shared_mutex until 2026-10-16: every slow-path patch RAM
+		// access took one, about 47 000 lock operations per second per unit, with no other thread
+		// ever holding them.)
 		std::vector<uint8_t> m_patchRam;		// 0x00100000..0x001fffff (aliased at 0x00700000)
-		mutable std::shared_mutex m_patchRamMutex;
 		std::vector<uint8_t> m_mainRam;			// 0x00200000..0x002fffff (aliased at 0x20000000 / 0x40000000)
 		std::vector<uint8_t> m_loaderRam;		// 0x00310000..0x003fffff
 		std::vector<uint8_t> m_internalSram;	// 0x01000000..0x0100ffff (64 KB)

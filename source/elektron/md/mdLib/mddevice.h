@@ -203,6 +203,10 @@ namespace md
 		{
 			return m_frontPanelPublisher->getLedTransitionStatus();
 		}
+		// Encode a render-thread memory snapshot on a non-audio thread. Used by the
+		// device ABI adapter as well as the in-process host.
+		static bool encodeStateSnapshot(std::vector<uint8_t>& _state, const Hardware::StateSnapshot& _snapshot,
+			MachineModel _model, const std::vector<uint8_t>& _rom);
 		// Direct access for the in-process editor (option B): the front-panel LCD/LED state
 		// and panel-event injection. Only valid for a local (non-bridged) device instance.
 		Hardware& getHardware() { return *m_hardware; }
@@ -211,6 +215,7 @@ namespace md
 	protected:
 		void extraLatencyChanged() override;
 		void readMidiOut(std::vector<synthLib::SMidiEvent>& _midiOut) override;
+
 		void processAudio(const synthLib::TAudioInputs& _inputs, const synthLib::TAudioOutputs& _outputs, size_t _samples) override;
 		bool sendMidi(const synthLib::SMidiEvent& _ev, std::vector<synthLib::SMidiEvent>& _response) override;
 

@@ -129,6 +129,24 @@ namespace md
 
 		Microcontroller& getUC() { return m_uc; }
 		std::vector<uint8_t> copyPatchRam() const;
+
+		// The memory a state is encoded from, copied on the emulation thread so another thread can
+		// encode it (Device::encodeStateSnapshot) while the unit keeps running. Sized once by
+		// sizeStateSnapshot; captureStateSnapshot then neither allocates nor locks, and copies patch
+		// RAM (1 MiB) or flash (MD 8 MiB, MM 2 MiB) only when it was written since this snapshot's
+		// last copy.
+		struct StateSnapshot
+		{
+			std::vector<uint8_t> patchRam;
+			std::vector<uint8_t> flash;				// MD: the whole flash; MM: its user window
+			std::vector<uint8_t> factoryBaseline;	// MD, once this machine captured one
+			bool hasFactoryBaseline = false;
+			uint64_t patchRamWrites = ~uint64_t{0};
+			uint64_t flashWrites = ~uint64_t{0};
+		};
+		void sizeStateSnapshot(StateSnapshot& _snapshot) const;
+		// False while a restored state is still being applied: the state is not this machine's yet.
+		bool captureStateSnapshot(StateSnapshot& _snapshot);
 		std::vector<uint8_t> copyFlashData() const { return m_uc.copyFlashData(); }
 		std::vector<uint8_t> copyUserFlash() const { return m_uc.copyUserFlash(); }
 		const std::vector<uint8_t>& flashBaseline() const { return m_rom.data(); }

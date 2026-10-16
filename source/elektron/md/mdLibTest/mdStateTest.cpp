@@ -1,4 +1,5 @@
 #include "baseLib/filesystem.h"
+#include "mdLib/mddevice.h"
 #include "mdLib/mdromdata.h"
 #include "mdLib/mdstate.h"
 
@@ -273,6 +274,10 @@ namespace
 		check(md::decodeFactoryFlashCache(decoded, cache, rom),
 			"UW factory cache decodes");
 		check(decoded == initialized, "UW factory cache round-trips byte exactly");
+		std::vector<uint8_t> realtimeDecoded(md::g_romSize, 0);
+		check(md::decodeFactoryFlashCacheRealtime(realtimeDecoded, cache, rom)
+			&& realtimeDecoded == initialized,
+			"pre-sized scheduler-thread cache decode round-trips byte exactly");
 
 		auto wrongRom = rom;
 		wrongRom[1234] ^= 1;
@@ -307,6 +312,56 @@ namespace
 			"atomic replacement publishes the complete new cache");
 		baseLib::filesystem::remove(filename);
 	}
+
+	void testSnapshotEncodingBranches()
+	{
+		const auto patchRam = makePatchRam();
+		std::vector<uint8_t> rom(md::g_romSize, 0xff);
+		auto baseline = rom;
+		baseline[md::g_uwFlashSectorSize + 7] = 0x61;
+		auto flash = baseline;
+		flash[3 * md::g_uwFlashSectorSize + 19] = 0x18;
+
+		md::Hardware::StateSnapshot mdWithBaseline;
+		mdWithBaseline.patchRam = patchRam;
+		mdWithBaseline.flash = flash;
+		mdWithBaseline.factoryBaseline = baseline;
+		mdWithBaseline.hasFactoryBaseline = true;
+		std::vector<uint8_t> snapshot, getState;
+		check(md::Device::encodeStateSnapshot(snapshot, mdWithBaseline,
+			md::MachineModel::Machinedrum, rom)
+			&& md::encodeStateWithFactoryBaseline(getState, patchRam, flash,
+				baseline, rom, md::MachineModel::Machinedrum,
+				synthLib::StateTypeGlobal)
+			&& snapshot == getState,
+			"MD factory-baseline snapshot encoding matches getState");
+
+		md::Hardware::StateSnapshot mdWithoutBaseline;
+		mdWithoutBaseline.patchRam = patchRam;
+		mdWithoutBaseline.flash = flash;
+		snapshot.clear();
+		getState.clear();
+		check(md::Device::encodeStateSnapshot(snapshot, mdWithoutBaseline,
+			md::MachineModel::Machinedrum, rom)
+			&& md::encodeState(getState, patchRam, flash, rom, rom,
+				md::MachineModel::Machinedrum, synthLib::StateTypeGlobal)
+			&& snapshot == getState,
+			"MD no-baseline fallback snapshot encoding matches getState");
+
+		md::Hardware::StateSnapshot mm;
+		mm.patchRam = patchRam;
+		mm.flash.resize(md::g_mmUserFlashStateSize);
+		for(size_t i = 0; i < mm.flash.size(); ++i)
+			mm.flash[i] = static_cast<uint8_t>((i * 37u) ^ (i >> 9));
+		snapshot.clear();
+		getState.clear();
+		check(md::Device::encodeStateSnapshot(snapshot, mm,
+			md::MachineModel::Monomachine, {})
+			&& md::encodeState(getState, patchRam, md::MachineModel::Monomachine,
+				synthLib::StateTypeGlobal, mm.flash)
+			&& snapshot == getState,
+			"MM patch-RAM and user-flash snapshot encoding matches getState");
+	}
 }
 
 int main()
@@ -314,6 +369,7 @@ int main()
 	std::puts("Machinedrum UW state and cache tests\n");
 	testSparseProjectState();
 	testMonomachineUserFlashState();
+	testSnapshotEncodingBranches();
 	testFactoryCache();
 	testCacheFilePublication();
 	std::printf("\n%s (%d failures)\n", g_failures == 0 ? "OK" : "FAILED",

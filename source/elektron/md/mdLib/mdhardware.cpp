@@ -9,6 +9,7 @@ namespace dsp56k
 }
 #define MM_LINKLOG(...) do { if(dsp56k::g_hostLog && dsp56k::g_hostLogOn) { dsp56k::hostLogRotate(); if(dsp56k::g_hostLog) std::fprintf(dsp56k::g_hostLog, __VA_ARGS__); } } while(0)
 #include "mdhostclock.h"
+#include "mdmemorymap.h"
 #include "mdrampacking.h"
 #include "mdtransportpolicy.h"
 
@@ -831,6 +832,53 @@ namespace md
 	bool Hardware::factoryFlashCacheReady()
 	{
 		return m_factoryFlashReady.load(std::memory_order_acquire);
+	}
+
+	void Hardware::sizeStateSnapshot(StateSnapshot& _snapshot) const
+	{
+		_snapshot.patchRam.assign(g_patchRamStateSize, 0);
+		_snapshot.flash.assign(m_model == MachineModel::Monomachine
+			? memorymap::g_mmUserFlash.size() : g_romSize, 0xff);
+		_snapshot.factoryBaseline.assign(m_model == MachineModel::Machinedrum ? g_romSize : 0, 0);
+		_snapshot.hasFactoryBaseline = false;
+		_snapshot.patchRamWrites = ~uint64_t{0};
+		_snapshot.flashWrites = ~uint64_t{0};
+	}
+
+	bool Hardware::captureStateSnapshot(StateSnapshot& _snapshot)
+	{
+		if(m_pendingFlashOverlay.valid || m_pendingFlashRestoreActive.load(std::memory_order_acquire))
+			return false;
+		if(_snapshot.patchRamWrites != m_uc.patchRamWrites())
+		{
+			if(!m_uc.copyPatchRamRealtime(_snapshot.patchRam))
+				return false;
+			_snapshot.patchRamWrites = m_uc.patchRamWrites();
+		}
+		if(_snapshot.flashWrites != m_uc.flashWrites())
+		{
+			if(!m_uc.copyStateFlashRealtime(_snapshot.flash))
+				return false;
+			_snapshot.flashWrites = m_uc.flashWrites();
+		}
+		// The baseline is written only while it is captured, before m_factoryFlashReady, and only
+		// by this thread: once ready it can be read here without its lock. A cache-only baseline
+		// (the plug-in's file) leaves it empty; the ABI keeps no cache.
+		if(m_model == MachineModel::Machinedrum && !_snapshot.hasFactoryBaseline
+			&& m_factoryFlashReady.load(std::memory_order_acquire))
+		{
+			if(m_factoryFlashBaseline.size() == _snapshot.factoryBaseline.size())
+			{
+				std::copy(m_factoryFlashBaseline.begin(), m_factoryFlashBaseline.end(), _snapshot.factoryBaseline.begin());
+				_snapshot.hasFactoryBaseline = true;
+			}
+			else if(!m_factoryFlashCache.empty()
+				&& _snapshot.factoryBaseline.size() == g_romSize
+				&& decodeFactoryFlashCacheRealtime(_snapshot.factoryBaseline,
+					m_factoryFlashCache, m_rom.data()))
+				_snapshot.hasFactoryBaseline = true;
+		}
+		return true;
 	}
 
 	bool Hardware::copyFactoryFlashBaseline(std::vector<uint8_t>& _baseline)
