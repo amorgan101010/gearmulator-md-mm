@@ -25,6 +25,10 @@ if(BUILD_TESTING)
 	endif()
 	set_target_properties(gmMdDeviceTest PROPERTIES FOLDER "Elektron/test")
 	add_test(NAME gmMdDeviceTest COMMAND gmMdDeviceTest)
+	# Local tool (not a test): how often the state changes during playback, and what get_state costs.
+	add_executable(gmStateProbe gmStateProbe.cpp)
+	target_link_libraries(gmStateProbe PRIVATE gm_md ${CMAKE_DL_LIBS})
+	set_target_properties(gmStateProbe PROPERTIES FOLDER "Elektron/test")
 	# 77: no firmware configured.
 	set_tests_properties(gmMdDeviceTest PROPERTIES LABELS "Firmware" SKIP_RETURN_CODE 77)
 endif()
