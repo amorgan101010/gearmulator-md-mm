@@ -988,8 +988,13 @@ namespace
 				handleDisconnect(now, error);
 				return;
 			}
-			if(!m_connected && now >= m_nextReconnectMs)
+			if(!m_connected)
 			{
+				// Do not poll a stale or absent backend during the backoff interval. An initial
+				// connection failure can leave m_backend null, and repeated status failures would
+				// otherwise keep moving the retry deadline forward on every timer tick.
+				if(now < m_nextReconnectMs)
+					return;
 				std::string error;
 				if(!connectBackend(error))
 				{
