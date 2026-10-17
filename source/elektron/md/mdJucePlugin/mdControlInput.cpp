@@ -6,6 +6,7 @@
 #include <cerrno>
 #include <cstdlib>
 #include <cstring>
+#include <fcntl.h>
 #include <poll.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -20,6 +21,30 @@ namespace mdJucePlugin
 	{
 		constexpr int g_pollMilliseconds = 200;		// how often the reader checks it should stop
 		constexpr size_t g_maxLine = 512;
+
+		int createControlSocket()
+		{
+#if defined(SOCK_CLOEXEC)
+			constexpr int socketType = SOCK_DGRAM | SOCK_CLOEXEC;
+#else
+			constexpr int socketType = SOCK_DGRAM;
+#endif
+			const int socketFd = ::socket(AF_UNIX, socketType, 0);
+			if(socketFd < 0)
+				return socketFd;
+
+#if !defined(SOCK_CLOEXEC)
+			const int descriptorFlags = ::fcntl(socketFd, F_GETFD);
+			if(descriptorFlags < 0 || ::fcntl(socketFd, F_SETFD, descriptorFlags | FD_CLOEXEC) < 0)
+			{
+				const int error = errno;
+				::close(socketFd);
+				errno = error;
+				return -1;
+			}
+#endif
+			return socketFd;
+		}
 	}
 
 	ControlInput::ControlInput(std::string _product, Handler _handler)
@@ -65,7 +90,7 @@ namespace mdJucePlugin
 		}
 
 		// Someone reading it already: another window of this product. Leave it to that one.
-		const int probe = ::socket(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+		const int probe = createControlSocket();
 		if(probe >= 0)
 		{
 			const bool answered = ::connect(probe, reinterpret_cast<const sockaddr*>(&address), sizeof(address)) == 0;
@@ -78,7 +103,7 @@ namespace mdJucePlugin
 		}
 		::unlink(m_path.c_str());	// a stale one, left by a window that did not close cleanly
 
-		m_socket = ::socket(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+		m_socket = createControlSocket();
 		if(m_socket < 0)
 		{
 			m_error = std::string("socket: ") + std::strerror(errno);
