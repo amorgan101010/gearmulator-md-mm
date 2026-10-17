@@ -1,17 +1,17 @@
-# Submodule commits that exist only here
+# Submodule commit publication record
 
 A superproject commit pins each submodule to a commit. When that commit lives only in a local
 clone, nobody else can check the superproject out. Until such a commit is pushed to a repository
 the submodule URL can reach, it is kept here as a git bundle (exact objects, so the same hash) and
 as a patch (for review).
 
-| Submodule | Commit | Based on (public) | First pinned by | Published |
-|---|---|---|---|---|
-| `source/mc68k` | `d423bfe9a89449608deaab967ceeea83712dbe8d` RingQueue for the HDI08 receive and interrupt queues | `ace95b3` on joelanders/mc68k-md-mm | `b6920936` | no: there is no mc68k fork of the owner's to push to yet |
+The `source/mc68k` RingQueue commit `d423bfe9a89449608deaab967ceeea83712dbe8d` is now
+published on `amorgan101010/mc68k-md-mm`, branch `daily/mm-trigger-guard`. Current `.gitmodules`
+points to that fork. The bundle and patch used before publication are removed from this branch;
+older commits retain them in their historical trees.
 
-**Until every row here is published, do not push a superproject branch that pins one of these
-commits** (today: `daily/mm-trigger-guard` from `b6920936` on). The pre-push hook below refuses
-such a push.
+Keep the pre-push hook installed. It checks that new superproject commits pin submodule objects
+that a fresh clone can fetch.
 
 ## Checking
 
@@ -36,7 +36,7 @@ git push --no-verify ...                   # bypass, when you know better
 rm "$(git rev-parse --git-path hooks)"/pre-push "$(git rev-parse --git-path hooks)"/submodule-check-fetchable.sh   # uninstall
 ```
 
-## Restoring after a fresh clone
+## Restoring an older unpublished history
 
 ```sh
 git clone --recurse-submodules ...             # every submodule but the unpublished one checks out
@@ -44,30 +44,20 @@ tools/submodule-commits/restore.sh             # fetches the bundles into their 
 git submodule update --init --recursive        # now the rest checks out
 ```
 
-Proven on 2026-10-16 with a fresh clone of `daily/mm-trigger-guard` (`cc109c74`) at
+Before publication, this was proven on 2026-10-16 with a fresh clone of `daily/mm-trigger-guard` (`cc109c74`) at
 `build/clean-room-20261016/fork-a`:
 - seven submodules came from their public URLs;
 - `source/mc68k` failed with "not our ref d423bfe";
 - after `restore.sh`, it checked out `d423bfe` with tree `9a38f5f7`, the same as this clone's.
 
-## Publishing (recommended; needs the owner's go-ahead for each push)
+Older commits still name `joelanders/mc68k-md-mm` in `.gitmodules` and keep the bundle in their
+tree. The current branch can fetch the pin directly from the owner's fork.
 
-The recommended layout matches `source/dsp56300`, which already points at the owner's fork.
+## Publication details
 
-1. Create `amorgan101010/mc68k-md-mm` on GitHub as a fork of `joelanders/mc68k-md-mm`.
-2. Push the commit as `daily/mm-trigger-guard`, the same branch name the dsp56300 fork uses:
-   ```sh
-   git -C source/mc68k remote add mine git@github.com:amorgan101010/mc68k-md-mm.git
-   git -C source/mc68k push mine d423bfe9a89449608deaab967ceeea83712dbe8d:refs/heads/daily/mm-trigger-guard
-   ```
-3. Point the superproject at it, in one commit on `daily/mm-trigger-guard`:
-   ```sh
-   git config -f .gitmodules submodule.source/mc68k.url https://github.com/amorgan101010/mc68k-md-mm.git
-   git submodule sync source/mc68k
-   tools/submodule-commits/check-fetchable.sh    # must print only ok lines
-   ```
-4. Delete the bundle, the patch and the row above in the same commit.
-5. Only then push the superproject branch, as a separate decision.
+The owner fork was created with authorization, and the exact commit was pushed to its
+`daily/mm-trigger-guard` branch. The superproject URL update and removal of the bundle, patch, and
+publication row are kept together in one commit.
 
 The layout was simulated on 2026-10-16 at `build/clean-room-20261016/fork-b`:
 - a local bare repository stood in for the fork, reached through `url.insteadOf`;
@@ -78,6 +68,5 @@ The layout was simulated on 2026-10-16 at `build/clean-room-20261016/fork-b`:
 Offering the commit to Joe (a pull request to `joelanders/mc68k-md-mm`) can come later and is
 independent of this. Until it is merged, the superproject keeps pointing at the owner's fork.
 
-Changing the URL affects only the commits from the change on. Older commits keep pointing at
-`joelanders/mc68k-md-mm`, where their pins are. Other clones and worktrees need a
+Changing the URL affects commits from the change on. Other clones and worktrees need a
 `git submodule sync` after they pull the change.
