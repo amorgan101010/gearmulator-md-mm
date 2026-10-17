@@ -260,6 +260,104 @@ namespace
 		require(server.threadError().empty(), "endpoint framing check failed: " + server.threadError());
 	}
 
+	void testMonomachineHandshakeStatusAndExactPanelBytes()
+	{
+		std::atomic<unsigned> statuses{0};
+		std::atomic<unsigned> inputs{0};
+		FakeEndpoint server([&](const ParsedRequest& request)
+		{
+			if(request.kind == 1)
+			{
+				require(request.payload.size() == 19 && request.payload[0] == 2
+					&& request.payload[1] == 'm' && request.payload[2] == 'm',
+					"Monomachine HELLO did not identify the MM unit");
+				return helloResponse(request, GM_MODEL_MONOMACHINE, "mm");
+			}
+			if(request.kind == 2)
+			{
+				++statuses;
+				const auto expectedToken = token();
+				require(request.payload.size() == 16 && request.payload ==
+					std::vector<uint8_t>(expectedToken.begin(), expectedToken.end()),
+					"Monomachine STATUS did not carry its HELLO instance token");
+				return statusResponse(request, 100);
+			}
+			if(request.kind == 3)
+			{
+				++inputs;
+				require(request.payload.size() == 18
+					&& request.payload[16] == 0x25 && request.payload[17] == 0x04,
+					"Monomachine DATA PAGE FORWARD packet was modified");
+				return frame(responseBit | 3, request.id, {});
+			}
+			throw std::runtime_error("unexpected Monomachine request kind");
+		});
+
+		mdJucePlugin::NativePanelClient client(server.socketPath(), server.runtimeDirectory(),
+			"mm", md::MachineModel::Monomachine, 300);
+		mdJucePlugin::PanelStatusSnapshot snapshot;
+		std::string error;
+		require(client.readStatus(snapshot, error), "Monomachine STATUS request failed: " + error);
+		require(snapshot.generation == 100
+			&& snapshot.panel.getMonomachineStepLedColor(0) == md::FrontPanel::LedColor::Green,
+			"Monomachine panel status bytes did not decode");
+		require(client.sendPanel(0x25, 0x04, error),
+			"Monomachine panel input request failed: " + error);
+		require(statuses == 1 && inputs == 1,
+			"Monomachine endpoint did not receive the expected status and panel input");
+		require(server.threadError().empty(),
+			"Monomachine endpoint framing check failed: " + server.threadError());
+	}
+
+	void testMonomachineRejectsWrongModelUnitAndStaleInstance()
+	{
+		FakeEndpoint wrongModel([](const ParsedRequest& request)
+		{
+			return helloResponse(request, GM_MODEL_MACHINEDRUM, "mm");
+		});
+		bool rejected = false;
+		try
+		{
+			mdJucePlugin::NativePanelClient client(wrongModel.socketPath(),
+				wrongModel.runtimeDirectory(), "mm", md::MachineModel::Monomachine, 300);
+		}
+		catch(const std::exception& error)
+		{
+			rejected = std::string(error.what()).find("model mismatch") != std::string::npos;
+		}
+		require(rejected, "wrong model was not rejected for the Monomachine unit");
+
+		FakeEndpoint wrongUnit([](const ParsedRequest& request)
+		{
+			return helloResponse(request, GM_MODEL_MONOMACHINE, "different-mm");
+		});
+		rejected = false;
+		try
+		{
+			mdJucePlugin::NativePanelClient client(wrongUnit.socketPath(),
+				wrongUnit.runtimeDirectory(), "mm", md::MachineModel::Monomachine, 300);
+		}
+		catch(const std::exception& error)
+		{
+			rejected = std::string(error.what()).find("different unit identifier") != std::string::npos;
+		}
+		require(rejected, "wrong logical unit was not rejected for the Monomachine unit");
+
+		FakeEndpoint stale([](const ParsedRequest& request)
+		{
+			if(request.kind == 1)
+				return helloResponse(request, GM_MODEL_MONOMACHINE, "mm");
+			return errorResponse(request, 4);
+		});
+		mdJucePlugin::NativePanelClient staleClient(stale.socketPath(), stale.runtimeDirectory(),
+			"mm", md::MachineModel::Monomachine, 300);
+		mdJucePlugin::PanelStatusSnapshot snapshot;
+		std::string error;
+		require(!staleClient.readStatus(snapshot, error)
+			&& error.find("instance changed") != std::string::npos,
+			"stale Monomachine engine token was not rejected");
+	}
+
 	void testWrongModelAndProtocolVersion()
 	{
 		FakeEndpoint wrongModel([](const ParsedRequest& request)
@@ -347,9 +445,11 @@ int main()
 	try
 	{
 		testFramingStatusGenerationAndPanelBytes();
+		testMonomachineHandshakeStatusAndExactPanelBytes();
+		testMonomachineRejectsWrongModelUnitAndStaleInstance();
 		testWrongModelAndProtocolVersion();
 		testStaleTokenAndEngineDisappearance();
-		std::cout << "GMNP v1 framing, model/token checks, generation, panel bytes, and disconnect passed\n";
+		std::cout << "GMNP v1 MD/MM framing, model/token checks, generation, panel bytes, and disconnect passed\n";
 		return 0;
 	}
 	catch(const std::exception& error)

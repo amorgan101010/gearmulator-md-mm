@@ -1,6 +1,7 @@
 #include "mdFrontPanelLcd.h"
 #include "mdKeyboardControl.h"
 #include "mdNativePanelClient.h"
+#include "mdNativePanelPresentation.h"
 #include "mdPanelAffordances.h"
 #include "mdPanelControls.h"
 
@@ -25,9 +26,12 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <csignal>
 #include <cstdio>
 #include <cstdint>
+#include <deque>
 #include <filesystem>
+#include <initializer_list>
 #include <iostream>
 #include <map>
 #include <memory>
@@ -38,6 +42,18 @@
 
 namespace
 {
+	volatile std::sig_atomic_t g_shutdownRequested = 0;
+
+	void requestShutdown(const int)
+	{
+		g_shutdownRequested = 1;
+	}
+
+	const char* modelName(const md::MachineModel model)
+	{
+		return model == md::MachineModel::Monomachine ? "Monomachine" : "Machinedrum";
+	}
+
 	struct Options
 	{
 		std::string socketPath;
@@ -77,12 +93,21 @@ namespace
 		if(result.socketPath.empty() || result.runtimeDirectory.empty()
 			|| result.unit.empty() || result.model.empty())
 		{
-			error = "required arguments: --model md --unit md --socket PATH --runtime DIR";
+			error = "required arguments: --model md|mm --unit md|mm --socket PATH --runtime DIR";
 			return {};
 		}
-		if(result.model != "md" || result.unit.empty())
+		if((result.model != "md" && result.model != "mm") || result.unit != result.model)
 		{
-			error = "this vertical slice accepts only --model md and an explicit MD unit";
+			error = "native panel requires matching --model md --unit md or --model mm --unit mm";
+			return {};
+		}
+		const auto expectedSuffix = ".panel." + result.unit + ".sock";
+		const auto socketName = std::filesystem::path(result.socketPath).filename().string();
+		if(socketName.size() < expectedSuffix.size()
+			|| socketName.compare(socketName.size() - expectedSuffix.size(),
+				expectedSuffix.size(), expectedSuffix) != 0)
+		{
+			error = "native panel socket must end with " + expectedSuffix;
 			return {};
 		}
 		return result;
@@ -98,8 +123,8 @@ namespace
 			case '&': result += "&amp;"; break;
 			case '<': result += "&lt;"; break;
 			case '>': result += "&gt;"; break;
-		case '"': result += "&quot;"; break;
-		default: result += ch; break;
+			case '"': result += "&quot;"; break;
+			default: result += ch; break;
 			}
 		}
 		return result;
@@ -154,19 +179,22 @@ namespace
 	};
 
 	class NativePanelView final : public juce::Component,
+		private juce::FocusChangeListener,
 		private juce::Timer,
 		private mdJucePlugin::PanelKeyboardActions
 	{
 	public:
 		explicit NativePanelView(const Options& options)
-			: m_interfaces(m_resources)
+			: m_model(options.model == "mm" ? md::MachineModel::Monomachine
+				: md::MachineModel::Machinedrum)
+			, m_interfaces(m_resources)
 			, m_trace(options.trace)
 		{
 			try
 			{
 				m_backend = std::make_unique<mdJucePlugin::NativePanelClient>(
 					options.socketPath, options.runtimeDirectory, options.unit,
-					md::MachineModel::Machinedrum);
+					m_model);
 				m_connected = true;
 			}
 			catch(const std::exception& error)
@@ -178,7 +206,7 @@ namespace
 			juceRmlUi::RmlComponentConfig config;
 			config.forceSoftwareRenderer = juceRmlUi::SoftwareRendererMode::ForceOn;
 			m_panel = std::make_unique<juceRmlUi::RmlComponent>(m_interfaces, m_resources,
-				"mdDefault.rml", 1.0f,
+				m_model == md::MachineModel::Monomachine ? "mmSfx60.rml" : "mdDefault.rml", 1.0f,
 				[](juceRmlUi::RmlComponent&, Rml::Context&) {},
 				[](juceRmlUi::RmlComponent&, Rml::Context&) {}, config);
 			m_panel->setLookAndFeel(&m_lookAndFeel);
@@ -187,13 +215,15 @@ namespace
 			wirePanel();
 			m_panel->grabKeyboardFocus();
 			setSize(1100, 820);
+			juce::Desktop::getInstance().addFocusChangeListener(this);
 			startTimerHz(30);
 		}
 
 		~NativePanelView() override
 		{
 			stopTimer();
-			keyboardReleaseAllPanelInputs();
+			juce::Desktop::getInstance().removeFocusChangeListener(this);
+			m_keyboard.reset(*this);
 			m_panel.reset();
 		}
 
@@ -213,12 +243,38 @@ namespace
 			}
 		}
 
+		void globalFocusChanged(juce::Component* focusedComponent) override
+		{
+			if(m_panel && focusedComponent
+				&& (focusedComponent == m_panel.get() || m_panel->isParentOf(focusedComponent)))
+				return;
+			m_keyboard.reset(*this);
+		}
+
 	private:
 		struct ActiveButton
 		{
 			md::PanelControl control{};
 			md::PanelPacket packet{};
 		};
+
+		struct PanelStep
+		{
+			md::PanelPacket packet{};
+			bool press = false;
+		};
+
+		static bool isTrigger(const md::PanelControl control)
+		{
+			return control >= md::PanelControl::Trigger1
+				&& control <= md::PanelControl::Trigger16;
+		}
+
+		static bool isPatternBank(const md::PanelControl control)
+		{
+			return control >= md::PanelControl::BankA
+				&& control <= md::PanelControl::BankD;
+		}
 
 		void trace(const std::string& line) const
 		{
@@ -259,18 +315,19 @@ namespace
 				"font-size:12dp; line-height:16dp; z-index:3000; white-space:nowrap;");
 			document->AppendChild(std::move(status));
 			m_statusElement->SetClass("connectionError", !m_connected);
-			setStatus(m_connected ? "Connected to hosted MD · waiting for first status snapshot"
+			setStatus(m_connected ? std::string("Connected to hosted ") + modelName(m_model)
+				+ " · waiting for first status snapshot"
 				: "Engine unavailable: " + m_connectionMessage, !m_connected);
 
 			if(auto* const rack = document->GetElementById("machineRack"))
 			{
 				rack->SetProperty(Rml::PropertyId::PointerEvents, Rml::Style::PointerEvents::None);
-				rack->SetAttribute("title", "Processor-owned machine rack is unavailable in a hosted panel");
+				rack->SetAttribute("title", "Processor-owned rack features are unavailable in a hosted panel");
 				rack->SetInnerRML("<div style=\"position:absolute; left:8dp; top:12dp; width:1040dp;"
 					"height:56dp; padding:12dp 16dp; background-color:#171b1d; color:#d2d7d0;"
 					"font-size:13dp; line-height:18dp;\">"
-					"Hosted Machinedrum panel. Preset, firmware, storage, SysEx, scene, and machine-rack"
-					" operations need processor-owned services and are disabled here.</div>");
+					"Hosted panel. Presets, firmware, storage, SysEx, scenes, and processor settings"
+					" require the plug-in or standalone editor.</div>");
 			}
 			if(auto* const settings = element("btSettings"))
 			{
@@ -293,7 +350,7 @@ namespace
 		{
 			auto* const document = m_panel->getDocument();
 			if(!document)
-				throw std::runtime_error("MD panel RML document did not load");
+				throw std::runtime_error(std::string(modelName(m_model)) + " panel RML document did not load");
 			addNotice(document);
 
 			if(auto* const area = document->GetElementById("lcdArea"))
@@ -302,12 +359,12 @@ namespace
 				m_lcd->setClearEveryFrame(true);
 				m_lcd->setRepaintGraphicsCallback([this](juce::Image& target, juce::Graphics& graphics)
 				{
-					const auto off = mdJucePlugin::frontPanelLcdOffColor(md::MachineModel::Machinedrum);
+					const auto off = mdJucePlugin::frontPanelLcdOffColor(m_model);
 					graphics.fillAll(juce::Colour(off));
 					if(!m_haveStatus)
 						return;
 					auto image = mdJucePlugin::makeFrontPanelLcdImage(
-						m_snapshot.panel, md::MachineModel::Machinedrum);
+						m_snapshot.panel, m_model);
 					graphics.setImageResamplingQuality(juce::Graphics::lowResamplingQuality);
 					graphics.drawImageWithin(image, 0, 0, target.getWidth(), target.getHeight(),
 						juce::RectanglePlacement::centred);
@@ -319,26 +376,34 @@ namespace
 				auto* const button = dynamic_cast<juceRmlUi::ElemButton*>(element(binding.id));
 				if(!button)
 					continue;
-				const auto packet = md::panelPacket(md::MachineModel::Machinedrum, binding.control);
+				const auto packet = md::panelPacket(m_model, binding.control);
 				if(!packet)
 				{
 					button->SetProperty(Rml::PropertyId::PointerEvents, Rml::Style::PointerEvents::None);
-					button->SetAttribute("title", "This control is not available for the hosted MD model");
+					button->SetAttribute("title", "This control is not available for the hosted model");
 					continue;
 				}
-				button->SetAttribute("title", "Send this physical MD panel key to the hosted machine");
+				button->SetAttribute("title", "Send this physical panel key to the hosted machine");
 				juceRmlUi::EventListener::Add(button, Rml::EventId::Mousedown,
 					[this, button, control = binding.control](Rml::Event& event)
 					{
 						if(juceRmlUi::helper::getMouseButton(event)
 							!= juceRmlUi::MouseButton::Left)
 							return;
-						pressControl(control, event.GetParameter<int>("shift_key", 0) != 0);
-						juceRmlUi::ElemButton::setChecked(button, true);
+						if(mdJucePlugin::panelAffordances::usesPersistentPatternBankLatch(
+							m_model, control, !m_shiftLatch.empty()))
+							togglePatternBankLatch(button, control);
+						else
+						{
+							pressControl(control, event.GetParameter<int>("shift_key", 0) != 0);
+							juceRmlUi::ElemButton::setChecked(button, true);
+						}
 						event.StopPropagation();
 					});
 				const auto release = [this, button, control = binding.control](Rml::Event&)
 				{
+					if(button == m_patternBankButton)
+						return;
 					if(!m_shiftLatch.contains(control))
 					{
 						releaseControlNow(control);
@@ -360,6 +425,7 @@ namespace
 			configureEncoder(m_encoderElements[8], md::PanelEncoder::Level, m_encoderLast[8], m_encoderAccum[8]);
 			m_encoderElements[9] = dynamic_cast<juceRmlUi::ElemKnob*>(element("encSound"));
 			configureEncoder(m_encoderElements[9], md::PanelEncoder::SoundSelection, m_encoderLast[9], m_encoderAccum[9]);
+			wireModelAffordances();
 
 			juceRmlUi::EventListener::Add(document, Rml::EventId::Keydown,
 				[this](Rml::Event& event) { onPanelKey(event, true); });
@@ -373,13 +439,241 @@ namespace
 							m_encoderElements[i]->SetClass("encoderPressed", false);
 					if(m_mouseEncoderPress)
 						keyboardReleaseEncoder(*m_mouseEncoderPress);
+			});
+		}
+
+		void wireModelAffordances()
+		{
+			if(m_model == md::MachineModel::Monomachine)
+			{
+				for(int track = 0; track < 6; ++track)
+				{
+					const auto control = static_cast<md::PanelControl>(
+						static_cast<int>(md::PanelControl::Track1) + track);
+					const auto suffix = std::to_string(track);
+					bindPanelTarget((std::string("trackLabel") + suffix).c_str(), control);
+					bindPanelTarget((std::string("drumLed") + suffix).c_str(), control);
+					bindPanelChord((std::string("trackMute") + suffix).c_str(), control);
+				}
+				for(const auto& shortcut : mdJucePlugin::panelAffordances::g_monomachineShortcuts)
+					bindPanelChord(shortcut.id, shortcut.control);
+				for(size_t page = 0; page < mdJucePlugin::panelAffordances::g_monomachineDataPages.size(); ++page)
+					bindPanelPage(mdJucePlugin::panelAffordances::g_monomachineDataPages[page],
+						[this, page] { selectMonomachineDataPage(static_cast<int>(page)); });
+				for(size_t mode = 0; mode < mdJucePlugin::panelAffordances::g_monomachineTrigModes.size(); ++mode)
+					bindPanelPage(mdJucePlugin::panelAffordances::g_monomachineTrigModes[mode],
+						[this, mode] { selectMonomachineTrigMode(static_cast<int>(mode)); });
+				return;
+			}
+
+			for(size_t page = 0; page < mdJucePlugin::panelAffordances::g_machinedrumDataPages.size(); ++page)
+				bindPanelPage(mdJucePlugin::panelAffordances::g_machinedrumDataPages[page],
+					[this, page] { selectMachinedrumDataPage(static_cast<int>(page)); });
+		}
+
+		void bindPanelTarget(const char* id, const md::PanelControl control)
+		{
+			auto* const target = element(id);
+			if(!target)
+				return;
+			target->SetClass(mdJucePlugin::panelAffordances::g_affordanceClass, true);
+			juceRmlUi::EventListener::Add(target, Rml::EventId::Mousedown,
+				[this, target, control](Rml::Event& event)
+				{
+					if(juceRmlUi::helper::getMouseButton(event) != juceRmlUi::MouseButton::Left)
+						return;
+					beginPanelGesture(target, { control });
 				});
+			const auto release = [this](Rml::Event&) { endPanelGesture(); };
+			juceRmlUi::EventListener::Add(target, Rml::EventId::Mouseup, release);
+			juceRmlUi::EventListener::Add(target, Rml::EventId::Mouseout, release);
+		}
+
+		void bindPanelChord(const char* id, const md::PanelControl control)
+		{
+			auto* const target = element(id);
+			if(!target)
+				return;
+			target->SetClass(mdJucePlugin::panelAffordances::g_affordanceClass, true);
+			juceRmlUi::EventListener::Add(target, Rml::EventId::Mousedown,
+				[this, target, control](Rml::Event& event)
+				{
+					if(juceRmlUi::helper::getMouseButton(event) != juceRmlUi::MouseButton::Left)
+						return;
+					beginPanelGesture(target, { md::PanelControl::Function, control });
+				});
+			const auto release = [this](Rml::Event&) { endPanelGesture(); };
+			juceRmlUi::EventListener::Add(target, Rml::EventId::Mouseup, release);
+			juceRmlUi::EventListener::Add(target, Rml::EventId::Mouseout, release);
+		}
+
+		template<typename Select>
+		void bindPanelPage(const char* id, Select select)
+		{
+			auto* const target = element(id);
+			if(!target)
+				return;
+			target->SetClass(mdJucePlugin::panelAffordances::g_affordanceClass, true);
+			juceRmlUi::EventListener::Add(target, Rml::EventId::Click,
+				[this, select = std::move(select)](Rml::Event&) mutable
+				{
+					endPanelGesture();
+					releasePatternBankLatch();
+					select();
+				});
+		}
+
+		void beginPanelGesture(Rml::Element* target,
+			std::initializer_list<md::PanelControl> controls)
+		{
+			endPanelGesture();
+			releaseLatchedControls();
+			releasePatternBankLatch();
+			m_panelGestureElement = target;
+			m_panelGestureElement->SetClass("active", true);
+			for(const auto control : controls)
+			{
+				const auto packet = md::panelPacket(m_model, control);
+				if(!packet)
+					continue;
+				m_panelGesturePackets.push_back(*packet);
+				(void)sendPacket(m_rows.press(*packet));
+			}
+		}
+
+		void endPanelGesture()
+		{
+			if(m_panelGestureElement)
+				m_panelGestureElement->SetClass("active", false);
+			for(auto it = m_panelGesturePackets.rbegin(); it != m_panelGesturePackets.rend(); ++it)
+				(void)sendPacket(m_rows.release(*it));
+			m_panelGesturePackets.clear();
+			m_panelGestureElement = nullptr;
+		}
+
+		void selectMachinedrumDataPage(const int page)
+		{
+			if(page >= 0 && page < static_cast<int>(mdJucePlugin::panelAffordances::g_machinedrumDataPages.size()))
+			{
+				m_machinedrumDataPageTarget.request(page);
+				servicePanelNavigation();
+			}
+		}
+
+		void selectMonomachineDataPage(const int page)
+		{
+			if(page >= 0 && page < static_cast<int>(mdJucePlugin::panelAffordances::g_monomachineDataPages.size()))
+			{
+				m_monomachineDataPageTarget.request(page);
+				servicePanelNavigation();
+			}
+		}
+
+		void selectMonomachineTrigMode(const int mode)
+		{
+			if(mode >= 0 && mode < static_cast<int>(mdJucePlugin::panelAffordances::g_monomachineTrigModes.size()))
+			{
+				m_monomachineTrigModeTarget.request(mode);
+				servicePanelNavigation();
+			}
+		}
+
+		void queuePanelPulse(const md::PanelControl control, const int count = 1)
+		{
+			const auto packet = md::panelPacket(m_model, control);
+			if(!packet)
+				return;
+			for(int i = 0; i < count; ++i)
+			{
+				m_panelSteps.push_back({ *packet, true });
+				m_panelSteps.push_back({ *packet, false });
+			}
+		}
+
+		void servicePanelQueue()
+		{
+			if(m_panelSteps.empty())
+				return;
+			while(!m_panelSteps.empty())
+			{
+				const auto step = m_panelSteps.front();
+				const auto combined = step.press ? m_rows.press(step.packet) : m_rows.release(step.packet);
+				if(!sendPacket(combined))
+					return;
+				m_panelSteps.pop_front();
+				if(!step.press)
+				{
+					m_panelSettleTicks = 1;
+					break;
+				}
+				if(m_panelSteps.empty() || m_panelSteps.front().press
+					|| !(m_panelSteps.front().packet == step.packet))
+					break;
+			}
+		}
+
+		void servicePanelNavigation()
+		{
+			if(!m_panelSteps.empty() || !m_haveStatus)
+				return;
+			if(m_panelSettleTicks > 0)
+			{
+				--m_panelSettleTicks;
+				return;
+			}
+			if(m_model == md::MachineModel::Machinedrum)
+			{
+				if(!m_machinedrumDataPageTarget.target())
+					return;
+				const std::array<bool, 4> active{{
+					mdJucePlugin::panelLedLit(m_snapshot.panel, 0x22, 0),
+					mdJucePlugin::panelLedLit(m_snapshot.panel, 0x22, 1),
+					mdJucePlugin::panelLedLit(m_snapshot.panel, 0x22, 2),
+					mdJucePlugin::panelLedLit(m_snapshot.panel, 0x23, 6),
+				}};
+				const auto current = mdJucePlugin::panelAffordances::singleActiveIndex(active);
+				if(!current || m_machinedrumDataPageTarget.completeIfAt(*current))
+					return;
+				const auto plan = mdJucePlugin::panelAffordances::machinedrumDataPagePlan(
+					*current, *m_machinedrumDataPageTarget.target());
+				if(plan && m_machinedrumDataPageTarget.beginAttempt())
+					queuePanelPulse(plan->control, plan->count);
+				return;
+			}
+
+			if(const auto target = m_monomachineDataPageTarget.target())
+			{
+				const auto current = mdJucePlugin::panelAffordances::singleActiveIndex(
+					mdJucePlugin::monomachineDataPageLeds(m_snapshot.panel));
+				if(current && !m_monomachineDataPageTarget.completeIfAt(*current))
+				{
+					const auto plan = mdJucePlugin::panelAffordances::monomachineDataPagePlan(
+						*current, *target);
+					if(plan && m_monomachineDataPageTarget.beginAttempt())
+					{
+						queuePanelPulse(plan->control, plan->count);
+						return;
+					}
+				}
+			}
+			if(const auto target = m_monomachineTrigModeTarget.target())
+			{
+				const auto current = mdJucePlugin::panelAffordances::singleActiveIndex(
+					mdJucePlugin::monomachineTrigModeLeds(m_snapshot.panel));
+				if(current && !m_monomachineTrigModeTarget.completeIfAt(*current))
+				{
+					const auto plan = mdJucePlugin::panelAffordances::monomachineTrigModePlan(
+						*current, *target);
+					if(plan && m_monomachineTrigModeTarget.beginAttempt())
+						queuePanelPulse(plan->control, plan->count);
+				}
+			}
 		}
 
 		void configureEncoder(juceRmlUi::ElemKnob* knob, md::PanelEncoder encoder,
 			float& last, float& accumulated)
 		{
-			if(!knob || !md::panelEncoderCommand(md::MachineModel::Machinedrum, encoder))
+			if(!knob || !md::panelEncoderCommand(m_model, encoder))
 				return;
 			knob->setMinValue(0.0f);
 			knob->setMaxValue(100.0f);
@@ -459,7 +753,10 @@ namespace
 
 		void pressControl(md::PanelControl control, bool shift)
 		{
-			const auto packet = md::panelPacket(md::MachineModel::Machinedrum, control);
+			if(m_model == md::MachineModel::Monomachine && !isTrigger(control)
+				&& !isPatternBank(control))
+				releasePatternBankLatch();
+			const auto packet = md::panelPacket(m_model, control);
 			if(!packet || std::find_if(m_activeButtons.begin(), m_activeButtons.end(),
 				[control](const auto& active) { return active.control == control; }) != m_activeButtons.end())
 				return;
@@ -476,7 +773,11 @@ namespace
 			const auto it = std::find_if(m_activeButtons.begin(), m_activeButtons.end(),
 				[control](const auto& active) { return active.control == control; });
 			if(it == m_activeButtons.end())
+			{
+				if(m_model == md::MachineModel::Monomachine && isTrigger(control))
+					releasePatternBankLatch();
 				return;
+			}
 			const auto packet = it->packet;
 			m_activeButtons.erase(it);
 			const auto combined = m_rows.release(packet);
@@ -485,6 +786,35 @@ namespace
 				if(binding.control == control)
 					if(auto* const button = dynamic_cast<juceRmlUi::ElemButton*>(element(binding.id)))
 						juceRmlUi::ElemButton::setChecked(button, false);
+			if(m_model == md::MachineModel::Monomachine && isTrigger(control))
+				releasePatternBankLatch();
+		}
+
+		void togglePatternBankLatch(juceRmlUi::ElemButton* button,
+			const md::PanelControl control)
+		{
+			const bool wasLatched = button == m_patternBankButton;
+			releasePatternBankLatch();
+			if(wasLatched)
+				return;
+			const auto packet = md::panelPacket(m_model, control);
+			if(!packet)
+				return;
+			m_patternBankButton = button;
+			m_patternBankPacket = packet;
+			juceRmlUi::ElemButton::setChecked(button, true);
+			(void)sendPacket(m_rows.press(*packet));
+		}
+
+		void releasePatternBankLatch()
+		{
+			if(!m_patternBankPacket)
+				return;
+			if(m_patternBankButton)
+				juceRmlUi::ElemButton::setChecked(m_patternBankButton, false);
+			(void)sendPacket(m_rows.release(*m_patternBankPacket));
+			m_patternBankButton = nullptr;
+			m_patternBankPacket.reset();
 		}
 
 		void releaseLatchedControls()
@@ -497,7 +827,7 @@ namespace
 
 		void emitEncoder(md::PanelEncoder encoder, int steps)
 		{
-			const auto command = md::panelEncoderCommand(md::MachineModel::Machinedrum, encoder);
+			const auto command = md::panelEncoderCommand(m_model, encoder);
 			if(!command)
 				return;
 			if(auto* const knob = encoderElement(encoder))
@@ -527,6 +857,27 @@ namespace
 				if(auto* const item = element(id.c_str()))
 					item->SetClass(className, on);
 			};
+			const auto setColor = [this](const std::string& id, const md::FrontPanel::LedColor color)
+			{
+				if(auto* const item = element(id.c_str()))
+				{
+					item->SetClass("green", color == md::FrontPanel::LedColor::Green);
+					item->SetClass("red", color == md::FrontPanel::LedColor::Red);
+					item->SetClass("yellow", color == md::FrontPanel::LedColor::Yellow);
+				}
+			};
+			if(m_model == md::MachineModel::Monomachine)
+			{
+				for(unsigned i = 0; i < 16; ++i)
+					setColor("stepLed" + std::to_string(i), m_snapshot.panel.getMonomachineStepLedColor(i));
+				for(size_t i = 0; i < mdJucePlugin::g_monomachineTrackLeds.size(); ++i)
+					setColor("drumLed" + std::to_string(i),
+						mdJucePlugin::monomachineTrackLedColor(m_snapshot.panel, i));
+				for(const auto& led : mdJucePlugin::g_monomachinePanelLeds)
+					set(led.id, "lit", mdJucePlugin::panelLedLit(m_snapshot.panel, led.bank, led.bit));
+				return;
+			}
+
 			for(unsigned i = 0; i < 16; ++i)
 			{
 				set("stepLed" + std::to_string(i), "lit", m_snapshot.panel.getStepLed(i));
@@ -557,12 +908,18 @@ namespace
 			constexpr uint8_t pageBanks[] = { 0x22, 0x22, 0x22, 0x23 };
 			constexpr uint8_t pageBits[] = { 0, 1, 2, 6 };
 			for(size_t i = 0; i < std::size(pages); ++i)
-				set(pages[i], "lit", (m_snapshot.panel.getLedBankRaw(pageBanks[i])
-					& static_cast<uint8_t>(1u << pageBits[i])) == 0);
+				set(pages[i], "lit", mdJucePlugin::panelLedLit(m_snapshot.panel, pageBanks[i], pageBits[i]));
 		}
 
 		void timerCallback() override
 		{
+			if(g_shutdownRequested)
+			{
+				g_shutdownRequested = 0;
+				if(auto* const app = juce::JUCEApplication::getInstance())
+					app->systemRequestedQuit();
+				return;
+			}
 			const auto now = juce::Time::getMillisecondCounterHiRes();
 			m_keyboard.serviceReleases(now, *this);
 			if(m_shiftLatch.size() != 0
@@ -575,6 +932,10 @@ namespace
 			if(!m_backend->readStatus(snapshot, error))
 			{
 				m_connected = false;
+				m_panelSteps.clear();
+				m_machinedrumDataPageTarget = {};
+				m_monomachineDataPageTarget = {};
+				m_monomachineTrigModeTarget = {};
 				setStatus("Engine disconnected: " + error, true);
 				return;
 			}
@@ -595,8 +956,11 @@ namespace
 					m_loggedFirstStatus = true;
 				}
 			}
-			setStatus("Connected to hosted MD · status generation "
+			setStatus(std::string("Connected to hosted ") + modelName(m_model)
+				+ " · status generation "
 				+ std::to_string(m_snapshot.generation), false);
+			servicePanelQueue();
+			servicePanelNavigation();
 		}
 
 		void keyboardPressControl(md::PanelControl control, bool shift, bool) override
@@ -610,7 +974,7 @@ namespace
 		}
 		bool keyboardEncoderAvailable(md::PanelEncoder encoder) const override
 		{
-			return md::panelEncoderCommand(md::MachineModel::Machinedrum, encoder).has_value();
+			return md::panelEncoderCommand(m_model, encoder).has_value();
 		}
 		void keyboardSelectEncoder(std::optional<md::PanelEncoder> encoder) override
 		{
@@ -624,7 +988,7 @@ namespace
 		}
 		void keyboardPressEncoder(md::PanelEncoder encoder) override
 		{
-			const auto packet = md::panelEncoderPressPacket(md::MachineModel::Machinedrum, encoder);
+			const auto packet = md::panelEncoderPressPacket(m_model, encoder);
 			if(!packet || m_encoderPressPacket)
 				return;
 			m_encoderPressPacket = packet;
@@ -648,22 +1012,45 @@ namespace
 		}
 		void keyboardClickEncoder(md::PanelEncoder encoder) override
 		{
-			const auto packet = md::panelEncoderPressPacket(md::MachineModel::Machinedrum, encoder);
+			const auto packet = md::panelEncoderPressPacket(m_model, encoder);
 			if(!packet)
 				return;
 			(void)sendPacket(m_rows.press(*packet));
 			(void)sendPacket(m_rows.release(*packet));
 		}
-		bool keyboardHandlesMachinedrumPageKeys() const override { return true; }
-		void keyboardMachinedrumPageKey(int, bool) override {}
+		bool keyboardHandlesMachinedrumPageKeys() const override
+		{
+			return m_model == md::MachineModel::Machinedrum;
+		}
+		void keyboardMachinedrumPageKey(int direction, bool down) override
+		{
+			if(!down || m_model != md::MachineModel::Machinedrum)
+				return;
+			const std::array<bool, 3> active{{
+				mdJucePlugin::panelLedLit(m_snapshot.panel, 0x22, 0),
+				mdJucePlugin::panelLedLit(m_snapshot.panel, 0x22, 1),
+				mdJucePlugin::panelLedLit(m_snapshot.panel, 0x22, 2),
+			}};
+			const auto current = mdJucePlugin::panelAffordances::singleActiveIndex(active);
+			const int page = current.value_or(0);
+			const int next = (page + (direction > 0 ? 1 : 2)) % 3;
+			selectMachinedrumDataPage(next);
+		}
 		void keyboardReleaseAllPanelInputs() override
 		{
+			endPanelGesture();
 			releaseLatchedControls();
+			releasePatternBankLatch();
+			m_panelSteps.clear();
+			m_machinedrumDataPageTarget = {};
+			m_monomachineDataPageTarget = {};
+			m_monomachineTrigModeTarget = {};
 			for(uint8_t row = 0x20; row <= 0x26; ++row)
 				if(m_rows.mask(row) != 0)
 					(void)sendPacket({ row, 0 });
 			m_rows.reset();
 			m_activeButtons.clear();
+			m_panelGesturePackets.clear();
 			m_encoderPressPacket.reset();
 			m_mouseEncoderPress.reset();
 			for(const auto& binding : mdJucePlugin::g_panelButtons)
@@ -671,6 +1058,7 @@ namespace
 					juceRmlUi::ElemButton::setChecked(button, false);
 		}
 
+		md::MachineModel m_model = md::MachineModel::Machinedrum;
 		PanelResources m_resources;
 		juceRmlUi::RmlInterfaces m_interfaces;
 		juceRmlUi::LookAndFeel m_lookAndFeel;
@@ -681,7 +1069,15 @@ namespace
 		mdJucePlugin::PanelKeyboardControl m_keyboard;
 		md::PanelRowState m_rows;
 		mdJucePlugin::panelAffordances::ShiftPanelLatch m_shiftLatch;
+		mdJucePlugin::panelAffordances::PendingTarget<3> m_machinedrumDataPageTarget;
+		mdJucePlugin::panelAffordances::PendingTarget<7> m_monomachineDataPageTarget;
+		mdJucePlugin::panelAffordances::PendingTarget<4> m_monomachineTrigModeTarget;
 		std::vector<ActiveButton> m_activeButtons;
+		std::vector<md::PanelPacket> m_panelGesturePackets;
+		Rml::Element* m_panelGestureElement = nullptr;
+		std::deque<PanelStep> m_panelSteps;
+		juceRmlUi::ElemButton* m_patternBankButton = nullptr;
+		std::optional<md::PanelPacket> m_patternBankPacket;
 		std::array<juceRmlUi::ElemKnob*, 10> m_encoderElements{};
 		std::array<float, 10> m_encoderLast{};
 		std::array<float, 10> m_encoderAccum{};
@@ -693,6 +1089,7 @@ namespace
 		bool m_connected = false;
 		bool m_haveStatus = false;
 		bool m_loggedFirstStatus = false;
+		size_t m_panelSettleTicks = 0;
 		bool m_trace = false;
 	};
 
@@ -718,7 +1115,9 @@ namespace
 	{
 	public:
 		explicit MainWindow(const Options& options)
-			: juce::DocumentWindow("Gearmulator MD · Hosted Panel",
+			: juce::DocumentWindow(juce::String("Gearmulator ") + modelName(
+					options.model == "mm" ? md::MachineModel::Monomachine : md::MachineModel::Machinedrum)
+					+ " · Hosted Panel",
 				juce::Colour(0xff202326), juce::DocumentWindow::allButtons)
 		{
 			setUsingNativeTitleBar(true);
@@ -747,10 +1146,12 @@ namespace
 	class NativePanelApplication final : public juce::JUCEApplication
 	{
 	public:
-		const juce::String getApplicationName() override { return "Gearmulator MD Native Panel"; }
+		const juce::String getApplicationName() override { return "Gearmulator Hosted Panel"; }
 		const juce::String getApplicationVersion() override { return "1.0"; }
 		void initialise(const juce::String&) override
 		{
+			std::signal(SIGTERM, requestShutdown);
+			std::signal(SIGINT, requestShutdown);
 			std::string error;
 			const auto options = parseOptions(getCommandLineParameterArray(), error);
 			if(!options)
@@ -762,7 +1163,8 @@ namespace
 				return;
 			}
 			m_window = std::make_unique<MainWindow>(*options);
-			std::cout << "NATIVE_PANEL_WINDOW_READY model=md unit=" << options->unit << '\n';
+			std::cout << "NATIVE_PANEL_WINDOW_READY model=" << options->model
+				<< " unit=" << options->unit << '\n';
 		}
 		void shutdown() override { m_window.reset(); }
 		void systemRequestedQuit() override { quit(); }

@@ -4,6 +4,7 @@
 #include "mdControlInput.h"
 #include "mdPanelAffordances.h"
 #include "mdFrontPanelLcd.h"
+#include "mdNativePanelPresentation.h"
 #include "mdLcdText.h"
 #include "mdMonomachineHelp.h"
 #include "mdMachinedrumHelp.h"
@@ -2560,25 +2561,11 @@ namespace mdJucePlugin
 
 		if(getModel() == md::MachineModel::Monomachine)
 		{
-			// Monomachine uses a separate active-low LED-bank layout.
-			const struct { const char* id; uint8_t bank; uint8_t bit; } leds[] =
+			for(size_t i = 0; i < g_monomachinePanelLeds.size(); ++i)
 			{
-				{ "mmPageLed0", 0x25, 4 }, { "mmPageLed1", 0x25, 5 },
-				{ "mmPageLed2", 0x25, 6 }, { "mmPageLed3", 0x25, 7 },
-				{ "mmPageLed4", 0x26, 0 }, { "mmPageLed5", 0x26, 1 },
-				{ "mmPageLed6", 0x26, 2 },
-				{ "mmBankGroupAD", 0x26, 3 }, { "mmBankGroupEH", 0x26, 4 },
-				{ "stPattern", 0x26, 5 }, { "stSong", 0x26, 6 },
-				{ "mmTempoLed", 0x26, 7 },
-				{ "mmRecordLed", 0x27, 0 },
-				{ "mmTrigAmp", 0x27, 1 }, { "mmTrigFilter", 0x27, 2 },
-				{ "mmTrigLfo", 0x27, 3 },
-				{ "mmTrackPage0", 0x27, 4 }, { "mmTrackPage1", 0x27, 5 },
-				{ "mmTrackPage2", 0x27, 6 }, { "mmTrackPage3", 0x27, 7 },
-			};
-			static_assert(std::size(leds) == 20);
-			for(size_t i = 0; i < std::size(leds); ++i)
-				m_mmPanelLeds[i] = { findChild(leds[i].id, false), leds[i].bank, leds[i].bit };
+				const auto& led = g_monomachinePanelLeds[i];
+				m_mmPanelLeds[i] = { findChild(led.id, false), led.bank, led.bit };
+			}
 			return;
 		}
 
@@ -2654,21 +2641,14 @@ namespace mdJucePlugin
 
 		if(isMonomachine)
 		{
-			const struct { uint8_t greenBank, greenBit, redBank, redBit; } tracks[] =
-			{
-				{ 0x25, 0, 0x25, 1 }, { 0x25, 2, 0x25, 3 },
-				{ 0x24, 0, 0x24, 1 }, { 0x24, 2, 0x24, 3 },
-				{ 0x24, 4, 0x24, 5 }, { 0x24, 6, 0x24, 7 },
-			};
-			for(size_t i = 0; i < std::size(tracks); ++i)
+			for(size_t i = 0; i < g_monomachineTrackLeds.size(); ++i)
 			{
 				if(!m_drumLeds[i])
 					continue;
-				const bool green = lit(tracks[i].greenBank, tracks[i].greenBit);
-				const bool red = lit(tracks[i].redBank, tracks[i].redBit);
-				m_drumLeds[i]->SetClass("green", green && !red);
-				m_drumLeds[i]->SetClass("red", red && !green);
-				m_drumLeds[i]->SetClass("yellow", green && red);
+				const auto color = monomachineTrackLedColor(m_ledPresentation, i);
+				m_drumLeds[i]->SetClass("green", color == md::FrontPanel::LedColor::Green);
+				m_drumLeds[i]->SetClass("red", color == md::FrontPanel::LedColor::Red);
+				m_drumLeds[i]->SetClass("yellow", color == md::FrontPanel::LedColor::Yellow);
 			}
 			for(const auto& led : m_mmPanelLeds)
 			{

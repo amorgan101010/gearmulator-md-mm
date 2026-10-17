@@ -89,19 +89,20 @@ juce_add_binary_data(mmJucePlugin_BinaryData SOURCES
 	${COMMON_ASSETS} "tus_settings_gui_Monomachine.rml"
 	"tus_settings_dspaudio_Monomachine.rml" ${MM_SKIN_ASSETS} ${REMOTE_PANEL_ASSETS})
 
-# The hosted frontend bundles only the MD faceplate resources. In particular,
-# it does not bundle the browser remote-panel assets or the plugin processor.
-juce_add_binary_data(mdNativePanel_BinaryData SOURCES ${COMMON_ASSETS} ${MD_SKIN_ASSETS})
+# The hosted frontend bundles both native faceplates. It does not bundle the
+# browser remote-panel assets or the plugin processor.
+juce_add_binary_data(mdNativePanel_BinaryData SOURCES
+	${COMMON_ASSETS} ${MD_SKIN_ASSETS} ${MM_SKIN_ASSETS})
 
 juce_add_gui_app(mdNativePanelStandalone
-	PRODUCT_NAME "Gearmulator MD Native Panel"
+	PRODUCT_NAME "Gearmulator Native Panel"
 	BUNDLE_ID com.gearmulator.md-native-panel
 )
 target_sources(mdNativePanelStandalone PRIVATE
 	mdNativePanelApp.cpp
 	mdNativePanelClient.cpp mdNativePanelClient.h
 	mdKeyboardControl.cpp mdKeyboardControl.h
-	mdFrontPanelLcd.cpp mdFrontPanelLcd.h
+	mdFrontPanelLcd.cpp mdFrontPanelLcd.h mdNativePanelPresentation.h
 	mdPanelBackend.h mdPanelControls.h
 )
 target_include_directories(mdNativePanelStandalone PRIVATE
@@ -228,6 +229,14 @@ if(BUILD_TESTING)
 	add_test(NAME mdNativePanelClientTest COMMAND mdNativePanelClientTest)
 	set_tests_properties(mdNativePanelClientTest PROPERTIES LABELS "UnitTest;Panel;IPC")
 	set_property(TARGET mdNativePanelClientTest PROPERTY FOLDER "Elektron/test")
+	add_executable(mmNativePanelPresentationTest mmNativePanelPresentationTest.cpp)
+	target_include_directories(mmNativePanelPresentationTest PRIVATE
+			"${CMAKE_SOURCE_DIR}/source" "${CMAKE_SOURCE_DIR}/source/elektron/md")
+	target_link_libraries(mmNativePanelPresentationTest PRIVATE mdLib)
+	add_test(NAME mmNativePanelPresentationTest COMMAND mmNativePanelPresentationTest)
+	set_tests_properties(mmNativePanelPresentationTest PROPERTIES
+		LABELS "UnitTest;Panel;Monomachine;Presentation")
+	set_property(TARGET mmNativePanelPresentationTest PROPERTY FOLDER "Elektron/test")
 	add_test(NAME mdNativePanelOwnershipTest
 		COMMAND ${CMAKE_COMMAND} -DAPP_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/mdNativePanelApp.cpp
 			-P ${CMAKE_CURRENT_SOURCE_DIR}/mdNativePanelOwnershipTest.cmake)
