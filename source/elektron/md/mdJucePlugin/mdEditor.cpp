@@ -3,6 +3,7 @@
 #include "mdController.h"
 #include "mdControlInput.h"
 #include "mdPanelAffordances.h"
+#include "mdFrontPanelLcd.h"
 #include "mdLcdText.h"
 #include "mdMonomachineHelp.h"
 #include "mdMachinedrumHelp.h"
@@ -65,23 +66,6 @@ namespace mdJucePlugin
 {
 	namespace
 	{
-		// The two machines use the same framebuffer geometry but different physical
-		// displays, both positive: lit red/orange backlight with dark pixels on the
-		// Machinedrum, pale green-grey with dark pixels on the Monomachine. "Off" is
-		// therefore the bright backlight and "on" the dark set pixel.
-		constexpr uint32_t g_mdLcdOff = 0xffe0472b;
-		constexpr uint32_t g_mdLcdOn  = 0xff38100a;
-		constexpr uint32_t g_mmLcdOff = 0xffb9c8b2;
-		constexpr uint32_t g_mmLcdOn  = 0xff1a2b1e;
-
-		// A skin button bound to a logical control. The packet is selected using the
-		// actual device model when the editor is created.
-		struct PanelButton
-		{
-			const char* id;
-			md::PanelControl control;
-		};
-
 		bool lcdChanged(const md::FrontPanel& _a, const md::FrontPanel& _b)
 		{
 			for(uint32_t half = 0; half < 2; ++half)
@@ -112,48 +96,6 @@ namespace mdJucePlugin
 		constexpr int g_panelTimerIntervalMilliseconds = 33;
 		constexpr size_t g_ledTransitionBatchSize = 256;
 
-		constexpr PanelButton g_panelButtons[] =
-		{
-			{ "trigKey0", md::PanelControl::Trigger1 }, { "trigKey1", md::PanelControl::Trigger2 },
-			{ "trigKey2", md::PanelControl::Trigger3 }, { "trigKey3", md::PanelControl::Trigger4 },
-			{ "trigKey4", md::PanelControl::Trigger5 }, { "trigKey5", md::PanelControl::Trigger6 },
-			{ "trigKey6", md::PanelControl::Trigger7 }, { "trigKey7", md::PanelControl::Trigger8 },
-			{ "trigKey8", md::PanelControl::Trigger9 }, { "trigKey9", md::PanelControl::Trigger10 },
-			{ "trigKey10", md::PanelControl::Trigger11 }, { "trigKey11", md::PanelControl::Trigger12 },
-			{ "trigKey12", md::PanelControl::Trigger13 }, { "trigKey13", md::PanelControl::Trigger14 },
-			{ "trigKey14", md::PanelControl::Trigger15 }, { "trigKey15", md::PanelControl::Trigger16 },
-			{ "btTempo", md::PanelControl::Tempo },
-			{ "btRec", md::PanelControl::Record },
-			{ "btPlay", md::PanelControl::Play },
-			{ "btStop", md::PanelControl::Stop },
-			{ "btSynth", md::PanelControl::SynthesisEffectsRouting },
-			{ "btPattern", md::PanelControl::PatternSong },
-			{ "btKit", md::PanelControl::Kit },
-			{ "btScale", md::PanelControl::Scale },
-			{ "btExit", md::PanelControl::Exit },
-			{ "btLeft", md::PanelControl::Left },
-			{ "btDown", md::PanelControl::Down },
-			{ "btRight", md::PanelControl::Right },
-			{ "btClassic", md::PanelControl::ClassicExtended },
-			{ "btFunction", md::PanelControl::Function },
-			{ "btBankGrp", md::PanelControl::BankGroup },
-			{ "btEnter", md::PanelControl::Enter },
-			{ "btUp", md::PanelControl::Up },
-			{ "btTrigSelect", md::PanelControl::TrigSelect },
-			{ "btSongEnable", md::PanelControl::SongEnable },
-			{ "btDataNext", md::PanelControl::DataPageForward },
-			{ "btDataPrev", md::PanelControl::DataPageBackward },
-			{ "btBankA", md::PanelControl::BankA },
-			{ "btBankB", md::PanelControl::BankB },
-			{ "btBankC", md::PanelControl::BankC },
-			{ "btBankD", md::PanelControl::BankD },
-			{ "btTrack1", md::PanelControl::Track1 },
-			{ "btTrack2", md::PanelControl::Track2 },
-			{ "btTrack3", md::PanelControl::Track3 },
-			{ "btTrack4", md::PanelControl::Track4 },
-			{ "btTrack5", md::PanelControl::Track5 },
-			{ "btTrack6", md::PanelControl::Track6 },
-		};
 	}
 
 	Editor::Editor(jucePluginEditorLib::Processor& _processor, const jucePluginEditorLib::Skin& _skin)
@@ -185,6 +127,30 @@ namespace mdJucePlugin
 			});
 	}
 
+	bool Editor::readStatus(PanelStatusSnapshot& _snapshot, std::string& _error)
+	{
+		if(!m_frontPanelPublisher || m_frontPanelPublisher->isRetired())
+			m_frontPanelPublisher = getFrontPanelPublisher();
+		if(!m_frontPanelPublisher)
+		{
+			_error = m_panelConnectionError = "hosted front-panel status is unavailable";
+			return false;
+		}
+		md::FrontPanelPublishedState published;
+		uint64_t generation = 0;
+		if(!m_frontPanelPublisher->tryReadPublishedState(published, generation))
+		{
+			_error = m_panelConnectionError = "hosted front-panel status changed during the snapshot read";
+			return false;
+		}
+		_snapshot.panel = std::move(published.panel);
+		_snapshot.generation = generation;
+		_snapshot.ledSequence = published.ledSequence;
+		m_panelConnectionError.clear();
+		_error.clear();
+		return true;
+	}
+
 	bool Editor::sendPanelEvent(const uint8_t _command, const uint8_t _argument) const
 	{
 		auto& plugin = getProcessor().getPlugin();
@@ -207,6 +173,19 @@ namespace mdJucePlugin
 			&& m_panelInput->trySend(_command, _argument, md::PanelSource::Editor);
 		diagnostics.endPanelInput(token, model, _command, _argument, accepted);
 		return accepted;
+	}
+
+	bool Editor::sendPanel(const uint8_t _command, const uint8_t _argument,
+		std::string& _error)
+	{
+		if(sendPanelEvent(_command, _argument))
+		{
+			m_panelConnectionError.clear();
+			_error.clear();
+			return true;
+		}
+		_error = m_panelConnectionError = "hosted panel input queue is unavailable or full";
+		return false;
 	}
 
 	bool Editor::refreshFrontPanelState(const double _nowMilliseconds)
@@ -250,7 +229,14 @@ namespace mdJucePlugin
 				m_ledResyncSequence, status.producedSequence);
 		}
 
-		auto published = publisher->readPublishedState();
+		PanelStatusSnapshot snapshot;
+		std::string error;
+		if(!readStatus(snapshot, error))
+			return false;
+		md::FrontPanelPublishedState published;
+		published.panel = std::move(snapshot.panel);
+		published.ledSequence = snapshot.ledSequence;
+		m_frontPanelGeneration = snapshot.generation;
 		m_lcdChanged = !m_frontPanelSnapshotValid
 			|| lcdChanged(m_frontPanelSnapshot, published.panel);
 		m_lcdInteractionInputChanged = !m_frontPanelSnapshotValid || m_lcdChanged
@@ -2747,8 +2733,8 @@ namespace mdJucePlugin
 		const auto isMonomachine = getModel() == md::MachineModel::Monomachine;
 		const auto skinOff = m_skinLcdOff.load(std::memory_order_relaxed);
 		const auto skinOn = m_skinLcdOn.load(std::memory_order_relaxed);
-		const auto lcdOff = skinOff ? skinOff : isMonomachine ? g_mmLcdOff : g_mdLcdOff;
-		const auto lcdOn = skinOn ? skinOn : isMonomachine ? g_mmLcdOn : g_mdLcdOn;
+		const auto lcdOff = frontPanelLcdOffColor(getModel(), skinOff);
+		const auto lcdOn = frontPanelLcdOnColor(getModel(), skinOn);
 
 		// The skin's display surround need not have the framebuffer's 2:1 aspect.
 		// Keep spare space the LCD background colour instead of stretching pixels.
@@ -2758,17 +2744,7 @@ namespace mdJucePlugin
 
 		const auto& fp = m_frontPanelSnapshot;
 
-		juce::Image lcd(juce::Image::ARGB, md::FrontPanel::g_lcdWidth, md::FrontPanel::g_lcdHeight, false);
-
-		{
-			const juce::Image::BitmapData bd(lcd, juce::Image::BitmapData::writeOnly);
-
-			for(uint32_t y=0; y<md::FrontPanel::g_lcdHeight; ++y)
-			{
-				for(uint32_t x=0; x<md::FrontPanel::g_lcdWidth; ++x)
-					bd.setPixelColour(x, y, juce::Colour(fp.getLcdPixel(x, y) ? lcdOn : lcdOff));
-			}
-		}
+		auto lcd = makeFrontPanelLcdImage(fp, getModel(), lcdOn, lcdOff);
 
 		_g.setImageResamplingQuality(juce::Graphics::lowResamplingQuality);
 		if(m_pixelPerfectPanel && m_pixelPerfectPanel->paintLcd(lcd, _g))
@@ -2809,11 +2785,8 @@ namespace mdJucePlugin
 			&& !juce::ModifierKeys::getCurrentModifiersRealtime().isShiftDown())
 			releasePanelButtonGestures();
 		// Same fail-safe for keyboard FUNCTION: never leave it held if the Ctrl key-up was lost.
-		if(m_keyboardFunctionHeld && !modifiers.isCtrlDown())
-		{
-			m_keyboardFunctionHeld = false;
-			releaseHeldControl(md::PanelControl::Function);
-		}
+		if(m_panelKeyboard.functionHeld() && !modifiers.isCtrlDown())
+			m_panelKeyboard.releaseFunction(*this);
 
 		const auto hadFrontPanelSnapshot = m_frontPanelSnapshotValid;
 		m_frontPanelSnapshotValid = refreshFrontPanelState(nowMilliseconds);
@@ -2858,7 +2831,6 @@ namespace mdJucePlugin
 		// A knob push shorter than this is stretched to it, so a quick tap still reaches the firmware as a click.
 		constexpr double g_gamepadMinimumPushMilliseconds = 50.0;
 		constexpr double g_gamepadHighlightTimeoutMilliseconds = 120000.0;	// hide focus after 2 minutes idle
-		constexpr double g_keyReleaseGraceMilliseconds = 50.0;	// see Editor::onPanelKey
 		constexpr float g_gamepadTriggerThreshold = 0.5f;
 		constexpr float g_gamepadStickDeadzone = 0.2f;
 		constexpr float g_gamepadCursorSpeed = 0.6f;	// panel widths per second, left stick fully pushed
@@ -3696,58 +3668,6 @@ namespace mdJucePlugin
 		}
 	}
 
-	namespace
-	{
-		using Key = Rml::Input::KeyIdentifier;
-
-		struct KeyboardButton
-		{
-			Key key;
-			md::PanelControl control;
-		};
-
-		// Panel keys on the computer keyboard. Holding a key holds the panel key; Shift
-		// latches it exactly like Shift-click.
-		constexpr KeyboardButton g_keyboardButtons[] =
-		{
-			{ Key::KI_F1, md::PanelControl::Trigger1 }, { Key::KI_F2, md::PanelControl::Trigger2 },
-			{ Key::KI_F3, md::PanelControl::Trigger3 }, { Key::KI_F4, md::PanelControl::Trigger4 },
-			{ Key::KI_F5, md::PanelControl::Trigger5 }, { Key::KI_F6, md::PanelControl::Trigger6 },
-			{ Key::KI_F7, md::PanelControl::Trigger7 }, { Key::KI_F8, md::PanelControl::Trigger8 },
-			{ Key::KI_1, md::PanelControl::Trigger9 }, { Key::KI_2, md::PanelControl::Trigger10 },
-			{ Key::KI_3, md::PanelControl::Trigger11 }, { Key::KI_4, md::PanelControl::Trigger12 },
-			{ Key::KI_5, md::PanelControl::Trigger13 }, { Key::KI_6, md::PanelControl::Trigger14 },
-			{ Key::KI_7, md::PanelControl::Trigger15 }, { Key::KI_8, md::PanelControl::Trigger16 },
-			{ Key::KI_UP, md::PanelControl::Up }, { Key::KI_DOWN, md::PanelControl::Down },
-			{ Key::KI_LEFT, md::PanelControl::Left }, { Key::KI_RIGHT, md::PanelControl::Right },
-			{ Key::KI_RETURN, md::PanelControl::Enter }, { Key::KI_BACK, md::PanelControl::Exit },
-			{ Key::KI_Q, md::PanelControl::Track1 }, { Key::KI_W, md::PanelControl::Track2 },
-			{ Key::KI_E, md::PanelControl::Track3 }, { Key::KI_R, md::PanelControl::Track4 },
-			{ Key::KI_T, md::PanelControl::Track5 }, { Key::KI_Y, md::PanelControl::Track6 },
-			{ Key::KI_SPACE, md::PanelControl::Play }, { Key::KI_END, md::PanelControl::Stop },
-			{ Key::KI_HOME, md::PanelControl::Record },
-			{ Key::KI_PRIOR, md::PanelControl::DataPageBackward }, { Key::KI_NEXT, md::PanelControl::DataPageForward },
-			{ Key::KI_F9, md::PanelControl::BankA }, { Key::KI_F10, md::PanelControl::BankB },
-			{ Key::KI_F11, md::PanelControl::BankC }, { Key::KI_F12, md::PanelControl::BankD },
-			{ Key::KI_OEM_3, md::PanelControl::BankGroup },
-			{ Key::KI_K, md::PanelControl::Kit }, { Key::KI_P, md::PanelControl::PatternSong },
-			{ Key::KI_U, md::PanelControl::Tempo }, { Key::KI_I, md::PanelControl::Scale },
-			{ Key::KI_O, md::PanelControl::SynthesisEffectsRouting },
-			{ Key::KI_B, md::PanelControl::TrigSelect }, { Key::KI_N, md::PanelControl::ClassicExtended },
-			{ Key::KI_M, md::PanelControl::SongEnable },
-		};
-
-		// Hold one of these, then turn with - / = (one step) or [ / ] (eight steps). Tapping
-		// the key without turning clicks the encoder. A-D / E-H follow the panel's 2x4 grid.
-		constexpr Key g_keyboardEncoders[] =
-		{
-			Key::KI_A, Key::KI_S, Key::KI_D, Key::KI_F,
-			Key::KI_Z, Key::KI_X, Key::KI_C, Key::KI_V,
-			Key::KI_G,	// LEVEL
-			Key::KI_H,	// Machinedrum SOUND wheel
-		};
-	}
-
 	void Editor::createKeyboardControl()
 	{
 		auto* const document = getDocument();
@@ -3860,15 +3780,7 @@ namespace mdJucePlugin
 
 	void Editor::resetKeyboardControl()
 	{
-		releaseKeyboardEncoderPress();
-		if(m_keyboardFunctionHeld)
-			releaseHeldControl(md::PanelControl::Function);
-		for(const auto& button : g_keyboardButtons)
-			if(std::find(m_keyboardHeldKeys.begin(), m_keyboardHeldKeys.end(), button.key) != m_keyboardHeldKeys.end())
-				releaseHeldControl(button.control);
-		m_keyboardHeldKeys.clear();
-		m_keyboardPendingReleases.clear();
-		m_keyboardFunctionHeld = false;
+		m_panelKeyboard.reset(*this);
 		m_keyboardEncoder.reset();
 		m_keyboardEncoderTurned = false;
 	}
@@ -3878,203 +3790,143 @@ namespace mdJucePlugin
 		if(!m_keyboardControl)
 			return;
 
-		const auto key = static_cast<Key>(_event.GetParameter<int>("key_identifier", 0));
+		const auto key = _event.GetParameter<int>("key_identifier", 0);
 		const bool shift = _event.GetParameter<int>("shift_key", 0) != 0;
 		const bool ctrl = _event.GetParameter<int>("ctrl_key", 0) != 0;
-
-		// Ctrl is FUNCTION. Every key event carries the modifier state, including the
-		// synthetic ones the Rml component sends for a modifier-only change.
-		if(ctrl != m_keyboardFunctionHeld)
-		{
-			m_keyboardFunctionHeld = ctrl;
-			if(ctrl)
-				pressHeldControl(md::PanelControl::Function, shift);
-			else
-				releaseHeldControl(md::PanelControl::Function);
-		}
-
-		if(key == Key::KI_UNKNOWN)
-			return;
-
-		// X11 auto-repeat sends a release/press pair while a key is held. JUCE drops the pair only
-		// when the press is already queued, which isn't guaranteed while the emulator keeps the
-		// message thread busy. A leaked pair would tap a held trig (clearing it), so a release only
-		// counts once no press of the same key follows within a short grace period.
-		const auto pending = std::find_if(m_keyboardPendingReleases.begin(), m_keyboardPendingReleases.end(),
-			[&](const auto& _p) { return _p.first == key; });
-		if(!_down)
-		{
-			const bool pressTurn = key == Key::KI_OEM_4 || key == Key::KI_OEM_6;
-			if(pressTurn || std::find(m_keyboardHeldKeys.begin(), m_keyboardHeldKeys.end(), key) != m_keyboardHeldKeys.end())
-			{
-				if(pending == m_keyboardPendingReleases.end())
-					m_keyboardPendingReleases.emplace_back(key, juce::Time::getMillisecondCounterHiRes() + g_keyReleaseGraceMilliseconds);
-				_event.StopPropagation();
-				return;
-			}
-		}
-		else if(pending != m_keyboardPendingReleases.end())
-		{
-			m_keyboardPendingReleases.erase(pending);	// the release was auto-repeat; the key never went up
-		}
-		if(handlePanelKey(key, _down, shift))
+		if(m_panelKeyboard.handleKey(key, _down, shift, ctrl,
+			juce::Time::getMillisecondCounterHiRes(), *this))
 			_event.StopPropagation();
 	}
 	void Editor::serviceKeyboardReleases(const double _nowMilliseconds)
 	{
-		for(auto it = m_keyboardPendingReleases.begin(); it != m_keyboardPendingReleases.end();)
+		m_panelKeyboard.serviceReleases(_nowMilliseconds, *this);
+	}
+
+	void Editor::keyboardPressControl(const md::PanelControl _control,
+		const bool _shift, const bool _momentaryBanks)
+	{
+		if(assignSceneFromTrigger(_control))
+			return;
+		pressHeldControl(_control, _shift, _momentaryBanks);
+	}
+
+	void Editor::keyboardReleaseControl(const md::PanelControl _control)
+	{
+		releaseHeldControl(_control);
+	}
+
+	bool Editor::keyboardEncoderAvailable(const md::PanelEncoder _encoder) const
+	{
+		juceRmlUi::ElemKnob* knob = nullptr;
+		const auto index = static_cast<unsigned>(_encoder);
+		const auto first = static_cast<unsigned>(md::PanelEncoder::DataEntryA);
+		if(index >= first && index < first + m_encoders.size())
+			knob = m_encoders[index - first];
+		else if(_encoder == md::PanelEncoder::Level)
+			knob = m_levelEncoder;
+		else if(_encoder == md::PanelEncoder::SoundSelection)
+			knob = m_soundEncoder;
+		return knob && md::panelEncoderCommand(getModel(), _encoder).has_value();
+	}
+
+	void Editor::keyboardSelectEncoder(const std::optional<md::PanelEncoder> _encoder)
+	{
+		if(!_encoder)
 		{
-			if(it->second > _nowMilliseconds)
-			{
-				++it;
-				continue;
-			}
-			const auto key = it->first;
-			it = m_keyboardPendingReleases.erase(it);
-			handlePanelKey(key, false, false);
-			it = m_keyboardPendingReleases.begin();	// handlePanelKey may reset the list
+			m_keyboardEncoder.reset();
+			m_keyboardEncoderTurned = false;
+			return;
+		}
+		const auto value = static_cast<unsigned>(*_encoder);
+		const auto first = static_cast<unsigned>(md::PanelEncoder::DataEntryA);
+		m_keyboardEncoder = value >= first
+			? static_cast<size_t>(value - first)
+			: *_encoder == md::PanelEncoder::Level ? m_encoders.size()
+				: m_encoders.size() + 1;
+		m_keyboardEncoderTurned = false;
+	}
+
+	void Editor::keyboardPressEncoder(const md::PanelEncoder _encoder)
+	{
+		if(sceneEditSide() >= 0)
+			return;
+		const auto packet = md::panelEncoderPressPacket(getModel(), _encoder);
+		if(!packet || !keyboardEncoderAvailable(_encoder))
+			return;
+		const auto combined = m_panelRows.press(*packet);
+		(void)sendPanelEvent(combined.row, combined.mask);
+		m_keyboardEncoderPressPacket = packet;
+		const auto value = static_cast<unsigned>(_encoder);
+		const auto first = static_cast<unsigned>(md::PanelEncoder::DataEntryA);
+		m_keyboardPressedKnob = value >= first && value < first + m_encoders.size()
+			? m_encoders[value - first]
+			: _encoder == md::PanelEncoder::Level ? m_levelEncoder : m_soundEncoder;
+		if(m_keyboardPressedKnob)
+			m_keyboardPressedKnob->SetClass("encoderPressed", true);
+	}
+
+	void Editor::keyboardReleaseEncoder(md::PanelEncoder)
+	{
+		releaseKeyboardEncoderPress();
+	}
+
+	void Editor::keyboardTurnEncoder(const md::PanelEncoder _encoder, const float _direction)
+	{
+		const auto value = static_cast<unsigned>(_encoder);
+		const auto first = static_cast<unsigned>(md::PanelEncoder::DataEntryA);
+		juceRmlUi::ElemKnob* knob = nullptr;
+		size_t index = 0;
+		if(value >= first && value < first + m_encoders.size())
+		{
+			index = value - first;
+			knob = m_encoders[index];
+		}
+		else if(_encoder == md::PanelEncoder::Level)
+		{
+			index = m_encoders.size();
+			knob = m_levelEncoder;
+		}
+		else if(_encoder == md::PanelEncoder::SoundSelection)
+		{
+			index = m_encoders.size() + 1;
+			knob = m_soundEncoder;
+		}
+		turnGamepadKnob(knob, _direction);
+		m_keyboardEncoder = index;
+		m_keyboardEncoderTurned = true;
+	}
+
+	void Editor::keyboardClickEncoder(const md::PanelEncoder _encoder)
+	{
+		if(sceneEditSide() >= 0)
+			return;
+		if(const auto packet = md::panelEncoderPressPacket(getModel(), _encoder))
+		{
+			const auto down = m_panelRows.press(*packet);
+			(void)sendPanelEvent(down.row, down.mask);
+			const auto up = m_panelRows.release(*packet);
+			(void)sendPanelEvent(up.row, up.mask);
 		}
 	}
-	bool Editor::handlePanelKey(const int _key, const bool _down, const bool _shift)
+
+	bool Editor::keyboardHandlesMachinedrumPageKeys() const
 	{
-		using Key = Rml::Input::KeyIdentifier;
-		const auto key = static_cast<Key>(_key);
-		const bool shift = _shift;
+		return getModel() == md::MachineModel::Machinedrum;
+	}
 
-		// Delete lets go of every held or latched panel key. (Escape does this too, but only
-		// when something is held; otherwise it opens the standalone's menu.)
-		if(key == Key::KI_DELETE)
-		{
-			if(_down)
-			{
-				resetKeyboardControl();
-				cancelPanelInputGestures();
-				m_gamepadHeldControls.clear();
-			}
-			return true;
-		}
+	void Editor::keyboardMachinedrumPageKey(const int _direction, const bool _down)
+	{
+		if(!_down || getModel() != md::MachineModel::Machinedrum)
+			return;
+		const auto pages = static_cast<int>(panelAffordances::g_machinedrumDataPages.size());
+		m_gamepadPage = (m_gamepadPage + (_direction > 0 ? 1 : pages - 1)) % pages;
+		selectMachinedrumDataPage(m_gamepadPage);
+	}
 
-		const auto encoderKnob = [this](const size_t _index) -> std::pair<juceRmlUi::ElemKnob*, md::PanelEncoder>
-		{
-			if(_index < m_encoders.size())
-				return { m_encoders[_index], static_cast<md::PanelEncoder>(_index) };
-			if(_index == m_encoders.size())
-				return { m_levelEncoder, md::PanelEncoder::Level };
-			return { m_soundEncoder, md::PanelEncoder::SoundSelection };
-		};
-
-		// Turning keys repeat on purpose: holding = keeps turning. [ and ] are press-turns: the
-		// encoder switch is held while turning, so the firmware picks a coarse step suited to
-		// the parameter, exactly as on the hardware.
-		const bool pressTurn = key == Key::KI_OEM_4 || key == Key::KI_OEM_6;
-		const float turn = key == Key::KI_OEM_MINUS || key == Key::KI_OEM_4 ? -1.0f
-			: key == Key::KI_OEM_PLUS || key == Key::KI_OEM_6 ? 1.0f : 0.0f;
-		if(turn != 0.0f)
-		{
-			if(_down && m_keyboardEncoder)
-			{
-				const auto [knob, encoder] = encoderKnob(*m_keyboardEncoder);
-				if(pressTurn && !m_keyboardEncoderPressPacket
-					&& sceneEditSide() < 0)
-				{
-					if(const auto packet = md::panelEncoderPressPacket(getModel(), encoder); packet && knob)
-					{
-						const auto combined = m_panelRows.press(*packet);
-						(void)sendPanelEvent(combined.row, combined.mask);
-						m_keyboardEncoderPressPacket = packet;
-						m_keyboardPressedKnob = knob;
-						knob->SetClass("encoderPressed", true);
-					}
-				}
-				turnGamepadKnob(knob, turn);
-				m_keyboardEncoderTurned = true;
-			}
-			else if(!_down && pressTurn)
-			{
-				releaseKeyboardEncoderPress();
-			}
-			return true;
-		}
-
-		const auto held = std::find(m_keyboardHeldKeys.begin(), m_keyboardHeldKeys.end(), key);
-		if(_down)
-		{
-			if(held != m_keyboardHeldKeys.end())
-			{
-				return true;	// operating-system auto-repeat of a held key
-			}
-		}
-		else
-		{
-			if(held == m_keyboardHeldKeys.end())
-				return false;
-			m_keyboardHeldKeys.erase(held);
-		}
-
-		for(size_t i = 0; i < std::size(g_keyboardEncoders); ++i)
-		{
-			if(g_keyboardEncoders[i] != key)
-				continue;
-			if(_down)
-			{
-				m_keyboardHeldKeys.push_back(key);
-				m_keyboardEncoder = i;
-				m_keyboardEncoderTurned = false;
-			}
-			else if(m_keyboardEncoder == i)
-			{
-				if(!m_keyboardEncoderTurned)
-				{
-					if(sceneEditSide() < 0)
-					if(const auto packet = md::panelEncoderPressPacket(getModel(), encoderKnob(i).second))
-					{
-						// Straight to the machine, as a click on the knob is: the firmware takes a
-						// press and release together, and the pulse queue would put the tap behind
-						// any navigation still stepping.
-						const auto down = m_panelRows.press(*packet);
-						(void)sendPanelEvent(down.row, down.mask);
-						const auto up = m_panelRows.release(*packet);
-						(void)sendPanelEvent(up.row, up.mask);
-					}
-				}
-				releaseKeyboardEncoderPress();
-				m_keyboardEncoder.reset();
-			}
-			return true;
-		}
-
-		// The Machinedrum has no page keys; step its data pages directly, as the gamepad does.
-		if(getModel() == md::MachineModel::Machinedrum && (key == Key::KI_PRIOR || key == Key::KI_NEXT))
-		{
-			if(_down)
-			{
-				m_keyboardHeldKeys.push_back(key);
-				const auto pages = static_cast<int>(panelAffordances::g_machinedrumDataPages.size());
-				m_gamepadPage = (m_gamepadPage + (key == Key::KI_NEXT ? 1 : pages - 1)) % pages;
-				selectMachinedrumDataPage(m_gamepadPage);
-			}
-			return true;
-		}
-
-		for(const auto& button : g_keyboardButtons)
-		{
-			if(button.key != key)
-				continue;
-			if(_down)
-			{
-				m_keyboardHeldKeys.push_back(key);
-				if(assignSceneFromTrigger(button.control))
-					return true;		// its release then lets go of nothing
-				// A keyboard can hold a bank key while pressing a step, so no bank latch is needed.
-				pressHeldControl(button.control, shift, true);
-			}
-			else
-			{
-				releaseHeldControl(button.control);
-			}
-			return true;
-		}
-		return false;
+	void Editor::keyboardReleaseAllPanelInputs()
+	{
+		m_gamepadHeldControls.clear();
+		cancelPanelInputGestures();
 	}
 
 	std::optional<int> Editor::currentMonomachineDataPage() const
