@@ -38,6 +38,7 @@ jobs:
             exit 1
           fi
           audit_dir=$(mktemp -d)
+          repository_owner=${REPOSITORY%%/*}
           git init -q "$audit_dir/parent"
           cd "$audit_dir/parent"
           git remote add origin "https://github.com/$REPOSITORY.git"
@@ -56,7 +57,7 @@ jobs:
             fi
             old_pin=$(git rev-parse "refs/audit/release:$path")
             git init -q "$audit_dir/$directory"
-            git -C "$audit_dir/$directory" fetch --quiet --no-tags "https://github.com/joelanders/$repository.git" refs/heads/release/md-mm-alpha:refs/remotes/origin/release
+            git -C "$audit_dir/$directory" fetch --quiet --no-tags "https://github.com/$repository_owner/$repository.git" refs/heads/release/md-mm-alpha:refs/remotes/origin/release
             git -C "$audit_dir/$directory" rev-list --first-parent refs/remotes/origin/release > "$audit_dir/$directory-first-parent"
             if ! grep -Fx "$pin" "$audit_dir/$directory-first-parent"; then
               echo "::error::$path must pin a resulting release commit, not a dependency feature commit. Merge the dependency first."
