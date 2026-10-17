@@ -187,19 +187,17 @@ namespace
 		explicit NativePanelView(const Options& options)
 			: m_model(options.model == "mm" ? md::MachineModel::Monomachine
 				: md::MachineModel::Machinedrum)
+			, m_socketPath(options.socketPath)
+			, m_runtimeDirectory(options.runtimeDirectory)
+			, m_unit(options.unit)
 			, m_interfaces(m_resources)
 			, m_trace(options.trace)
 		{
-			try
+			std::string error;
+			if(!connectBackend(error))
 			{
-				m_backend = std::make_unique<mdJucePlugin::NativePanelClient>(
-					options.socketPath, options.runtimeDirectory, options.unit,
-					m_model);
-				m_connected = true;
-			}
-			catch(const std::exception& error)
-			{
-				m_connectionMessage = error.what();
+				m_connectionMessage = error;
+				m_nextReconnectMs = juce::Time::getMillisecondCounterHiRes() + m_reconnectDelayMs;
 				trace("native-panel connection failed: " + m_connectionMessage);
 			}
 
@@ -280,6 +278,62 @@ namespace
 		{
 			if(m_trace)
 				std::cerr << line << '\n';
+		}
+
+		bool connectBackend(std::string& error)
+		{
+			try
+			{
+				if(m_backend)
+				{
+					if(!m_backend->reconnect(error))
+						return false;
+				}
+				else
+				{
+					m_backend = std::make_unique<mdJucePlugin::NativePanelClient>(
+						m_socketPath, m_runtimeDirectory, m_unit, m_model);
+				}
+				m_connected = true;
+				m_connectionMessage.clear();
+				m_disconnectedInputsReset = false;
+				m_reconnectDelayMs = 250.0;
+				m_nextReconnectMs = 0.0;
+				return true;
+			}
+			catch(const std::exception& exception)
+			{
+				error = exception.what();
+				return false;
+			}
+		}
+
+		void scheduleReconnect(const double now, const std::string& error)
+		{
+			m_connectionMessage = error;
+			m_nextReconnectMs = now + m_reconnectDelayMs;
+			m_reconnectDelayMs = std::min(m_reconnectDelayMs * 2.0, 2000.0);
+			setStatus("Engine disconnected: " + error, true);
+		}
+
+		void handleDisconnect(const double now, const std::string& error)
+		{
+			m_connected = false;
+			m_haveStatus = false;
+			if(!m_disconnectedInputsReset)
+			{
+				// Release held controls while the old endpoint can still accept best-effort packets,
+				// then clear every local latch even when the engine is already gone.
+				m_disconnectPending = false;
+				m_keyboard.reset(*this);
+				m_disconnectPending = false;
+				m_disconnectedInputsReset = true;
+			}
+			m_panelSteps.clear();
+			m_machinedrumDataPageTarget = {};
+			m_monomachineDataPageTarget = {};
+			m_monomachineTrigModeTarget = {};
+			scheduleReconnect(now, error);
 		}
 
 		Rml::Element* element(const char* id) const
@@ -731,12 +785,18 @@ namespace
 		bool sendPacket(md::PanelPacket packet)
 		{
 			if(!m_backend)
+			{
+				m_disconnectPending = true;
+				m_disconnectError = "native-panel endpoint is unavailable";
 				return false;
+			}
 			std::string error;
 			const bool accepted = m_backend->sendPanel(packet.row, packet.mask, error);
 			if(!accepted)
 			{
 				m_connected = false;
+				m_disconnectPending = true;
+				m_disconnectError = error;
 				setStatus("Engine disconnected: " + error, true);
 				trace("native-panel input failed: " + error);
 			}
@@ -921,6 +981,23 @@ namespace
 				return;
 			}
 			const auto now = juce::Time::getMillisecondCounterHiRes();
+			if(m_disconnectPending)
+			{
+				const auto error = m_disconnectError;
+				m_disconnectPending = false;
+				handleDisconnect(now, error);
+				return;
+			}
+			if(!m_connected && now >= m_nextReconnectMs)
+			{
+				std::string error;
+				if(!connectBackend(error))
+				{
+					scheduleReconnect(now, error);
+					return;
+				}
+				trace("native-panel reconnected to hosted " + std::string(modelName(m_model)));
+			}
 			m_keyboard.serviceReleases(now, *this);
 			if(m_shiftLatch.size() != 0
 				&& !juce::ModifierKeys::getCurrentModifiersRealtime().isShiftDown())
@@ -931,12 +1008,7 @@ namespace
 			std::string error;
 			if(!m_backend->readStatus(snapshot, error))
 			{
-				m_connected = false;
-				m_panelSteps.clear();
-				m_machinedrumDataPageTarget = {};
-				m_monomachineDataPageTarget = {};
-				m_monomachineTrigModeTarget = {};
-				setStatus("Engine disconnected: " + error, true);
+				handleDisconnect(now, error);
 				return;
 			}
 			m_connected = true;
@@ -1059,6 +1131,9 @@ namespace
 		}
 
 		md::MachineModel m_model = md::MachineModel::Machinedrum;
+		std::string m_socketPath;
+		std::string m_runtimeDirectory;
+		std::string m_unit;
 		PanelResources m_resources;
 		juceRmlUi::RmlInterfaces m_interfaces;
 		juceRmlUi::LookAndFeel m_lookAndFeel;
@@ -1087,6 +1162,11 @@ namespace
 		mdJucePlugin::PanelStatusSnapshot m_snapshot;
 		std::string m_connectionMessage;
 		bool m_connected = false;
+		bool m_disconnectPending = false;
+		bool m_disconnectedInputsReset = false;
+		std::string m_disconnectError;
+		double m_nextReconnectMs = 0.0;
+		double m_reconnectDelayMs = 250.0;
 		bool m_haveStatus = false;
 		bool m_loggedFirstStatus = false;
 		size_t m_panelSettleTicks = 0;

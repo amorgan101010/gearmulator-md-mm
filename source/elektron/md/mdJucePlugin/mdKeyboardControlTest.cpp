@@ -182,6 +182,27 @@ namespace
 		assert((sink.packets[14] == Packet{0x20, 0x00}));
 		assert(!keyboard.functionHeld() && !keyboard.selectedEncoder());
 	}
+
+	void testDisconnectResetReleasesHeldPanelInputs()
+	{
+		PanelKeyboardControl keyboard;
+		FakeActions sink;
+		assert(keyboard.handleKey(Key::KI_F1, true, false, false, 0.0, sink));
+		assert(keyboard.handleKey(Key::KI_F2, true, false, false, 1.0, sink));
+		assert(keyboard.handleKey(Key::KI_A, true, false, false, 2.0, sink));
+		assert(keyboard.handleKey(Key::KI_OEM_6, true, false, false, 3.0, sink));
+		keyboard.reset(sink); // NativePanelView also resets its local controls when IPC disconnects.
+		assert(!keyboard.functionHeld() && !keyboard.selectedEncoder());
+		assert(sink.packets.size() == 7);
+		assert((sink.packets[0] == md::PanelPacket{0x20, 0x01}));
+		assert((sink.packets[1] == md::PanelPacket{0x20, 0x03}));
+		assert((sink.packets[2] == md::PanelPacket{0x25, 0x01}));
+		assert((sink.packets[3] == md::PanelPacket{0x30, 0x01}));
+		assert((sink.packets[4] == md::PanelPacket{0x20, 0x02}));
+		assert((sink.packets[5] == md::PanelPacket{0x20, 0x00}));
+		assert((sink.packets[6] == md::PanelPacket{0x25, 0x00}));
+		assert(sink.actions.back().name == "release-all");
+	}
 }
 
 int main()
@@ -190,6 +211,7 @@ int main()
 	testFunctionChordFullyReleases();
 	testEncoderPressTurnAndRelease();
 	testMonomachineKeysFunctionPageEncoderAndFocusRelease();
+	testDisconnectResetReleasesHeldPanelInputs();
 	std::cout << "shared MD/MM panel keyboard controls passed\n";
 	return 0;
 }

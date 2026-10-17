@@ -130,14 +130,22 @@ namespace mdJucePlugin
 		if(m_socketPath.string().size() >= sizeof(sockaddr_un::sun_path))
 			throw std::invalid_argument("native-panel socket path exceeds the Unix socket path limit");
 
+		handshake();
+	}
+
+	void NativePanelClient::handshake()
+	{
 		std::vector<uint8_t> hello(1 + m_unit.size() + m_instance.size(), 0);
 		hello[0] = static_cast<uint8_t>(m_unit.size());
 		std::memcpy(hello.data() + 1, m_unit.data(), m_unit.size());
+		// A zero expected token asks the current endpoint for its instance token. This is
+		// required after gm-engine restarts, when the old token can no longer be valid.
 		const auto response = exchange(g_hello, hello.data(), hello.size(),
 			static_cast<uint16_t>(g_hello | g_responseBit));
 		if(response.size() < 25)
 			throw std::runtime_error("native-panel HELLO response is truncated");
-		std::copy_n(response.data(), m_instance.size(), m_instance.begin());
+		std::array<uint8_t, 16> newInstance{};
+		std::copy_n(response.data(), newInstance.size(), newInstance.begin());
 		const auto actualModel = get32(response.data() + 16);
 		const auto actualStatusSize = get32(response.data() + 20);
 		const auto actualUnitSize = response[24];
@@ -151,6 +159,9 @@ namespace mdJucePlugin
 				+ std::string(actualModel == GM_MODEL_MACHINEDRUM ? "Machinedrum" : "Monomachine"));
 		if(actualStatusSize != g_statusSize)
 			throw std::runtime_error("native-panel status layout is incompatible (expected 1038 bytes)");
+		m_instance = newInstance;
+		m_lastGeneration = 0;
+		m_haveGeneration = false;
 		m_error.clear();
 	}
 
@@ -221,6 +232,22 @@ namespace mdJucePlugin
 		m_error = _error;
 		if(_target)
 			*_target = _error;
+	}
+
+	bool NativePanelClient::reconnect(std::string& _error)
+	{
+		try
+		{
+			handshake();
+			m_error.clear();
+			_error.clear();
+			return true;
+		}
+		catch(const std::exception& e)
+		{
+			setError(e.what(), &_error);
+			return false;
+		}
 	}
 
 	bool NativePanelClient::readStatus(PanelStatusSnapshot& _snapshot, std::string& _error)

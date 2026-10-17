@@ -181,9 +181,8 @@ namespace
 
 	std::vector<uint8_t> helloResponse(const ParsedRequest& request,
 		uint32_t model = GM_MODEL_MACHINEDRUM, std::string unit = "md",
-		uint16_t version = 1)
+		uint16_t version = 1, std::array<uint8_t, 16> instance = token())
 	{
-		const auto instance = token();
 		std::vector<uint8_t> payload(25 + unit.size(), 0);
 		std::copy(instance.begin(), instance.end(), payload.begin());
 		put32(payload, 16, model);
@@ -438,6 +437,50 @@ namespace
 		require(error.find("send native-panel request") != std::string::npos,
 			"engine disappearance was not reported as a transport error");
 	}
+
+	void testReconnectAcceptsAReplacementEngineInstance()
+	{
+		const auto firstInstance = token();
+		auto nextInstance = firstInstance;
+		nextInstance[0] ^= 0xff;
+		std::atomic<bool> restarted{false};
+		FakeEndpoint server([&](const ParsedRequest& request)
+		{
+			const auto instance = restarted.load(std::memory_order_acquire)
+				? nextInstance : firstInstance;
+			if(request.kind == 1)
+			{
+				require(request.payload.size() == 19
+					&& std::all_of(request.payload.begin() + 3, request.payload.end(),
+						[](uint8_t byte) { return byte == 0; }),
+					"HELLO reconnect must request the current instance token");
+				return helloResponse(request, GM_MODEL_MACHINEDRUM, "md", 1, instance);
+			}
+			if(request.kind == 2)
+			{
+				if(request.payload.size() != instance.size()
+					|| !std::equal(request.payload.begin(), request.payload.end(), instance.begin()))
+					return errorResponse(request, 4);
+				return statusResponse(request, restarted.load(std::memory_order_acquire) ? 1 : 42);
+			}
+			throw std::runtime_error("unexpected request during native-panel reconnect test");
+		});
+
+		mdJucePlugin::NativePanelClient client(server.socketPath(), server.runtimeDirectory(),
+			"md", md::MachineModel::Machinedrum, 300);
+		mdJucePlugin::PanelStatusSnapshot snapshot;
+		std::string error;
+		require(client.readStatus(snapshot, error) && snapshot.generation == 42,
+			"initial engine instance did not return status: " + error);
+		restarted.store(true, std::memory_order_release);
+		require(!client.readStatus(snapshot, error)
+			&& error.find("instance changed") != std::string::npos,
+			"replacement engine did not invalidate the previous instance token");
+		require(client.reconnect(error), "native panel did not reacquire the replacement token: " + error);
+		require(client.readStatus(snapshot, error) && snapshot.generation == 1,
+			"status generation did not restart cleanly after reconnect: " + error);
+		require(server.threadError().empty(), "reconnect endpoint failed: " + server.threadError());
+	}
 }
 
 int main()
@@ -449,7 +492,8 @@ int main()
 		testMonomachineRejectsWrongModelUnitAndStaleInstance();
 		testWrongModelAndProtocolVersion();
 		testStaleTokenAndEngineDisappearance();
-		std::cout << "GMNP v1 MD/MM framing, model/token checks, generation, panel bytes, and disconnect passed\n";
+		testReconnectAcceptsAReplacementEngineInstance();
+		std::cout << "GMNP v1 MD/MM framing, model/token checks, generation, reconnect, and panel bytes passed\n";
 		return 0;
 	}
 	catch(const std::exception& error)
