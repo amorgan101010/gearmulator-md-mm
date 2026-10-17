@@ -19,6 +19,7 @@
 #include <unistd.h>
 #endif
 
+#include <algorithm>
 #include <sstream>
 #include <thread>
 #include <chrono>
@@ -204,7 +205,7 @@ namespace mcpServer
 		{
 			ToolDef tool;
 			tool.name = "set_parameter";
-			tool.description = "Set a parameter value by name";
+			tool.description = "Set a parameter value by name. Always sent to the device, also when the editor already shows that value";
 			tool.inputSchema.addProperty("name", "string", "Parameter name", true);
 			tool.inputSchema.addIntProperty("value", "New parameter value", true);
 			tool.inputSchema.addIntProperty("part", "Part number (0-15)", false, 0, 15);
@@ -224,7 +225,7 @@ namespace mcpServer
 				if (!param)
 					throw std::runtime_error("Parameter not found: " + name);
 
-				param->setUnnormalizedValueNotifyingHost(value, pluginLib::Parameter::Origin::Ui);
+				param->setUnnormalizedValueAndSend(value, pluginLib::Parameter::Origin::Ui);
 
 				auto result = JsonValue::object();
 				result.set("success", JsonValue::fromBool(true));
@@ -271,7 +272,7 @@ namespace mcpServer
 
 					if (param)
 					{
-						param->setUnnormalizedValueNotifyingHost(value, pluginLib::Parameter::Origin::Ui);
+						param->setUnnormalizedValueAndSend(value, pluginLib::Parameter::Origin::Ui);
 						r.set("success", JsonValue::fromBool(true));
 						r.set("value", JsonValue::fromInt(param->getUnnormalizedValue()));
 					}
@@ -380,26 +381,64 @@ namespace mcpServer
 		{
 			ToolDef tool;
 			tool.name = "send_sysex";
-			tool.description = "Send a SysEx message. Provide hex bytes as a string (e.g. 'F0 00 20 33 ... F7')";
+			tool.description = "Send a SysEx message. Provide hex bytes as a string (e.g. 'F0 00 20 33 ... F7'). "
+				"With waitForReplyMs, also returns the SysEx messages the device sends back";
 			tool.inputSchema.addProperty("hex", "string", "Hex string of sysex bytes separated by spaces", true);
+			tool.inputSchema.addIntProperty("waitForReplyMs", "Wait up to this long for the device's SysEx replies and return them (default 0: do not wait)", false, 0, 30000);
+			tool.inputSchema.addIntProperty("maxReplies", "Stop waiting after this many replies (default 1)", false, 1, 256);
+			tool.inputSchema.addProperty("replyPrefix", "string", "Only collect replies starting with these hex bytes (e.g. 'F0 00 20 3C 03 00 67'), to skip what the editor's own polling brings back", false);
 			tool.handler = [this](const JsonValue& _params) -> JsonValue
 			{
-				const auto hexStr = _params.get("hex").getString().toStdString();
+				const auto parseHex = [](const std::string& _hex)
+				{
+					std::vector<uint8_t> bytes;
+					std::istringstream iss(_hex);
+					std::string byteStr;
+					while (iss >> byteStr)
+						bytes.push_back(static_cast<uint8_t>(std::stoul(byteStr, nullptr, 16)));
+					return bytes;
+				};
 
 				synthLib::SMidiEvent ev(synthLib::MidiEventSource::Editor);
-				std::istringstream iss(hexStr);
-				std::string byteStr;
-				while (iss >> byteStr)
-					ev.sysex.push_back(static_cast<uint8_t>(std::stoul(byteStr, nullptr, 16)));
+				const auto bytes = parseHex(_params.get("hex").getString().toStdString());
+				ev.sysex.assign(bytes.begin(), bytes.end());
 
 				if (ev.sysex.size() < 2 || ev.sysex.front() != 0xF0 || ev.sysex.back() != 0xF7)
 					throw std::runtime_error("SysEx must start with F0 and end with F7");
 
-				m_processor.addMidiEvent(ev);
-
 				auto result = JsonValue::object();
 				result.set("success", JsonValue::fromBool(true));
 				result.set("byteCount", JsonValue::fromInt(static_cast<int>(ev.sysex.size())));
+
+				const int waitMs = _params.hasProperty("waitForReplyMs") ? _params.get("waitForReplyMs").getInt() : 0;
+				if (waitMs <= 0)
+				{
+					m_processor.addMidiEvent(ev);
+					return result;
+				}
+
+				const auto prefix = _params.hasProperty("replyPrefix")
+					? parseHex(_params.get("replyPrefix").getString().toStdString()) : std::vector<uint8_t>{};
+				const int maxReplies = _params.hasProperty("maxReplies") ? _params.get("maxReplies").getInt() : 1;
+				const auto replies = m_processor.sendSysexAndCollectReplies(ev, prefix,
+					static_cast<size_t>(std::max(maxReplies, 1)), waitMs);
+
+				auto list = JsonValue::array();
+				for (const auto& reply : replies)
+				{
+					std::string hex;
+					hex.reserve(reply.size() * 3);
+					static constexpr char digits[] = "0123456789ABCDEF";
+					for (const auto byte : reply)
+					{
+						if (!hex.empty())
+							hex.push_back(' ');
+						hex.push_back(digits[byte >> 4]);
+						hex.push_back(digits[byte & 15]);
+					}
+					list.append(JsonValue::fromString(hex));
+				}
+				result.set("replies", list);
 				return result;
 			};
 			m_server.registerTool(std::move(tool));

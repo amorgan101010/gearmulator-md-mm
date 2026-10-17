@@ -64,6 +64,10 @@ namespace pluginLib
 		void setValueNotifyingHost(float _value, Origin _origin);
 		void setUnnormalizedValueNotifyingHost(float _value, Origin _origin);
 		void setUnnormalizedValueNotifyingHost(int _value, Origin _origin);
+		// Sets the value and sends it to the device even when it is the value last sent. For a caller that
+		// states what the device should hold rather than reports a change: the device may have moved on
+		// its own since (a machine or kit change by SysEx), which the last-sent value does not know.
+		void setUnnormalizedValueAndSend(int _value, Origin _origin);
 
 		void setValueFromSynth(int _newValue, Origin _origin);
 

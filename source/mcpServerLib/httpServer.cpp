@@ -84,7 +84,7 @@ namespace mcpServer
 				auto response = m_handler(request, stream);
 
 				// For SSE, response headers are sent by the handler itself via the stream
-				if (request.getHeader("accept") == "text/event-stream")
+				if (request.isGet() && request.path == "/sse")
 					continue;
 
 				LOGNET(networkLib::LogLevel::Info, "HTTP Response: " << response.statusCode << " " << response.statusText

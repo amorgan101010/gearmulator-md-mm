@@ -16,6 +16,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <iostream>
 #include <iterator>
@@ -186,8 +187,8 @@ namespace
 	{
 	public:
 		explicit Harness(const md::MachineModel _model = md::MachineModel::Machinedrum,
-			const bool _prepareAudio = true)
-			: processor(_model, isolatedConfig(), false)
+			const bool _prepareAudio = true, std::optional<std::string> _rescueFolder = std::nullopt)
+			: processor(_model, isolatedConfig(std::move(_rescueFolder)), false)
 			, audioProcessor(processor), audio(2, blockSize)
 		{
 			if(_prepareAudio)
@@ -200,10 +201,12 @@ namespace
 				audioProcessor.releaseResources();
 		}
 
-		static mdJucePlugin::AudioPluginAudioProcessor::EphemeralConfig isolatedConfig()
+		static mdJucePlugin::AudioPluginAudioProcessor::EphemeralConfig isolatedConfig(
+			std::optional<std::string> _rescueFolder)
 		{
 			mdJucePlugin::AudioPluginAudioProcessor::EphemeralConfig result;
 			result.deviceHomePath = std::string{};
+			result.rescueFolder = std::move(_rescueFolder);
 			return result;
 		}
 
@@ -796,6 +799,101 @@ int main()
 			&& mmCold.processor.getProjectStateRestoreError().find("Monomachine")
 				!= std::string::npos,
 			"malformed Monomachine state did not retain a model-specific diagnostic");
+
+		// A project that fails to load is kept in a rescue file before any save can replace it, byte for
+		// byte as the host handed it in, and the error message says where.
+		{
+			const auto rescueFolder = juce::File::getSpecialLocation(juce::File::tempDirectory)
+				.getChildFile("mdProjectStateRestoreTest-rescue");
+			rescueFolder.deleteRecursively();
+			Harness rescue(md::MachineModel::Monomachine, false,
+				rescueFolder.getFullPathName().toStdString());
+			const auto hostState = processorState(malformedMm);
+			setHostState(rescue, malformedMm);
+			require(rescue.snapshot().status == RestoreStatus::Failed,
+				"malformed Monomachine state did not fail to restore");
+			require(rescue.processor.getRescuedProjectPath().empty(),
+				"a project was rescued before anything tried to replace it");
+
+			// Closing the window saves before the error message is serviced: that save must rescue first.
+			juce::MemoryBlock saved;
+			rescue.audioProcessor.getStateInformation(saved);
+			const auto rescuedPath = rescue.processor.getRescuedProjectPath();
+			juce::MemoryBlock rescued;
+			require(!rescuedPath.empty() && juce::File(rescuedPath).loadFileAsData(rescued)
+				&& rescued.getSize() == hostState.size()
+				&& std::memcmp(rescued.getData(), hostState.data(), hostState.size()) == 0,
+				"the project that failed to load was not kept byte for byte");
+
+			// Later saves and the error message reuse that file instead of writing another.
+			rescue.audioProcessor.getStateInformation(saved);
+			require(rescue.processor.serviceProjectStateRestore(),
+				"the restore failure was not reported");
+			require(rescue.processor.getRescuedProjectPath() == rescuedPath
+				&& rescueFolder.getNumberOfChildFiles(juce::File::findFiles) == 1,
+				"a failed restore was rescued more than once");
+			rescueFolder.deleteRecursively();
+			std::cout << "mdProjectStateRestoreTest: failed project rescue PASS\n";
+		}
+
+		// The firmware image chosen for an instance travels with the project state and
+		// is applied before the machine state, so a project reopens on the OS it was
+		// saved with. Needs an alternative MD image (stock boot loader, other OS).
+		if(const auto* const altPath = std::getenv("GEARMULATOR_MD_ALT_FIRMWARE_BIN");
+			altPath && *altPath)
+		{
+			std::ifstream altInput(altPath, std::ios::binary);
+			const std::vector<uint8_t> altRom{
+				std::istreambuf_iterator<char>(altInput), std::istreambuf_iterator<char>()};
+			require(md::RomLoader::isRomForModel(altRom, md::MachineModel::Machinedrum)
+				&& !md::RomLoader::isStockRom(altRom, md::MachineModel::Machinedrum),
+				"alternative firmware fixture is not an accepted non-stock MD image");
+
+			Harness source(md::MachineModel::Machinedrum, false);
+			std::string error;
+			require(source.processor.setFirmwareImage(altPath, error),
+				"alternative firmware was not accepted: " + error);
+			require(source.processor.getFirmwareImagePath() == altPath,
+				"firmware selection was not recorded");
+			source.processor.getPlugin().withDeviceLocked([&](synthLib::Device* const _device)
+			{
+				auto* const device = dynamic_cast<md::Device*>(_device);
+				require(device && device->isValid()
+					&& device->getHardware().flashBaseline() == altRom,
+					"instance did not restart on the alternative firmware");
+			});
+			juce::MemoryBlock altState;
+			source.audioProcessor.getStateInformation(altState);
+
+			Harness target(md::MachineModel::Machinedrum, false);
+			require(target.processor.getFirmwareImagePath().empty(),
+				"fresh instance did not start on the stock OS");
+			juce::MemoryBlock stockState;
+			target.audioProcessor.getStateInformation(stockState);
+			target.audioProcessor.setStateInformation(altState.getData(),
+				static_cast<int>(altState.getSize()));
+			require(target.processor.getFirmwareImagePath() == altPath,
+				"project firmware selection was not restored");
+			target.processor.getPlugin().withDeviceLocked([&](synthLib::Device* const _device)
+			{
+				auto* const device = dynamic_cast<md::Device*>(_device);
+				require(device && device->isValid()
+					&& device->getHardware().flashBaseline() == altRom,
+					"restored instance is not running the project firmware");
+			});
+			target.audioProcessor.setStateInformation(stockState.getData(),
+				static_cast<int>(stockState.getSize()));
+			require(target.processor.getFirmwareImagePath().empty(),
+				"stock firmware was not restored from a stock project");
+			target.processor.getPlugin().withDeviceLocked([&](synthLib::Device* const _device)
+			{
+				auto* const device = dynamic_cast<md::Device*>(_device);
+				require(device && device->isValid()
+					&& device->getHardware().flashBaseline() == rom,
+					"restored instance is not back on the stock firmware");
+			});
+			std::cout << "mdProjectStateRestoreTest: firmware selection round trip PASS\n";
+		}
 
 		std::cout << "mdProjectStateRestoreTest: MD/MM PASS\n";
 		return 0;

@@ -12,7 +12,15 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <limits>
+
+namespace dsp56k
+{
+	extern FILE* g_hostLog;	// TEMPORARY host-port trace (dsp56300 hdi08.cpp)
+	extern bool g_hostLogOn;
+	void hostLogRotate();
+}
 
 // Provide the Musashi memory-access callbacks (m68k_read_memory_*, _pcrelative_*, etc.)
 // for this microcontroller. Exactly one TU per synth includes this - cf. n2xmc.cpp / xtUc.cpp.
@@ -21,6 +29,8 @@
 
 namespace md
 {
+	void busStatsNoteCycles(uint32_t _cycles, uint32_t _cacr);	// TEMPORARY bus-cost estimate, defined below
+
 	namespace
 	{
 		// The SFX-60 MKII stores user DigiPRO waves in the uniform-sector portion
@@ -115,7 +125,6 @@ namespace md
 		m_sim.setTransmitCallback(Sim::g_uartMidi, [this](const uint8_t _b)
 		{
 			{
-				const std::scoped_lock lock(m_midiTxMutex);
 				auto& producer = m_midiTxBuffers[m_midiTxProducerIndex];
 				if(producer.size < producer.bytes.size())
 				{
@@ -136,25 +145,34 @@ namespace md
 		// A complete patch-RAM image is already initialized and can be restored as-is.
 		if(_initialPatchRam.size() == m_patchRam.size())
 			m_patchRam = _initialPatchRam;
+
+		if(const char* bus = std::getenv("GEARMULATOR_MDMM_BUS_TIMING"))
+			m_busTiming = std::strcmp(bus, "0") != 0;
 	}
 
 	std::vector<uint8_t> Microcontroller::copyPatchRam() const
 	{
-		std::shared_lock lock(m_patchRamMutex);
 		return m_patchRam;
+	}
+
+	bool Microcontroller::copyPatchRamRange(uint8_t* const _destination, const size_t _offset, const size_t _size) const
+	{
+		if(!_destination || _offset > m_patchRam.size() || _size > m_patchRam.size() - _offset)
+			return false;
+		std::copy_n(m_patchRam.begin() + static_cast<std::ptrdiff_t>(_offset), _size, _destination);
+		return true;
 	}
 
 	bool Microcontroller::replacePatchRam(const std::vector<uint8_t>& _data)
 	{
 		if(_data.size() != m_patchRam.size())
 			return false;
-		std::unique_lock lock(m_patchRamMutex);
 		m_patchRam = _data;
+		++m_patchRamWrites;
 		return true;
 	}
 	std::vector<uint8_t> Microcontroller::copyFlashData() const
 	{
-		std::shared_lock lock(m_flashMutex);
 		return m_flashData;
 	}
 
@@ -164,7 +182,6 @@ namespace md
 			|| m_flashData.size() < memorymap::g_flashFull.offset(
 				memorymap::g_mmUserFlash.end))
 			return {};
-		std::shared_lock lock(m_flashMutex);
 		const auto begin = m_flashData.begin() + memorymap::g_flashFull.offset(
 			memorymap::g_mmUserFlash.begin);
 		return {begin, begin + memorymap::g_mmUserFlash.size()};
@@ -180,6 +197,26 @@ namespace md
 		return true;
 	}
 
+	bool Microcontroller::copyPatchRamRealtime(std::vector<uint8_t>& _destination) const
+	{
+		if(_destination.size() != m_patchRam.size())
+			return false;
+		std::copy(m_patchRam.begin(), m_patchRam.end(), _destination.begin());
+		return true;
+	}
+
+	bool Microcontroller::copyStateFlashRealtime(std::vector<uint8_t>& _destination) const
+	{
+		if(m_model == MachineModel::Monomachine)
+		{
+			const auto begin = memorymap::g_flashFull.offset(memorymap::g_mmUserFlash.begin);
+			return copyFlashDataRangeRealtime(_destination.data(), begin, _destination.size())
+				&& _destination.size() == memorymap::g_mmUserFlash.size();
+		}
+		return _destination.size() == m_flashData.size()
+			&& copyFlashDataRangeRealtime(_destination.data(), 0, _destination.size());
+	}
+
 	uint64_t Microcontroller::flashIdleCycles() const
 	{
 		return m_flashDirty && getCycles() >= m_lastFlashWriteCycle
@@ -191,9 +228,10 @@ namespace md
 	{
 		if(m_model != MachineModel::Machinedrum || _data.size() != m_flashData.size())
 			return false;
-		std::unique_lock flashLock(m_flashMutex);
 		m_flashData = _data;
 		m_flashCommands = {};
+		++m_flashWrites;
+		++m_patchRamWrites;
 		m_immPageAddress = 0xffffffffu;
 		m_immPageData = nullptr;
 		m_flashDirty = _dirty;
@@ -208,9 +246,10 @@ namespace md
 		if(m_model != MachineModel::Machinedrum || m_model != _other.m_model
 			|| m_flashData.size() != _other.m_flashData.size())
 			return false;
-		std::scoped_lock lock(m_flashMutex, _other.m_flashMutex);
 		m_flashData.swap(_other.m_flashData);
 		std::swap(m_flashDirty, _other.m_flashDirty);
+		++m_flashWrites;
+		++m_patchRamWrites;
 		m_flashCommands = {};
 		_other.m_flashCommands = {};
 		m_immPageAddress = 0xffffffffu;
@@ -232,17 +271,12 @@ namespace md
 			|| _flash.size() != m_flashData.size()
 			|| _patchRam.size() != m_patchRam.size())
 			return StateImagePublishResult::Invalid;
-		std::unique_lock flashLock(m_flashMutex, std::try_to_lock);
-		if(!flashLock.owns_lock())
-			return StateImagePublishResult::Busy;
-		std::unique_lock patchLock(m_patchRamMutex, std::try_to_lock);
-		if(!patchLock.owns_lock())
-			return StateImagePublishResult::Busy;
-		// This is called only by the scheduler owner between executed instructions.
-		// With both host snapshot locks held, every observer sees complete backing
-		// stores rather than an incrementally modified or concurrently exchanged one.
+		// This is called only by the scheduler owner between executed instructions, and
+		// nothing else reads the backing stores while it runs (see m_patchRam in mdmc.h).
 		m_flashData.swap(_flash);
 		m_patchRam.swap(_patchRam);
+		++m_flashWrites;
+		++m_patchRamWrites;
 		m_flashCommands = {};
 		m_immPageAddress = 0xffffffffu;
 		m_immPageData = nullptr;
@@ -252,13 +286,11 @@ namespace md
 	}
 	void Microcontroller::readMidiOut(std::vector<synthLib::SMidiEvent>& _midiOut, const uint64_t _nativeOrigin)
 	{
-		// MidiBufferParser is stateful (including partial messages), so only one
-		// consumer may detach and parse a UART batch at a time.
-		const std::scoped_lock drainLock(m_midiTxDrainMutex);
+		// The UART producer (the transmit callback in the constructor) and this drain both run on
+		// the emulation thread: readMidiOut is called only from Device::process, after the unit ran.
 		size_t drainIndex = 0;
 		bool discontinuity = false;
 		{
-			const std::scoped_lock lock(m_midiTxMutex);
 			if(m_midiTxBuffers[m_midiTxProducerIndex].size == 0)
 				return;
 			std::swap(m_midiTxProducerIndex, m_midiTxDrainIndex);
@@ -326,6 +358,41 @@ namespace md
 		if(memorymap::g_mainExecAlias.contains(_addr))	return ram(m_mainRam, memorymap::g_mainExecAlias.offset(_addr));
 
 		return peripheral();									// unmapped
+	}
+
+	uint8_t* Microcontroller::fastRamData(const uint32_t _addr, uint32_t& _offset, uint32_t& _size)
+	{
+		if(memorymap::g_mainRam.contains(_addr))
+		{
+			_offset = memorymap::g_mainRam.offset(_addr);
+			_size = static_cast<uint32_t>(m_mainRam.size());
+			return m_mainRam.data();
+		}
+		if(memorymap::g_internalSram.contains(_addr))
+		{
+			_offset = memorymap::g_internalSram.offset(_addr);
+			_size = static_cast<uint32_t>(m_internalSram.size());
+			return m_internalSram.data();
+		}
+		if(memorymap::g_loaderRam.contains(_addr))
+		{
+			_offset = memorymap::g_loaderRam.offset(_addr);
+			_size = static_cast<uint32_t>(m_loaderRam.size());
+			return m_loaderRam.data();
+		}
+		if(memorymap::g_mainHighAlias.contains(_addr))
+		{
+			_offset = memorymap::g_mainHighAlias.offset(_addr);
+			_size = static_cast<uint32_t>(m_mainRam.size());
+			return m_mainRam.data();
+		}
+		if(memorymap::g_mainExecAlias.contains(_addr))
+		{
+			_offset = memorymap::g_mainExecAlias.offset(_addr);
+			_size = static_cast<uint32_t>(m_mainRam.size());
+			return m_mainRam.data();
+		}
+		return nullptr;
 	}
 
 	void Microcontroller::logPeripheral(const uint32_t _addr, const uint32_t _value, const uint8_t _size, const bool _write)
@@ -431,9 +498,27 @@ namespace md
 
 	uint32_t Microcontroller::exec()
 	{
-
 		// Step the CPU one instruction, then advance the derived SIM and interrupt wiring.
-		const auto cycles = execInstruction();
+		auto cycles = execInstruction();
+		// EXPERIMENT (not for commit): MM_UC_CYCLE_SCALE=<percent> scales every instruction's
+		// cost, giving the ColdFire more (<100) or less (>100) headroom without touching its timers.
+		static const uint32_t scale = std::getenv("MM_UC_CYCLE_SCALE") ? static_cast<uint32_t>(std::atoi(std::getenv("MM_UC_CYCLE_SCALE"))) : 100;
+		if(scale != 100)
+		{
+			static uint64_t remainder = 0;
+			const uint64_t scaled = static_cast<uint64_t>(cycles) * scale + remainder;
+			const auto newCycles = static_cast<uint32_t>(scaled / 100);
+			remainder = scaled % 100;
+			m_cycles = m_cycles - cycles + newCycles;
+			cycles = newCycles;
+		}
+		if(m_busPenalty)
+		{
+			cycles += m_busPenalty;
+			m_cycles += m_busPenalty;
+			m_busPenalty = 0;
+		}
+		busStatsNoteCycles(cycles, getCpuState()->cacr);
 		advanceAfterCpu(cycles);
 		return cycles;
 	}
@@ -458,6 +543,8 @@ namespace md
 			|| m_externalIrq4Pending || readImm16(cpu.pc) != 0x60fe)
 			return 0;
 
+		// Deferred SIM cycles must be applied before its deadlines are meaningful.
+		m_sim.flushPendingCycles();
 		// Stop strictly before a timer interrupt or panel-UART character completion.
 		// The normal single-instruction path crosses that event and materializes it.
 		for(const auto deadline : {m_sim.cyclesUntilNextTimerInterrupt(),
@@ -484,9 +571,87 @@ namespace md
 		advanceAfterCpu(cycles);
 	}
 
+
+	void Microcontroller::rebuildBusTable()
+	{
+		// Region 0: on-chip (SIM registers, internal SRAM): no external bus cycle.
+		// Regions 1-8: chip selects 0-7. Region 9: default memory (no chip select), 32-bit, no wait states.
+		m_busTableDirty = false;
+		m_busRegions[0] = BusRegion{4, 0, false};
+		m_busRegions[9] = BusRegion{4, 0, true};
+		struct Cs { uint32_t base = 0, mask = 0; bool enabled = false; };
+		std::array<Cs, 8> cs{};
+		for(uint32_t n = 0; n < 8; ++n)
+		{
+			const uint32_t off = 0x64 + 12 * n;
+			const uint32_t csar = m_sim.read16(off);
+			const uint32_t csmr = (static_cast<uint32_t>(m_sim.read16(off + 4)) << 16) | m_sim.read16(off + 6);
+			const uint32_t cscr = m_sim.read16(off + 10);
+			const uint32_t ps = (cscr >> 6) & 3;
+			m_busRegions[1 + n] = BusRegion{static_cast<uint8_t>(ps == 0 ? 4 : ps == 1 ? 1 : 2),
+				static_cast<uint8_t>((cscr >> 10) & 15), true};
+			cs[n] = Cs{csar << 16, csmr & 0xffff0000, cscr != 0};
+		}
+		// Cover the emulated address map up to the highest alias window.
+		m_busPageRegion.assign(memorymap::g_mainExecAlias.end >> 16, 9);
+		for(uint32_t page = 0; page < m_busPageRegion.size(); ++page)
+		{
+			uint32_t addr = page << 16;
+			if(memorymap::g_internalSram.contains(addr) || memorymap::g_sim.contains(addr))
+			{
+				m_busPageRegion[page] = 0;
+				continue;
+			}
+			// The emulator's main-RAM aliases reach the same chip-select-5 RAM.
+			if(memorymap::g_mainHighAlias.contains(addr))
+				addr = memorymap::g_mainRam.begin + memorymap::g_mainHighAlias.offset(addr);
+			else if(memorymap::g_mainExecAlias.contains(addr))
+				addr = memorymap::g_mainRam.begin + memorymap::g_mainExecAlias.offset(addr);
+			for(uint32_t n = 0; n < 8; ++n)
+			{
+				if(cs[n].enabled && ((addr ^ cs[n].base) & ~(cs[n].mask | 0xffffu)) == 0)
+				{
+					m_busPageRegion[page] = static_cast<uint8_t>(1 + n);
+					break;
+				}
+			}
+		}
+	}
+
+	void Microcontroller::chargeFetch(const uint32_t _addr)
+	{
+		if(!m_busTiming)
+			return;
+		const auto& r = busRegion(_addr);
+		if(!r.external)
+			return;
+		const bool cacheEnabled = (getCpuState()->cacr & 0x80000000u) != 0;
+		if(!cacheEnabled)
+		{
+			m_busPenalty += busTransfers(2, r) * (1u + r.waitStates);
+			return;
+		}
+		// 4 KB direct-mapped instruction cache, 256 lines of 16 bytes (UM 4.2).
+		const uint32_t line = _addr >> 4;
+		const uint32_t index = line & 255;
+		if(m_icacheValid[index] && m_icacheTag[index] == line)
+			return;
+		m_icacheValid[index] = true;
+		m_icacheTag[index] = line;
+		m_busPenalty += busTransfers(16, r) * (2u + r.waitStates);
+	}
+
 	uint32_t Microcontroller::readIrqUserVector(const uint8_t _level)
 	{
 		const auto vector = Mc68k::readIrqUserVector(_level);
+		// TEMPORARY diagnostic: every interrupt acknowledge (all levels, autovectored or not) in the host trace.
+		if(dsp56k::g_hostLog && dsp56k::g_hostLogOn)
+		{
+			dsp56k::hostLogRotate();
+			if(dsp56k::g_hostLog)
+				std::fprintf(dsp56k::g_hostLog, "IA cpu=%llu lvl=%u vec=%02x\n",
+					static_cast<unsigned long long>(getCycles()), _level, vector);
+		}
 		if(m_externalIrq4Pending && _level == m_externalIrq4PendingLevel
 			&& vector == m_externalIrq4PendingVector)
 		{
@@ -560,8 +725,112 @@ namespace md
 		return 0;
 	}
 
+
+	// TEMPORARY bus-cost estimate (not for commit): MM_BUSSTATS=1.
+	// Regions follow the chip selects the MM firmware programs (CSCR): main RAM CS5 16-bit 0 WS,
+	// flash CS0 16-bit 4 WS, CS1 16-bit 3 WS, HDI08 CS2/CS3 8-bit 0 WS, SIM/SRAM on-chip.
+	namespace busstats
+	{
+		enum Region { Sram, MainRam, Flash, Cs1, Hdi, Sim, Other, RegionCount };
+		const char* const g_names[RegionCount] = {"sram", "mainRam", "flash", "cs1", "hdi08", "sim", "other"};
+		const uint32_t g_portBytes[RegionCount] = {4, 2, 2, 2, 1, 4, 2};
+		const uint32_t g_waitStates[RegionCount] = {0, 0, 4, 3, 0, 0, 0};
+		const bool g_external[RegionCount] = {false, true, true, true, true, false, true};
+		bool enabled() { static const bool e = std::getenv("MM_BUSSTATS") != nullptr; return e; }
+		Region region(const uint32_t _a)
+		{
+			if(_a >= 0x01000000 && _a < 0x01010000) return Sram;
+			if((_a >= 0x00200000 && _a < 0x00300000) || (_a >= 0x20000000 && _a < 0x20100000) || (_a >= 0x40000000 && _a < 0x40100000)) return MainRam;
+			if(_a < 0x00100000 || (_a >= 0x10000000 && _a < 0x10800000)) return Flash;
+			if(_a >= 0x00700000 && _a < 0x00800000) return Cs1;
+			if(_a >= 0x00500000 && _a < 0x00700000) return Hdi;
+			if(_a >= 0x00300000 && _a < 0x00310000) return Sim;
+			return Other;
+		}
+		struct Stats
+		{
+			uint64_t reads[RegionCount][3] = {};	// by size 1/2/4 bytes (index 0/1/2)
+			uint64_t writes[RegionCount][3] = {};
+			uint64_t fetches[RegionCount] = {};
+			uint64_t misses[RegionCount] = {};
+			uint32_t tags[256];
+			bool valid[256] = {};
+			uint64_t ucCycles = 0;
+			uint32_t cacr = 0;
+			~Stats()
+			{
+				if(!enabled()) return;
+				double dataExtra = 0, missExtra = 0, fetchNoCacheExtra = 0;
+				std::fprintf(stderr, "BUS CACR=%08x ucCycles=%llu\n", cacr, (unsigned long long)ucCycles);
+				for(int r = 0; r < RegionCount; ++r)
+				{
+					const double perTransfer = g_external[r] ? 2.0 + g_waitStates[r] : 0.0;
+					double transfers = 0;
+					for(int s = 0; s < 3; ++s)
+					{
+						const uint32_t bytes = 1u << s;
+						const double n = static_cast<double>(reads[r][s] + writes[r][s]);
+						transfers += n * ((bytes + g_portBytes[r] - 1) / g_portBytes[r]);
+					}
+					dataExtra += transfers * perTransfer;
+					const double lineTransfers = 16.0 / g_portBytes[r];
+					missExtra += g_external[r] ? misses[r] * lineTransfers * (3.0 + g_waitStates[r]) : 0.0;
+					fetchNoCacheExtra += g_external[r] ? fetches[r] * ((2.0 + g_portBytes[r] - 1) / g_portBytes[r]) * perTransfer : 0.0;
+					std::fprintf(stderr, "BUS %-7s rd8=%llu rd16=%llu wr8=%llu wr16=%llu fetch16=%llu lineMiss=%llu\n", g_names[r],
+						(unsigned long long)reads[r][0], (unsigned long long)reads[r][1], (unsigned long long)writes[r][0], (unsigned long long)writes[r][1],
+						(unsigned long long)fetches[r], (unsigned long long)misses[r]);
+				}
+				std::fprintf(stderr, "BUS extra clocks: data %.0f (%.1f%%), I-cache misses %.0f (%.1f%%), fetch-if-cache-off %.0f (%.1f%%)\n",
+					dataExtra, 100.0 * dataExtra / ucCycles, missExtra, 100.0 * missExtra / ucCycles, fetchNoCacheExtra, 100.0 * fetchNoCacheExtra / ucCycles);
+			}
+		} g_stats;
+		void resetStats()
+		{
+			const auto cacr = g_stats.cacr;
+			g_stats.~Stats();
+			new (&g_stats) Stats();
+			g_stats.cacr = cacr;
+		}
+		inline void data(const uint32_t _a, const int _sizeIndex, const bool _write)
+		{
+			if(!enabled()) return;
+			const auto r = region(_a);
+			(_write ? g_stats.writes : g_stats.reads)[r][_sizeIndex]++;
+		}
+		inline void fetch(const uint32_t _a)
+		{
+			if(!enabled()) return;
+			const auto r = region(_a);
+			g_stats.fetches[r]++;
+			if(!g_external[r]) return;
+			const uint32_t line = _a >> 4;
+			const uint32_t index = line & 255;
+			if(!g_stats.valid[index] || g_stats.tags[index] != line)
+			{
+				g_stats.valid[index] = true;
+				g_stats.tags[index] = line;
+				g_stats.misses[r]++;
+			}
+		}
+	}
+
+	void busStatsReset() { busstats::resetStats(); }
+
+	void busStatsNoteCycles(const uint32_t _cycles, const uint32_t _cacr)
+	{
+		if(!busstats::enabled())
+			return;
+		busstats::g_stats.ucCycles += _cycles;
+		busstats::g_stats.cacr = _cacr;
+	}
 	uint8_t Microcontroller::read8(const uint32_t _addr)
 	{
+		chargeData(_addr, 1);
+		busstats::data(_addr, 0, false);
+		uint32_t fastOffset, fastSize;
+		if(auto* data = fastRamData(_addr, fastOffset, fastSize); data != nullptr
+			&& fastOffset < fastSize)
+			return data[fastOffset];
 		if(m_model == MachineModel::Machinedrum)
 		{
 			const auto offset = memorymap::g_flashLow.contains(_addr)
@@ -575,10 +844,6 @@ namespace md
 		if(memorymap::g_sim.contains(_addr))		return m_sim.read8(memorymap::g_sim.offset(_addr));
 		if(memorymap::g_dsp1Hdi08.contains(_addr))	return m_hdi08Dsp1.read8(static_cast<mc68k::PeriphAddress>(memorymap::g_dsp1Hdi08.offset(_addr)));
 		if(memorymap::g_dsp2Hdi08.contains(_addr))	return m_hdi08Dsp2.read8(static_cast<mc68k::PeriphAddress>(memorymap::g_dsp2Hdi08.offset(_addr)));
-		const bool patchRam = memorymap::isPatchRam(_addr);
-		std::shared_lock patchLock(m_patchRamMutex, std::defer_lock);
-		if(patchRam)
-			patchLock.lock();
 		const auto r = resolve(_addr);
 		if(r.peripheral)					{ logPeripheral(_addr, 0, 1, false); return 0; }
 		if(!r.data || r.offset >= r.size)	return 0;
@@ -587,6 +852,12 @@ namespace md
 
 	uint16_t Microcontroller::read16(const uint32_t _addr)
 	{
+		chargeData(_addr, 2);
+		busstats::data(_addr, 1, false);
+		uint32_t fastOffset, fastSize;
+		if(auto* data = fastRamData(_addr, fastOffset, fastSize); data != nullptr
+			&& fastOffset + 1 < fastSize)
+			return mc68k::memoryOps::readU16(data, fastOffset);
 		if(m_model == MachineModel::Machinedrum)
 		{
 			const auto offset = memorymap::g_flashLow.contains(_addr)
@@ -600,10 +871,6 @@ namespace md
 		if(memorymap::g_sim.contains(_addr))		return m_sim.read16(memorymap::g_sim.offset(_addr));
 		if(memorymap::g_dsp1Hdi08.contains(_addr))	return m_hdi08Dsp1.read16(static_cast<mc68k::PeriphAddress>(memorymap::g_dsp1Hdi08.offset(_addr)));
 		if(memorymap::g_dsp2Hdi08.contains(_addr))	return m_hdi08Dsp2.read16(static_cast<mc68k::PeriphAddress>(memorymap::g_dsp2Hdi08.offset(_addr)));
-		const bool patchRam = memorymap::isPatchRam(_addr);
-		std::shared_lock patchLock(m_patchRamMutex, std::defer_lock);
-		if(patchRam)
-			patchLock.lock();
 		const auto r = resolve(_addr);
 		if(r.peripheral)						{ logPeripheral(_addr, 0, 2, false); return 0; }
 		if(!r.data || (r.offset + 1) >= r.size)	return 0;
@@ -612,21 +879,44 @@ namespace md
 
 	void Microcontroller::write8(const uint32_t _addr, const uint8_t _val)
 	{
-		if(memorymap::g_sim.contains(_addr))		{ m_sim.write8(memorymap::g_sim.offset(_addr), _val); return; }
+		chargeData(_addr, 1);
+		busstats::data(_addr, 0, true);
+		uint32_t fastOffset, fastSize;
+		if(auto* data = fastRamData(_addr, fastOffset, fastSize); data != nullptr
+			&& fastOffset < fastSize)
+		{
+			data[fastOffset] = _val;
+			return;
+		}
+		if(memorymap::g_sim.contains(_addr))
+		{
+			const auto offset = memorymap::g_sim.offset(_addr);
+			if(offset >= 0x64 && offset < 0x64 + 12 * 8)
+				m_busTableDirty = true;
+			m_sim.write8(offset, _val);
+			return;
+		}
 		if(memorymap::g_dsp1Hdi08.contains(_addr))	{ m_hdi08Dsp1.write8(static_cast<mc68k::PeriphAddress>(memorymap::g_dsp1Hdi08.offset(_addr)), _val); return; }
 		if(memorymap::g_dsp2Hdi08.contains(_addr))	{ m_hdi08Dsp2.write8(static_cast<mc68k::PeriphAddress>(memorymap::g_dsp2Hdi08.offset(_addr)), _val); return; }
-		const bool patchRam = memorymap::isPatchRam(_addr);
-		std::unique_lock patchLock(m_patchRamMutex, std::defer_lock);
-		if(patchRam)
-			patchLock.lock();
 		const auto r = resolve(_addr);
 		if(r.peripheral)								{ logPeripheral(_addr, _val, 1, true); return; }
 		if(!r.writable || !r.data || r.offset >= r.size)	return;
 		r.data[r.offset] = _val;
+		if(memorymap::isPatchRam(_addr))
+			++m_patchRamWrites;
 	}
 
 	void Microcontroller::write16(const uint32_t _addr, const uint16_t _val)
 	{
+		chargeData(_addr, 2);
+		busstats::data(_addr, 1, true);
+		uint32_t fastOffset, fastSize;
+		if(auto* data = fastRamData(_addr, fastOffset, fastSize); data != nullptr
+			&& fastOffset + 1 < fastSize)
+		{
+			mc68k::memoryOps::writeU16(data, fastOffset, _val);
+			return;
+		}
 		if(m_model == MachineModel::Machinedrum)
 		{
 			const auto offset = memorymap::g_flashLow.contains(_addr)
@@ -637,7 +927,6 @@ namespace md
 			{
 				if(const auto operation = m_flashCommands.write16(offset, _val))
 				{
-					std::unique_lock flashLock(m_flashMutex);
 					bool changed = false;
 					if(operation->type == FlashCommandDecoder::Operation::Type::ProgramWord
 						&& operation->offset + 1 < m_flashData.size())
@@ -664,6 +953,7 @@ namespace md
 					if(changed)
 					{
 						m_flashDirty = true;
+						++m_flashWrites;
 						m_lastFlashWriteCycle = getCycles();
 						m_immPageAddress = 0xffffffffu;
 						m_immPageData = nullptr;
@@ -673,7 +963,14 @@ namespace md
 				return;
 			}
 		}
-		if(memorymap::g_sim.contains(_addr))		{ m_sim.write16(memorymap::g_sim.offset(_addr), _val); return; }
+		if(memorymap::g_sim.contains(_addr))
+		{
+			const auto offset = memorymap::g_sim.offset(_addr);
+			if(offset >= 0x64 && offset < 0x64 + 12 * 8)
+				m_busTableDirty = true;
+			m_sim.write16(offset, _val);
+			return;
+		}
 		if(memorymap::g_dsp1Hdi08.contains(_addr))	{ m_hdi08Dsp1.write16(static_cast<mc68k::PeriphAddress>(memorymap::g_dsp1Hdi08.offset(_addr)), _val); return; }
 		if(memorymap::g_dsp2Hdi08.contains(_addr))	{ m_hdi08Dsp2.write16(static_cast<mc68k::PeriphAddress>(memorymap::g_dsp2Hdi08.offset(_addr)), _val); return; }
 		if(m_monomachineFlash && (memorymap::g_flashFull.contains(_addr)
@@ -682,26 +979,26 @@ namespace md
 			const auto offset = memorymap::g_flashFull.contains(_addr)
 				? memorymap::g_flashFull.offset(_addr)
 				: memorymap::g_flashLow.offset(_addr);
-			std::unique_lock flashLock(m_flashMutex);
 			m_monomachineFlash->write(offset, _val);
 			m_flashDirty = true;
+			++m_flashWrites;
 			m_lastFlashWriteCycle = getCycles();
 			m_immPageAddress = 0xffffffffu;
 			m_immPageData = nullptr;
 			return;
 		}
-		const bool patchRam = memorymap::isPatchRam(_addr);
-		std::unique_lock patchLock(m_patchRamMutex, std::defer_lock);
-		if(patchRam)
-			patchLock.lock();
 		const auto r = resolve(_addr);
 		if(r.peripheral)										{ logPeripheral(_addr, _val, 2, true); return; }
 		if(!r.writable || !r.data || (r.offset + 1) >= r.size)	return;
 		mc68k::memoryOps::writeU16(r.data, r.offset, _val);
+		if(memorymap::isPatchRam(_addr))
+			++m_patchRamWrites;
 	}
 
 	uint16_t Microcontroller::readImm16(const uint32_t _addr)
 	{
+		chargeFetch(_addr);
+		busstats::fetch(_addr);
 		// Instruction fetch: always from ROM/RAM, never a peripheral - do not log.
 		static constexpr uint32_t pageSize = 4096;
 		static constexpr uint32_t pageMask = pageSize - 1;

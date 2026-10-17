@@ -1,5 +1,7 @@
 #pragma once
 
+#include <array>
+
 #include <atomic>
 #include <cstdint>
 #include <functional>
@@ -94,6 +96,10 @@ namespace md
 		std::atomic<bool> m_schedRunnable{false};
 
 		uint64_t m_mmHostTxCycle = 0;
+
+		// Monomachine trigger guard (opt-in workaround, GEARMULATOR_MM_TRIGGER_GUARD=1). See enableMmTriggerGuard().
+		void enableMmTriggerGuard();
+		std::array<uint64_t, 3> m_mmVoiceWindowStart{};	// DSP cycle + 1 when voice n's trigger read ran; 0 = closed
 		TimedHostRx m_timedHostRx;
 
 	};

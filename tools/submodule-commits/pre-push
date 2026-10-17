@@ -1,0 +1,50 @@
+#!/bin/sh
+# Git pre-push hook: refuses a push whose commits pin a submodule commit that its URL cannot
+# serve (tools/submodule-commits/check-fetchable.sh asks the network). Install with
+# tools/submodule-commits/install-hook.sh. A push of only branch deletions passes. Bypass, when you
+# know better, with `git push --no-verify`.
+set -eu
+remote=$1
+top=$(git rev-parse --show-toplevel)
+zero=0000000000000000000000000000000000000000
+commits=$(mktemp "${TMPDIR:-/tmp}/pre-push.XXXXXX")
+tips=$(mktemp "${TMPDIR:-/tmp}/pre-push.XXXXXX")
+trap 'rm -f "$commits" "$tips"' EXIT INT TERM
+while read -r local_ref local_sha remote_ref remote_sha; do
+	[ "$local_sha" = "$zero" ] && continue	# a deletion
+	echo "$local_sha" >> "$tips"
+	if [ "$remote_sha" = "$zero" ] || ! git cat-file -e "$remote_sha^{commit}" 2>/dev/null; then
+		# A new branch (or one whose remote tip we lack): its commits that the remote has no branch with.
+		git rev-list "$local_sha" --not --remotes="$remote" >> "$commits"
+	else
+		git rev-list "$remote_sha..$local_sha" >> "$commits"
+	fi
+done
+[ -s "$tips" ] || exit 0
+# Only commits whose gitlinks differ from their parent's can pin something new; the tip is
+# checked always.
+set --
+for c in $(sort -u "$commits"); do
+	if [ -n "$(git diff-tree --no-commit-id -r "$c" 2>/dev/null | awk '$1 ~ /^:160000/ || $2 ~ /^160000/')" ] ||
+		[ -z "$(git rev-list --parents -n1 "$c" | cut -s -d' ' -f2-)" ]; then
+		set -- "$@" "$c"
+	fi
+done
+set -- "$@" $(sort -u "$tips")
+echo "pre-push: checking that every pinned submodule commit can be fetched..." >&2
+# install-hook.sh copies the checker next to this hook, so it works whichever branch is checked out.
+check="$(dirname "$0")/submodule-check-fetchable.sh"
+[ -x "$check" ] || check="$top/tools/submodule-commits/check-fetchable.sh"
+if out=$("$check" "$@" 2>&1); then
+	exit 0
+else
+	rc=$?
+fi
+echo "$out" | grep -v '^ok ' >&2
+if [ $rc -eq 2 ]; then
+	echo "pre-push: a submodule URL could not be reached; not pushing (git push --no-verify to override)." >&2
+else
+	echo "pre-push: refusing to push: a clone could not check these submodule commits out." >&2
+	echo "          Publish them first (tools/submodule-commits/README.md), or git push --no-verify." >&2
+fi
+exit 1

@@ -206,6 +206,16 @@ namespace pluginLib
 		notifyHost(convertTo0to1(static_cast<float>(_value)));
     }
 
+	void Parameter::setUnnormalizedValueAndSend(const int _value, const Origin _origin)
+	{
+		const auto value = clampValue(_value);
+		const auto lastSent = m_lastValue.load(std::memory_order_acquire);
+		setUnnormalizedValueNotifyingHost(value, _origin);
+		// sendToSynth has skipped it in exactly these two cases: nothing sent yet, or the same value again
+		if(lastSent == -1 || lastSent == value)
+			sendParameterChangeNow(value, _origin);
+	}
+
     void Parameter::setRateLimitMilliseconds(const uint32_t _ms)
     {
 	    m_rateLimit = _ms;

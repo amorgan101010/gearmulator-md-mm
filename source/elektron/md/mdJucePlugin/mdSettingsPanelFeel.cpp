@@ -1,6 +1,7 @@
 #include "mdSettingsPanelFeel.h"
 
 #include "mdEditor.h"
+#include "mdGamepadAxes.h"
 #include "mdLcdInteractionModel.h"
 #include "mdPixelPerfectPanel.h"
 #include "mdPluginProcessor.h"
@@ -28,8 +29,40 @@ namespace mdJucePlugin
 			{
 				m_editor.applyLcdInteraction();
 			}, lcdInteraction::defaultEnabled);
-		bindGroup(_root, "btWheelSpeed", "panelWheelSpeedPercent");
-		bindGroup(_root, "btEncoderSpeed", "panelEncoderSpeedPercent");
+		const std::vector<int> speeds(std::begin(Editor::g_panelSpeedPercents), std::end(Editor::g_panelSpeedPercents));
+		bindGroup(_root, "btWheelSpeed", "panelWheelSpeedPercent", speeds, 100, [this] { m_editor.applyPanelSpeeds(); });
+		bindGroup(_root, "btEncoderSpeed", "panelEncoderSpeedPercent", speeds, 100, [this] { m_editor.applyPanelSpeeds(); });
+
+		jucePluginEditorLib::SettingsPlugin::createToggleButton(_root, "btTooltips",
+			m_editor.getProcessor().getConfig(), Editor::g_tooltipsEnabledKey, [this](bool)
+			{
+				m_editor.applyTooltipSettings();
+			}, true);
+		bindGroup(_root, "btTooltipDelay", Editor::g_tooltipDelayKey,
+			std::vector<int>(std::begin(Editor::g_tooltipDelaysMs), std::end(Editor::g_tooltipDelaysMs)),
+			Editor::g_defaultTooltipDelayMs, [this] { m_editor.applyTooltipSettings(); });
+
+		// Controller: face button layout, then what each touchpad and gyro axis turns.
+		bindGroup(_root, "btPadFaceLayout", gamepadAxes::g_faceLayoutKey,
+			std::vector<int>(std::begin(gamepadAxes::g_faceLayouts), std::end(gamepadAxes::g_faceLayouts)), 0,
+			[this] { m_editor.applyGamepadSettings(); });
+		for(const auto& axis : gamepadAxes::g_axes)
+		{
+			const auto apply = [this] { m_editor.applyGamepadSettings(); };
+			bindGroup(_root, (std::string(axis.idPrefix) + "Target").c_str(), axis.targetKey,
+				std::vector<int>(std::begin(gamepadAxes::g_targets), std::end(gamepadAxes::g_targets)),
+				gamepadAxes::defaultTarget(axis.axis), apply);
+			jucePluginEditorLib::SettingsPlugin::createToggleButton(_root, std::string(axis.idPrefix) + "Function",
+				m_editor.getProcessor().getConfig(), axis.functionKey, [apply](bool) { apply(); },
+				gamepadAxes::defaultFunction(axis.axis, m_editor.getModel()));
+			jucePluginEditorLib::SettingsPlugin::createToggleButton(_root, std::string(axis.idPrefix) + "Absolute",
+				m_editor.getProcessor().getConfig(), axis.absoluteKey, [apply](bool) { apply(); }, true);
+			jucePluginEditorLib::SettingsPlugin::createToggleButton(_root, std::string(axis.idPrefix) + "Invert",
+				m_editor.getProcessor().getConfig(), axis.invertKey, [apply](bool) { apply(); }, false);
+			bindGroup(_root, (std::string(axis.idPrefix) + "Speed").c_str(), axis.speedKey,
+				std::vector<int>(std::begin(gamepadAxes::g_speedPercents), std::end(gamepadAxes::g_speedPercents)),
+				100, apply);
+		}
 
 		m_ramRecordingComplete = juceRmlUi::helper::findChild(
 			_root, "btRamRecordingComplete", false);
@@ -67,6 +100,25 @@ namespace mdJucePlugin
 				m_editor.chooseStorageImage();
 			});
 		}
+		m_firmwareLabel = juceRmlUi::helper::findChild(_root, "lblFirmwareImage", false);
+		if(auto* const chooseFirmware = juceRmlUi::helper::findChild(_root, "btChooseFirmware", false))
+		{
+			juceRmlUi::EventListener::AddClick(chooseFirmware, [this]
+			{
+				m_editor.chooseFirmwareImage();
+			});
+		}
+		if(auto* const stockFirmware = juceRmlUi::helper::findChild(_root, "btStockFirmware", false))
+		{
+			juceRmlUi::EventListener::AddClick(stockFirmware, [this]
+			{
+				m_editor.useStockFirmware();
+			});
+		}
+		updateFirmwareLabel();
+		if(m_firmwareLabel && !isTimerRunning())
+			startTimerHz(2);
+
 		m_restoreStorage = juceRmlUi::helper::findChild(
 			_root, "btRestorePreviousStorage", false);
 		if(m_restoreStorage)
@@ -84,7 +136,17 @@ namespace mdJucePlugin
 	void SettingsPanelFeel::timerCallback()
 	{
 		updateRestoreAvailability();
+		updateFirmwareLabel();
 		updateRamRecordingMode();
+	}
+
+	void SettingsPanelFeel::updateFirmwareLabel()
+	{
+		if(!m_firmwareLabel)
+			return;
+		const auto text = "Running: " + m_editor.getFirmwareDescription();
+		if(m_firmwareLabel->GetInnerRML() != text)
+			m_firmwareLabel->SetInnerRML(text);
 	}
 
 	void SettingsPanelFeel::updateRamRecordingMode()
@@ -119,44 +181,42 @@ namespace mdJucePlugin
 				m_editor.hasStorageRecoveryImage());
 	}
 
-	void SettingsPanelFeel::bindGroup(Rml::Element* _root, const char* _idPrefix, const char* _configKey)
+	void SettingsPanelFeel::bindGroup(Rml::Element* _root, const char* _idPrefix, const char* _configKey,
+		std::vector<int> _values, const int _default, std::function<void()> _apply)
 	{
 		auto& config = m_editor.getProcessor().getConfig();
 
-		std::vector<Rml::Element*> checkboxes(std::size(Editor::g_panelSpeedPercents), nullptr);
-
-		for (size_t i = 0; i < std::size(Editor::g_panelSpeedPercents); ++i)
+		std::vector<Rml::Element*> checkboxes(_values.size(), nullptr);
+		for (size_t i = 0; i < _values.size(); ++i)
 		{
-			auto* row = juceRmlUi::helper::findChild(_root,
-				_idPrefix + std::to_string(Editor::g_panelSpeedPercents[i]), false);
-			if (row)
+			if (auto* row = juceRmlUi::helper::findChild(_root, _idPrefix + std::to_string(_values[i]), false))
 				checkboxes[i] = juceRmlUi::helper::findChild(row, "button");
 		}
 
-		const auto updateChecked = [checkboxes, &config, _configKey]
+		const auto updateChecked = [checkboxes, _values, &config, _configKey, _default]
 		{
-			const auto current = config.getIntValue(_configKey, 100);
+			const auto current = config.getIntValue(_configKey, _default);
 			for (size_t i = 0; i < checkboxes.size(); ++i)
 			{
 				if (checkboxes[i])
-					juceRmlUi::ElemButton::setChecked(checkboxes[i], Editor::g_panelSpeedPercents[i] == current);
+					juceRmlUi::ElemButton::setChecked(checkboxes[i], _values[i] == current);
 			}
 		};
 
 		updateChecked();
 
-		for (const auto percent : Editor::g_panelSpeedPercents)
+		for (const auto value : _values)
 		{
-			auto* row = juceRmlUi::helper::findChild(_root, _idPrefix + std::to_string(percent), false);
+			auto* row = juceRmlUi::helper::findChild(_root, _idPrefix + std::to_string(value), false);
 			if (!row)
 				continue;
 
-			juceRmlUi::EventListener::AddClick(row, [this, updateChecked, &config, _configKey, percent]
+			juceRmlUi::EventListener::AddClick(row, [updateChecked, &config, _configKey, value, _apply]
 			{
-				config.setValue(_configKey, percent);
+				config.setValue(_configKey, value);
 				config.saveIfNeeded();
 				updateChecked();
-				m_editor.applyPanelSpeeds();
+				_apply();
 			});
 		}
 	}

@@ -5,6 +5,10 @@
 #include "exception.h"
 #include "ptypes/pinet.h"
 
+#ifndef _WIN32
+#	include <poll.h>
+#endif
+
 namespace networkLib
 {
 	TcpStream::TcpStream(ptypes::ipstream* _stream)	: m_stream(_stream)
@@ -28,6 +32,23 @@ namespace networkLib
 	bool TcpStream::isValid() const
 	{
 		return m_stream && m_stream->get_active();
+	}
+
+	bool TcpStream::canWrite() const
+	{
+		if (!isValid())
+			return false;
+#ifdef _WIN32
+		// select, not WSAPoll: that one needs _WIN32_WINNT >= 0x0600 (winsock2.h comes with pinet.h)
+		fd_set writable;
+		FD_ZERO(&writable);
+		FD_SET(static_cast<SOCKET>(m_stream->get_handle()), &writable);
+		timeval now{0, 0};
+		return ::select(0, nullptr, &writable, nullptr, &now) == 1;
+#else
+		pollfd p{m_stream->get_handle(), POLLOUT, 0};
+		return ::poll(&p, 1, 0) == 1 && (p.revents & POLLOUT);
+#endif
 	}
 
 	bool TcpStream::flush()

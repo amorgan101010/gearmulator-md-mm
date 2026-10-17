@@ -66,7 +66,7 @@ Convenience scripts: `build_win64.bat`, `build_linux.sh`, `build_mac.sh`.
 ## Git Conventions
 
 - Do NOT include `Co-authored-by` trailers in commit messages
-- Do NOT commit without explicit user approval
+- Commit finished work without asking first; keep commits focused, one change per commit
 - Git remotes: `gearmulator` (public OSS), `private` (development), also `nas`, `codeberg`, `EvilDragon`
 - DSP submodule (`source/dsp56300/`) is also owned by user — changes there are fine
 

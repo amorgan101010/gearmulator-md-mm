@@ -554,4 +554,54 @@ namespace md
 		_flashData.swap(decoded);
 		return true;
 	}
+
+	bool decodeFactoryFlashCacheRealtime(std::vector<uint8_t>& _flashData,
+		const std::vector<uint8_t>& _cache,
+		const std::vector<uint8_t>& _romBaseline)
+	{
+		if(_flashData.size() != g_romSize || _romBaseline.size() != g_romSize
+			|| _cache.size() < g_cacheHeaderSize
+			|| !std::equal(g_cacheMagic.begin(), g_cacheMagic.end(), _cache.begin())
+			|| readU16(_cache, 4) != g_cacheVersion
+			|| readU16(_cache, 6) != g_cacheHeaderSize
+			|| readU64(_cache, 8) != fingerprint(_romBaseline)
+			|| readU32(_cache, 24) != g_romSize
+			|| readU32(_cache, 28) != g_uwFlashSectorSize
+			|| readU16(_cache, 34) != 0)
+			return false;
+		const auto sectorCount = readU16(_cache, 32);
+		const auto entrySize = static_cast<size_t>(g_sectorEntryHeaderSize)
+			+ g_uwFlashSectorSize;
+		if(sectorCount > g_romSize / g_uwFlashSectorSize
+			|| _cache.size() != static_cast<size_t>(g_cacheHeaderSize)
+				+ static_cast<size_t>(sectorCount) * entrySize)
+			return false;
+
+		uint16_t previousSector = 0;
+		for(uint16_t entry = 0; entry < sectorCount; ++entry)
+		{
+			const auto offset = static_cast<size_t>(g_cacheHeaderSize)
+				+ static_cast<size_t>(entry) * entrySize;
+			const auto sector = readU16(_cache, offset);
+			const auto* const data = _cache.data() + offset + g_sectorEntryHeaderSize;
+			if(sector >= g_romSize / g_uwFlashSectorSize
+				|| (entry && sector <= previousSector)
+				|| readU32(_cache, offset + 4) != crc32(data, g_uwFlashSectorSize))
+				return false;
+			previousSector = sector;
+		}
+
+		std::copy(_romBaseline.begin(), _romBaseline.end(), _flashData.begin());
+		for(uint16_t entry = 0; entry < sectorCount; ++entry)
+		{
+			const auto offset = static_cast<size_t>(g_cacheHeaderSize)
+				+ static_cast<size_t>(entry) * entrySize;
+			const auto destination = static_cast<size_t>(readU16(_cache, offset))
+				* g_uwFlashSectorSize;
+			const auto* const data = _cache.data() + offset + g_sectorEntryHeaderSize;
+			std::copy_n(data, g_uwFlashSectorSize,
+				_flashData.begin() + static_cast<std::ptrdiff_t>(destination));
+		}
+		return fingerprint(_flashData) == readU64(_cache, 16);
+	}
 }

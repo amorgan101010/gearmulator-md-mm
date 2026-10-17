@@ -8,7 +8,6 @@
 #include <map>
 #include <memory>
 #include <mutex>
-#include <shared_mutex>
 #include <unordered_map>
 #include <vector>
 
@@ -152,6 +151,7 @@ namespace md
 			m_midiTransmitTap = std::move(_tap);
 		}
 		std::vector<uint8_t> copyPatchRam() const;
+		bool copyPatchRamRange(uint8_t* _destination, size_t _offset, size_t _size) const;
 		bool replacePatchRam(const std::vector<uint8_t>& _data);
 		std::vector<uint8_t> copyFlashData() const;
 		std::vector<uint8_t> copyUserFlash() const;
@@ -160,6 +160,14 @@ namespace md
 		bool copyFlashDataRangeRealtime(uint8_t* _destination, size_t _offset,
 			size_t _size) const;
 		bool flashDirty() const { return m_flashDirty; }
+		// Writes so far (emulation thread; read there too): a host's state snapshot copies patch RAM
+		// or flash again only when its counter moved.
+		uint64_t patchRamWrites() const { return m_patchRamWrites; }
+		uint64_t flashWrites() const { return m_flashWrites; }
+		// Copies the patch RAM / the flash a state carries (MD: all of it; MM: the user window) into
+		// _destination, which must already be sized; emulation thread (or the unit not running).
+		bool copyPatchRamRealtime(std::vector<uint8_t>& _destination) const;
+		bool copyStateFlashRealtime(std::vector<uint8_t>& _destination) const;
 		uint64_t flashIdleCycles() const;
 		// Optional diagnostic observation of decoded NOR operations. The observer
 		// runs synchronously under the flash lock and must not reenter this device.
@@ -198,6 +206,9 @@ namespace md
 		};
 
 		Region resolve(uint32_t _addr);
+		// Fast-lane backing for side-effect-free RAM windows. Peripheral, flash and
+		// patch-RAM accesses continue through resolve() and their existing locks.
+		uint8_t* fastRamData(uint32_t _addr, uint32_t& _offset, uint32_t& _size);
 		void logPeripheral(uint32_t _addr, uint32_t _value, uint8_t _size, bool _write);
 		void onPanelTransmit(uint8_t _byte);	// minimal response from the absent panel controller
 
@@ -209,8 +220,9 @@ namespace md
 		// copy without changing the user's ROM file or another plug-in instance.
 		std::vector<uint8_t> m_flashData;
 		std::unique_ptr<hwLib::Am29f> m_monomachineFlash;
-		mutable std::shared_mutex m_flashMutex;
 		bool m_flashDirty = false;
+		uint64_t m_patchRamWrites = 0;
+		uint64_t m_flashWrites = 0;
 		uint64_t m_lastFlashWriteCycle = 0;
 
 		Sim m_sim;	// on-chip SIM peripheral window (MBAR base 0x300000)
@@ -221,11 +233,9 @@ namespace md
 			size_t size = 0;
 		};
 
-		// UART production swaps between two fixed buffers. The producer mutex protects
-		// both the active index and its write cursor; the drain mutex serializes the
-		// stateful MIDI parser while a detached buffer is consumed.
-		mutable std::mutex m_midiTxMutex;
-		std::mutex m_midiTxDrainMutex;
+		// UART production swaps between two fixed buffers. The producer (the MIDI UART's
+		// transmit callback) and the drain (readMidiOut, from Device::process) are both the
+		// emulation thread, so neither takes a lock. (They took two mutexes until 2026-10-16.)
 		std::array<MidiTxBuffer, 2> m_midiTxBuffers;
 		size_t m_midiTxProducerIndex = 0;
 		size_t m_midiTxDrainIndex = 1;
@@ -242,8 +252,15 @@ namespace md
 
 		// RAM regions. Bytes are stored in natural (big-endian / 68k) order, matching
 		// the firmware image, so mc68k::memoryOps read/write helpers work directly.
+		// Patch RAM and flash are read and written by the emulation thread with no lock. Everything
+		// else that reads or replaces them (copyPatchRam, copyFlashData, replace*, exchange*, state
+		// encoding) runs while the unit does not run: under the plug-in's device lock, which
+		// process() also holds, or, through the device ABI, as a control call on the device's own
+		// thread. A host that wants them while the unit runs takes the device's published state
+		// snapshot instead. (These were std::shared_mutex until 2026-10-16: every slow-path patch RAM
+		// access took one, about 47 000 lock operations per second per unit, with no other thread
+		// ever holding them.)
 		std::vector<uint8_t> m_patchRam;		// 0x00100000..0x001fffff (aliased at 0x00700000)
-		mutable std::shared_mutex m_patchRamMutex;
 		std::vector<uint8_t> m_mainRam;			// 0x00200000..0x002fffff (aliased at 0x20000000 / 0x40000000)
 		std::vector<uint8_t> m_loaderRam;		// 0x00310000..0x003fffff
 		std::vector<uint8_t> m_internalSram;	// 0x01000000..0x0100ffff (64 KB)
@@ -263,6 +280,46 @@ namespace md
 		void advanceAfterCpu(uint32_t _cycles);
 		uint32_t idleSelfBranchInstructions(uint32_t _maxCycles);
 		void advanceIdleSelfBranch(uint32_t _instructions);
+
+		// ColdFire external bus timing (MCF5206E UM 3.6.1: the instruction timings assume zero-wait
+		// memory). When enabled (GEARMULATOR_MDMM_BUS_TIMING=1), every external data transfer adds its
+		// bus cycles beyond the core's single clock, derived from the chip selects the firmware programs
+		// (port width, wait states), and instruction fetches go through a 4 KB direct-mapped cache model
+		// (UM 4) whose misses cost a line fill.
+		struct BusRegion
+		{
+			uint8_t portBytes = 4;
+			uint8_t waitStates = 0;
+			bool external = false;
+		};
+		void rebuildBusTable();
+		uint32_t busTransfers(uint32_t _bytes, const BusRegion& _r) const
+		{
+			return (_bytes + _r.portBytes - 1) / _r.portBytes;
+		}
+		const BusRegion& busRegion(uint32_t _addr)
+		{
+			if(m_busTableDirty)
+				rebuildBusTable();
+			const uint32_t page = _addr >> 16;
+			return m_busRegions[page < m_busPageRegion.size() ? m_busPageRegion[page] : 0];
+		}
+		void chargeData(const uint32_t _addr, const uint32_t _bytes)
+		{
+			if(!m_busTiming)
+				return;
+			const auto& r = busRegion(_addr);
+			if(r.external)
+				m_busPenalty += busTransfers(_bytes, r) * (1u + r.waitStates);
+		}
+		void chargeFetch(uint32_t _addr);
+		bool m_busTiming = false;
+		bool m_busTableDirty = true;
+		uint32_t m_busPenalty = 0;
+		std::vector<uint8_t> m_busPageRegion;
+		std::array<BusRegion, 10> m_busRegions{};
+		std::array<uint32_t, 256> m_icacheTag{};
+		std::array<bool, 256> m_icacheValid{};
 		void decodePanelByte(uint8_t _byte);
 		void serviceExternalIrq4();
 		bool m_externalIrq4Pending = false;

@@ -5,6 +5,7 @@
 namespace mcpServer
 {
 	constexpr const char* g_mcpProtocolVersion = "2024-11-05";
+	constexpr const char* g_mcpStreamableProtocolVersion = "2025-03-26";
 	constexpr const char* g_mcpServerName = "Gearmulator MCP";
 	constexpr const char* g_mcpServerVersion = "1.0.0";
 	constexpr int g_defaultPort = 13710;

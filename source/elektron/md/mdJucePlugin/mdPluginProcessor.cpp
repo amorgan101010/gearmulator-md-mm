@@ -9,22 +9,69 @@
 #include "jucePluginLib/processorPropertiesInit.h"
 
 #include "mdLib/mddevice.h"
+#include "mdLib/mdfrontpanel.h"
 #include "mdLib/mdromloader.h"
+#include "mdLib/mdmachines.h"
 #include "mdLib/mdstate.h"
 #include "mdLib/mdpanel.h"
 
 #include "synthLib/deviceException.h"
+#include "synthLib/romLoader.h"
 
 #include "baseLib/binarystream.h"
+#include "baseLib/filesystem.h"
 
 #include "juce_audio_utils/juce_audio_utils.h"
 #include "juce_audio_plugin_client/Standalone/juce_StandaloneFilterWindow.h"
 
+#include <cstdlib>
+#include <algorithm>
+#include <cmath>
+#include <cstring>
 #include <memory>
+#include <optional>
 #include <utility>
 
 namespace
 {
+	std::optional<uint8_t> sceneDataPage(const md::FrontPanel& _panel,
+		const md::MachineModel _model)
+	{
+		if(_model == md::MachineModel::Machinedrum)
+		{
+			constexpr md::FrontPanel::StatusLed pages[] =
+			{
+				md::FrontPanel::StatusLed::Synthesis,
+				md::FrontPanel::StatusLed::Effects,
+				md::FrontPanel::StatusLed::Routing,
+			};
+			std::optional<uint8_t> result;
+			for(uint8_t page = 0; page < std::size(pages); ++page)
+			{
+				if(!_panel.getStatusLed(pages[page]))
+					continue;
+				if(result)
+					return std::nullopt;
+				result = page;
+			}
+			return result;
+		}
+
+		std::optional<uint8_t> result;
+		for(uint8_t page = 0; page < 7; ++page)
+		{
+			const auto bank = page < 4 ? uint8_t{0x25} : uint8_t{0x26};
+			const auto bit = page < 4 ? static_cast<uint8_t>(4 + page)
+				: static_cast<uint8_t>(page - 4);
+			if((_panel.getLedBankRaw(bank) & static_cast<uint8_t>(1u << bit)) != 0)
+				continue;
+			if(result)
+				return std::nullopt;
+			result = page;
+		}
+		return result;
+	}
+
 	synthLib::PerformanceReport::Context panelEventDetails(const synthLib::RealtimeEvent& _event)
 	{
 		using Kind = synthLib::RealtimeEventKind;
@@ -62,14 +109,35 @@ namespace
 	constexpr auto g_defaultModel = md::MachineModel::Machinedrum;
 	#endif
 
+	#ifndef GEARMULATOR_STANDALONE_PROFILE
+	#define GEARMULATOR_STANDALONE_PROFILE ""
+	#endif
+
+	// A profile build (GEARMULATOR_STANDALONE_PROFILE in CMake) appends the profile to every name that locates
+	// settings or data, so it never shares them with a normal build.
+	std::string withProfile(const char* const _name)
+	{
+		const std::string profile = GEARMULATOR_STANDALONE_PROFILE;
+		return profile.empty() ? std::string(_name) : std::string(_name) + " " + profile;
+	}
+
 	const char* productName(const md::MachineModel _model)
 	{
-		return _model == md::MachineModel::Monomachine ? "Gearmulator MM" : "Gearmulator MD";
+		static const auto monomachine = withProfile("Gearmulator MM");
+		static const auto machinedrum = withProfile("Gearmulator MD");
+		return (_model == md::MachineModel::Monomachine ? monomachine : machinedrum).c_str();
+	}
+
+	const char* baseDataFolderName(const md::MachineModel _model)
+	{
+		return _model == md::MachineModel::Monomachine ? "Monomachine" : "Machinedrum";
 	}
 
 	const char* dataFolderName(const md::MachineModel _model)
 	{
-		return _model == md::MachineModel::Monomachine ? "Monomachine" : "Machinedrum";
+		static const auto monomachine = withProfile(baseDataFolderName(md::MachineModel::Monomachine));
+		static const auto machinedrum = withProfile(baseDataFolderName(md::MachineModel::Machinedrum));
+		return (_model == md::MachineModel::Monomachine ? monomachine : machinedrum).c_str();
 	}
 
 	juce::PropertiesFile::Options getOptions(const md::MachineModel _model,
@@ -81,7 +149,7 @@ namespace
 		opts.applicationName = _ephemeral
 			? juce::String("DSP56300EmulatorMachineRackEditorIdentityTest_") + suffix
 				+ "_" + juce::Uuid().toString()
-			: juce::String("DSP56300Emulator") + suffix;
+			: juce::String(withProfile((std::string("DSP56300Emulator") + suffix).c_str()));
 		opts.filenameSuffix = ".settings";
 		opts.folderName = opts.applicationName;
 		opts.osxLibrarySubFolder = "Application Support/" + opts.applicationName;
@@ -107,8 +175,139 @@ namespace
 
 namespace mdJucePlugin
 {
+	namespace
+	{
+		// F0 00 20 3C <product> 00 <id> ...: the id of an Elektron message for
+		// an MD or MM, or -1
+		int elektronId(const synthLib::SMidiEvent& _ev)
+		{
+			const auto& s = _ev.sysex;
+			if(s.size() >= 8 && s[0] == 0xf0 && s[1] == 0x00 && s[2] == 0x20 && s[3] == 0x3c
+				&& (s[4] == 0x02 || s[4] == 0x03) && s[5] == 0x00)
+				return s[6] & 0x7f;
+			return -1;
+		}
+
+		// request id -> the id of the unit's reply
+		int replyTo(const int _request)
+		{
+			switch(_request)
+			{
+			case 0x70: return 0x72;    // status
+			case 0x51: return 0x50;    // global
+			case 0x53: return 0x52;    // kit
+			case 0x68: return 0x67;    // pattern
+			case 0x6a: return 0x69;    // song
+			default: return -1;
+			}
+		}
+
+		int64_t nowMs()
+		{
+			return std::chrono::duration_cast<std::chrono::milliseconds>(
+				std::chrono::steady_clock::now().time_since_epoch()).count();
+		}
+
+		constexpr int64_t g_editorReplyWindowMs = 2000;
+	}
+
+	void AudioPluginAudioProcessor::observeMidiEvent(const synthLib::SMidiEvent& _ev)
+	{
+		if(_ev.a == synthLib::M_START || _ev.a == synthLib::M_CONTINUE)
+			m_observedTransportState.store(1, std::memory_order_release);
+		else if(_ev.a == synthLib::M_STOP)
+			m_observedTransportState.store(0, std::memory_order_release);
+		const auto reply = replyTo(elektronId(_ev));
+		if(reply < 0)
+			return;
+		if(_ev.source == synthLib::MidiEventSource::Physical)
+			++m_externalRequests[static_cast<size_t>(reply)];
+		else if(_ev.source != synthLib::MidiEventSource::Device)
+			m_editorAskedMs[static_cast<size_t>(reply)] = nowMs();
+	}
+
+	void AudioPluginAudioProcessor::observeOutput(const synthLib::TAudioOutputs& _outputs, const size_t _numSamples,
+		const double _sampleRate, const bool _nonRealtime)
+	{
+		// Main A/B to the remote panel's pages that asked for the sound. Only the constructor and
+		// destructor set m_remotePanel, so reading it here needs no lock.
+		if(m_remotePanel)
+			m_remotePanel->feedAudio(_outputs[0], _outputs[1], _numSamples,
+				_nonRealtime ? 0 : static_cast<uint32_t>(std::lround(_sampleRate)));
+		if(m_mcpAudioMutex.try_lock())
+		{
+			if(auto* const capture = m_mcpAudioCapture.get())
+			{
+				if(_outputs[0] && _numSamples && std::lround(_sampleRate) == capture->sampleRate)
+				{
+					const auto remaining = capture->pcm.size() / 2 - capture->framesWritten;
+					const auto count = std::min(_numSamples, remaining);
+					const auto* const right = _outputs[1] ? _outputs[1] : _outputs[0];
+					for(size_t i = 0; i < count; ++i)
+					{
+						const auto sample = [](const float _value)
+						{
+							return static_cast<int16_t>(std::lrint(std::clamp(
+								std::isfinite(_value) ? _value : 0.0f, -1.0f, 1.0f) * 32767.0f));
+						};
+						capture->pcm[(capture->framesWritten + i) * 2] = sample(_outputs[0][i]);
+						capture->pcm[(capture->framesWritten + i) * 2 + 1] = sample(right[i]);
+					}
+					capture->framesWritten += count;
+				}
+			}
+			m_mcpAudioMutex.unlock();
+		}
+	}
+
+	bool AudioPluginAudioProcessor::sendToPhysicalOut(const synthLib::SMidiEvent& _ev)
+	{
+		if(_ev.source == synthLib::MidiEventSource::Device)
+		{
+			if(_ev.a == synthLib::M_START || _ev.a == synthLib::M_CONTINUE)
+				m_observedTransportState.store(1, std::memory_order_release);
+			else if(_ev.a == synthLib::M_STOP)
+				m_observedTransportState.store(0, std::memory_order_release);
+		}
+		const auto id = elektronId(_ev);
+		if(_ev.source == synthLib::MidiEventSource::Device && id >= 0
+			&& id == m_mcpDumpReplyId.load(std::memory_order_relaxed)
+			&& _ev.sysex.size() >= 11 && _ev.sysex[9] == m_mcpDumpSlot.load(std::memory_order_relaxed)
+			&& _ev.sysex.size() <= m_mcpDumpBuffer.size())
+		{
+			int waiting = 1;
+			if(m_mcpDumpState.compare_exchange_strong(waiting, 2, std::memory_order_acq_rel))
+			{
+				m_mcpDumpSize = _ev.sysex.size();
+				std::memcpy(m_mcpDumpBuffer.data(), _ev.sysex.data(), m_mcpDumpSize);
+				m_mcpDumpState.store(3, std::memory_order_release);
+			}
+		}
+		if(_ev.source != synthLib::MidiEventSource::Device || id < 0)
+			return true;
+		// asked for on MIDI In: answer on MIDI OUT
+		auto& external = m_externalRequests[static_cast<size_t>(id)];
+		int pending = external.load();
+		while(pending > 0)
+		{
+			if(external.compare_exchange_weak(pending, pending - 1))
+				return true;
+		}
+		// asked for by the editor a moment ago: keep it internal. A time window
+		// rather than a count, so a request that never gets its reply cannot
+		// later swallow a dump sent from the machine's own menu.
+		return nowMs() - m_editorAskedMs[static_cast<size_t>(id)].load() > g_editorReplyWindowMs;
+	}
+
 	void AudioPluginAudioProcessor::saveChunkData(baseLib::BinaryStream& _stream)
 	{
+		// Written before the device state so that a project loads its firmware first
+		// and the machine state then lands on the matching OS.
+		{
+			baseLib::ChunkWriter chunk(_stream, "FWIM", 1);
+			_stream.write(m_firmwareImagePath);
+			_stream.write<uint64_t>(m_firmwareFingerprint);
+		}
 		jucePluginEditorLib::Processor::saveChunkData(_stream);
 		if(m_model == md::MachineModel::Machinedrum)
 		{
@@ -122,17 +321,36 @@ namespace mdJucePlugin
 			baseLib::ChunkWriter chunk(_stream, "AUTO", 1);
 			_stream.write(snapshot);
 		}
+		const auto sceneSnapshot = controller.createSceneSnapshot();
+		if(!sceneSnapshot.empty())
+		{
+			baseLib::ChunkWriter chunk(_stream, "SCEN", 1);
+			_stream.write(sceneSnapshot);
+		}
 	}
 
 	void AudioPluginAudioProcessor::loadChunkData(baseLib::ChunkReader& _reader)
 	{
 		jucePluginEditorLib::Processor::loadChunkData(_reader);
+		_reader.add("FWIM", 1, [this](baseLib::BinaryStream& _stream, uint32_t)
+		{
+			const auto path = _stream.readString();
+			const auto fingerprint = _stream.read<uint64_t>();
+			applyProjectFirmware(path, fingerprint);
+		});
 		_reader.add("AUTO", 1, [this](baseLib::BinaryStream& _stream, uint32_t)
 		{
 			std::vector<uint8_t> snapshot;
 			_stream.read(snapshot);
 			auto& controller = dynamic_cast<Controller&>(getController());
 			(void)controller.restoreAutomationSnapshot(snapshot);
+		});
+		_reader.add("SCEN", 1, [this](baseLib::BinaryStream& _stream, uint32_t)
+		{
+			std::vector<uint8_t> snapshot;
+			_stream.read(snapshot);
+			auto& controller = dynamic_cast<Controller&>(getController());
+			(void)controller.restoreSceneSnapshot(snapshot);
 		});
 		_reader.add("RAMF", 1, [this](baseLib::BinaryStream& _stream, uint32_t)
 		{
@@ -356,14 +574,15 @@ namespace mdJucePlugin
 	AudioPluginAudioProcessor::AudioPluginAudioProcessor(const md::MachineModel _model,
 		EphemeralConfig _config, const bool _allowMcpServer) :
 		AudioPluginAudioProcessor(_model, std::vector<uint8_t>{}, _allowMcpServer, true,
-			std::move(_config.deviceHomePath))
+			std::move(_config.deviceHomePath), std::move(_config.rescueFolder))
 	{
 	}
 
 	AudioPluginAudioProcessor::AudioPluginAudioProcessor(const md::MachineModel _model,
 		std::vector<uint8_t> _initialPatchRam, const bool _allowMcpServer,
 		const bool _ephemeralConfig,
-		std::optional<std::string> _deviceHomePath) :
+		std::optional<std::string> _deviceHomePath,
+		std::optional<std::string> _rescueFolder) :
 		Processor(createBusesProperties(),
 			getOptions(_model, _ephemeralConfig), makeProcessorProperties(_model),
 			_allowMcpServer, _ephemeralConfig
@@ -372,7 +591,18 @@ namespace mdJucePlugin
 		, m_model(_model)
 		, m_initialPatchRam(std::move(_initialPatchRam))
 		, m_deviceHomePath(std::move(_deviceHomePath))
+		, m_ephemeralConfig(_ephemeralConfig)
+		, m_rescueFolder(_ephemeralConfig ? std::move(_rescueFolder)
+			: std::optional<std::string>(getDataFolder() + "rescued-projects"))
+		, m_firmwareImagePath(_ephemeralConfig ? std::string{} : initialFirmwareImagePath(getConfig(), _model))
 	{
+		// A profile build keeps its own data folder, but finds firmware in the normal build's roms folder too.
+		if(*GEARMULATOR_STANDALONE_PROFILE)
+		{
+			const auto normalRoms = juce::File(juce::String::fromUTF8(getDataFolder().c_str())).getParentDirectory()
+				.getChildFile(baseDataFolderName(_model)).getChildFile("roms");
+			synthLib::RomLoader::addSearchPath(normalRoms.getFullPathName().toStdString() + "/");
+		}
 		if(m_model == md::MachineModel::Machinedrum)
 			m_ramRecordingMode.store(
 				static_cast<uint8_t>(md::RamRecordingMode::CompleteTail),
@@ -397,6 +627,8 @@ namespace mdJucePlugin
 		setRamRecordingMode(getRamRecordingMode());
 		const auto latencyBlocks = getConfig().getIntValue("latencyBlocks", static_cast<int>(getPlugin().getLatencyBlocks()));
 		Processor::setLatencyBlocks(latencyBlocks);
+		if(_allowMcpServer && !_ephemeralConfig)
+			startRemotePanel();
 		m_startupDiagnosticsEnabled = !_ephemeralConfig
 			&& juce::JUCEApplicationBase::isStandaloneApp();
 		if(m_startupDiagnosticsEnabled)
@@ -423,6 +655,13 @@ namespace mdJucePlugin
 		// The environment switch is also useful in hosts without an open editor.
 		if(getPlugin().getRealtimeInstrumentation().isEnabled())
 			setPerformanceDiagnosticsEnabled(true);
+		setMcpToolsRegistrar([this](mcpServer::McpServer& _server)
+		{
+			if(m_model == md::MachineModel::Machinedrum)
+				registerMcpTools(_server);
+			else
+				registerMonomachineMcpTools(_server);
+		});
 	}
 
 	juce::AudioProcessor::BusesProperties AudioPluginAudioProcessor::createBusesProperties()
@@ -440,9 +679,255 @@ namespace mdJucePlugin
 
 	AudioPluginAudioProcessor::~AudioPluginAudioProcessor()
 	{
+		setMcpServerEnabled(false);
 		stopTimer();
+		m_remotePanel.reset();
 		m_performanceReport.reset();
 		destroyEditorState();
+	}
+
+	void AudioPluginAudioProcessor::startRemotePanel()
+	{
+		if(m_remotePanel)
+			return;
+		if(!getConfig().getBoolValue("remotePanelEnabled", true))
+			return;
+
+		const auto defaultPort = m_model == md::MachineModel::Monomachine ? 8792 : 8790;
+		const auto port = getConfig().getIntValue("remotePanelPort", defaultPort);
+
+		md::RemotePanelServer::Callbacks callbacks;
+		callbacks.sendPanelEvent = [this](const uint8_t _command, const uint8_t _argument)
+		{
+			// As the window does (Editor::sendPanelEvent): the device's panel input, fetched under
+			// the device lock only when there is none yet or it was retired.
+			std::lock_guard lock(m_remotePanelInputMutex);
+			if(!m_remotePanelInput || m_remotePanelInput->isRetired())
+			{
+				m_remotePanelInput = getPlugin().withDeviceLocked([](synthLib::Device* const _device)
+				{
+					auto* const device = dynamic_cast<md::Device*>(_device);
+					return device ? device->getPanelInput() : std::shared_ptr<md::PanelInput>();
+				});
+			}
+			return m_remotePanelInput
+				&& m_remotePanelInput->trySend(_command, _argument, md::PanelSource::Remote);
+		};
+		callbacks.snapshot = [this]
+		{
+			return getPlugin().withDeviceLocked([&](synthLib::Device* const _device) -> md::FrontPanel
+			{
+				auto* const device = dynamic_cast<md::Device*>(_device);
+				return device ? device->getFrontPanelSnapshot() : md::FrontPanel();
+			});
+		};
+		callbacks.sendSysex = [this](const std::vector<uint8_t>& _sysex)
+		{
+			synthLib::SMidiEvent event(synthLib::MidiEventSource::Editor);
+			event.sysex.insert(event.sysex.end(), _sysex.begin(), _sysex.end());
+			addMidiEvent(event);
+		};
+		callbacks.resource = [this](const std::string& _path, std::string& _data, std::string& _mime)
+		{
+			// "skin/<file>" comes from the folder of the skin chosen in the window, so a disk skin can theme
+			// the page with a remote.css of its own. Embedded skins and skins without one get an empty sheet.
+			if(_path.rfind("skin/", 0) == 0)
+			{
+				const auto skinFolder = getConfig().getValue("skinFolder", "");
+				const auto folder = skinFolder.isEmpty() ? juce::File() : juce::File(skinFolder);
+				const auto file = folder.getChildFile(juce::String::fromUTF8(_path.substr(5).c_str()));
+				juce::MemoryBlock block;
+				if(folder != juce::File() && file.isAChildOf(folder) && file.existsAsFile() && file.loadFileAsData(block))
+				{
+					_data.assign(static_cast<const char*>(block.getData()), block.getSize());
+					_mime.clear();
+					return true;
+				}
+				if(_path != "skin/remote.css")
+					return false;
+				_data.clear();
+				_mime = "text/css";
+				return true;
+			}
+
+
+			// a "remote" folder next to the firmware overrides the embedded web app, handy while editing it
+			const auto file = juce::File(juce::String::fromUTF8(getDataFolder().c_str())).getChildFile("remote").getChildFile(juce::String::fromUTF8(_path.c_str()));
+			if(file.existsAsFile())
+			{
+				juce::MemoryBlock block;
+				if(file.loadFileAsData(block))
+				{
+					_data.assign(static_cast<const char*>(block.getData()), block.getSize());
+					_mime.clear();
+					return true;
+				}
+			}
+			if(const auto res = findResource(_path))
+			{
+				_data.assign(res->first, res->second);
+				_mime.clear();
+				return true;
+			}
+			return false;
+		};
+
+		callbacks.machineInfo = [this]
+		{
+			// sample slot names are read from the machine at most every two seconds
+			const auto now = juce::Time::getMillisecondCounter();
+			std::vector<std::string> names;
+			{
+				std::lock_guard lock(m_remoteSlotNamesMutex);
+				if(m_remoteSlotNamesTime == 0 || now - m_remoteSlotNamesTime > 2000)
+				{
+					m_remoteSlotNamesTime = now | 1;
+					m_remoteSlotNames.clear();
+					if(const auto directory = readSampleDirectory())
+					{
+						for(const auto& slot : directory->slots)
+						{
+							auto name = slot.used ? slot.name : std::string();
+							while(!name.empty() && name.back() == ' ')
+								name.pop_back();
+							m_remoteSlotNames.push_back(slot.used && name.empty() ? std::string("----") : name);
+						}
+					}
+				}
+				names = m_remoteSlotNames;
+			}
+			return md::machines::toJson(m_model, isExtendedOs(), getCurrentTrack(), names);
+		};
+		callbacks.assignMachine = [this](const uint16_t _machineId)
+		{
+			return assignMachineToCurrentTrack(_machineId);
+		};
+		callbacks.sceneInfo = [this](const int _editSide)
+		{
+			const auto& controller = dynamic_cast<const Controller&>(getController());
+			const auto kit = controller.getCurrentKitSlot();
+			if(kit >= controller.getSceneBankCount())
+				return std::string("{\"kit\":-1,\"editSide\":")
+					+ std::to_string(_editSide) + "}";
+			const auto bank = controller.getSceneBank(kit);
+			const auto boolText = [](const bool _value)
+			{
+				return _value ? "true" : "false";
+			};
+			return std::string("{\"kit\":") + std::to_string(kit)
+				+ ",\"sceneA\":" + std::to_string(bank.sceneA)
+				+ ",\"sceneB\":" + std::to_string(bank.sceneB)
+				+ ",\"fader\":" + std::to_string(bank.fader)
+				+ ",\"muteA\":" + boolText(bank.muteA)
+				+ ",\"muteB\":" + boolText(bank.muteB)
+				+ ",\"lockedA\":" + boolText(bank.sceneHasLocks(bank.sceneA))
+				+ ",\"lockedB\":" + boolText(bank.sceneHasLocks(bank.sceneB))
+				+ ",\"editSide\":" + std::to_string(_editSide) + "}";
+		};
+		callbacks.assignScene = [this](const bool _sideB, const uint8_t _scene)
+		{
+			auto& controller = dynamic_cast<Controller&>(getController());
+			const auto kit = controller.getCurrentKitSlot();
+			return controller.assignScene(kit, _sideB, _scene);
+		};
+		callbacks.setSceneFader = [this](const uint8_t _value)
+		{
+			auto& controller = dynamic_cast<Controller&>(getController());
+			return controller.setSceneFader(controller.getCurrentKitSlot(), _value);
+		};
+		callbacks.setSceneMuted = [this](const bool _sideB, const bool _muted)
+		{
+			auto& controller = dynamic_cast<Controller&>(getController());
+			return controller.setSceneMuted(controller.getCurrentKitSlot(), _sideB, _muted);
+		};
+		callbacks.editSceneParameter = [this](const bool _sideB,
+			const md::PanelEncoder _encoder, const int _steps)
+		{
+			auto& controller = dynamic_cast<Controller&>(getController());
+			const auto kit = controller.getCurrentKitSlot();
+			const auto track = controller.getCurrentTrack();
+			if(kit >= controller.getSceneBankCount() || track < 0
+				|| track >= controller.getPartCount()
+				|| _encoder < md::PanelEncoder::DataEntryA
+				|| _encoder > md::PanelEncoder::DataEntryH)
+				return false;
+			const auto panel = getPlugin().withDeviceLocked(
+				[](synthLib::Device* const _device)
+				{
+					const auto* const device = dynamic_cast<const md::Device*>(_device);
+					return device ? device->getFrontPanelSnapshot() : md::FrontPanel();
+				});
+			const auto page = sceneDataPage(panel, m_model);
+			if(!page)
+				return false;
+			const auto index = static_cast<uint8_t>(static_cast<unsigned>(_encoder)
+				- static_cast<unsigned>(md::PanelEncoder::DataEntryA));
+			const md::scene::Address address{static_cast<uint8_t>(track), *page, index};
+			const auto bank = controller.getSceneBank(kit);
+			const auto scene = _sideB ? bank.sceneB : bank.sceneA;
+			return controller.editSceneParameter(kit, scene, address, _steps);
+		};
+		callbacks.clearSceneLock = [this](const bool _sideB)
+		{
+			auto& controller = dynamic_cast<Controller&>(getController());
+			const auto kit = controller.getCurrentKitSlot();
+			const auto address = controller.getLastSceneAddress();
+			if(kit >= controller.getSceneBankCount() || !address)
+				return false;
+			const auto bank = controller.getSceneBank(kit);
+			const auto scene = _sideB ? bank.sceneB : bank.sceneA;
+			return controller.clearSceneLock(kit, scene, *address);
+		};
+		callbacks.clearScene = [this](const bool _sideB)
+		{
+			auto& controller = dynamic_cast<Controller&>(getController());
+			const auto kit = controller.getCurrentKitSlot();
+			if(kit >= controller.getSceneBankCount())
+				return false;
+			const auto bank = controller.getSceneBank(kit);
+			const auto scene = _sideB ? bank.sceneB : bank.sceneA;
+			return controller.clearScene(kit, scene);
+		};
+		callbacks.getSceneEditSide = [this]
+		{
+			return dynamic_cast<const Controller&>(getController()).getSceneEditSide();
+		};
+		callbacks.setSceneEditSide = [this](const int _side)
+		{
+			dynamic_cast<Controller&>(getController()).setSceneEditSide(_side);
+		};
+
+		m_remotePanel = std::make_unique<md::RemotePanelServer>(m_model, port, std::move(callbacks));
+		if(!m_remotePanel->start())
+		{
+			m_remotePanel.reset();
+			return;
+		}
+
+		const auto url = getRemotePanelUrl();
+		juce::Logger::writeToLog("Remote panel: " + juce::String(url));
+		const auto folder = juce::File(juce::String::fromUTF8(getDataFolder().c_str()));
+		if(folder.createDirectory().wasOk())
+			folder.getChildFile("remote-panel-url.txt").replaceWithText(juce::String(url) + "\n");
+	}
+
+	std::string AudioPluginAudioProcessor::getRemotePanelUrl() const
+	{
+		if(!m_remotePanel)
+			return {};
+		juce::String host = "localhost";
+		for(const auto& address : juce::IPAddress::getAllAddresses(false))
+		{
+			if(address.isNull() || address == juce::IPAddress::local() || address.isIPv6)
+				continue;
+			// prefer the usual private LAN ranges over link-local
+			const auto s = address.toString();
+			if(s.startsWith("169.254."))
+				continue;
+			host = s;
+			break;
+		}
+		return "http://" + host.toStdString() + ":" + std::to_string(m_remotePanel->getPort()) + "/";
 	}
 
 	juce::File AudioPluginAudioProcessor::performanceDiagnosticsFolder() const
@@ -733,8 +1218,96 @@ namespace mdJucePlugin
 		if(error.empty() || generation == m_reportedRestoreFailureGeneration)
 			return false;
 		m_reportedRestoreFailureGeneration = generation;
+		if(std::string rescued; rescueUnloadedState(generation, rescued))
+			error += "\n\nThe project that could not be loaded was kept in " + rescued + ", so it is not lost.";
 		reportProjectStateRestoreFailure(error);
 		return true;
+	}
+
+	bool AudioPluginAudioProcessor::rescueUnloadedState(const uint64_t _generation, std::string& _path)
+	{
+		const std::lock_guard lock(m_incomingStateMutex);
+		if(m_rescuedGeneration == _generation)
+		{
+			_path = m_rescuedProjectPath;
+			return !_path.empty();
+		}
+		if(m_incomingState.empty() || !m_rescueFolder)
+			return false;
+		const auto folder = juce::File(juce::String::fromUTF8(m_rescueFolder->c_str()));
+		if(!folder.createDirectory())
+			return false;
+		// Written in the format getStateInformation produces, so it can be loaded back as a project.
+		const auto file = folder.getChildFile(juce::String(std::string(productName(m_model)))
+			+ " " + juce::Time::getCurrentTime().formatted("%Y-%m-%d %H-%M-%S") + ".state")
+			.getNonexistentSibling();
+		if(!file.replaceWithData(m_incomingState.data(), m_incomingState.size()))
+			return false;
+		m_rescuedGeneration = _generation;
+		m_rescuedProjectPath = file.getFullPathName().toStdString();
+		_path = m_rescuedProjectPath;
+		std::fprintf(stderr, "[MD] kept the project that failed to load in %s\n", _path.c_str());
+		return true;
+	}
+
+	std::string AudioPluginAudioProcessor::getRescuedProjectPath() const
+	{
+		const std::lock_guard lock(m_incomingStateMutex);
+		return m_rescuedProjectPath;
+	}
+
+	void AudioPluginAudioProcessor::setStateInformation(const void* const _data, const int _sizeInBytes)
+	{
+		if(_data && _sizeInBytes > 0)
+		{
+			const std::lock_guard lock(m_incomingStateMutex);
+			const auto* const bytes = static_cast<const uint8_t*>(_data);
+			m_incomingState.assign(bytes, bytes + _sizeInBytes);
+		}
+		Processor::setStateInformation(_data, _sizeInBytes);
+	}
+
+	void AudioPluginAudioProcessor::getStateInformation(juce::MemoryBlock& _destData)
+	{
+		bool running = false;
+		bool loaded = false;
+		std::optional<uint64_t> failedGeneration;
+		getPlugin().withDeviceLocked([&](synthLib::Device* const _device)
+		{
+			auto* const device = dynamic_cast<md::Device*>(_device);
+			running = device && device->isValid();
+			if(!running)
+				return;
+			const auto status = device->projectStateRestoreStatus();
+			loaded = status == md::Device::ProjectStateRestoreStatus::Idle;
+			if(status == md::Device::ProjectStateRestoreStatus::Failed)
+				failedGeneration = device->deferredStateGeneration();
+		});
+		// Once the project is running, what the machine holds is newer than the copy handed in.
+		if(loaded)
+		{
+			const std::lock_guard lock(m_incomingStateMutex);
+			m_incomingState.clear();
+			m_incomingState.shrink_to_fit();
+		}
+
+		// A failed project is kept before this save replaces it with what is running now, even if the
+		// window closes before the error message had a chance to appear.
+		if(failedGeneration)
+		{
+			std::string rescued;
+			rescueUnloadedState(*failedGeneration, rescued);
+		}
+		if(!running)
+		{
+			const std::lock_guard lock(m_incomingStateMutex);
+			if(!m_incomingState.empty())
+			{
+				_destData.append(m_incomingState.data(), m_incomingState.size());
+				return;
+			}
+		}
+		Processor::getStateInformation(_destData);
 	}
 
 	bool AudioPluginAudioProcessor::serviceProjectStateRestore()
@@ -829,6 +1402,21 @@ namespace mdJucePlugin
 		synthLib::DeviceCreateParams params;
 		params.customData = md::deviceCustomData(m_model);
 		params.homePath = m_deviceHomePath ? *m_deviceHomePath : getDataFolder();
+		if(!m_firmwareImagePath.empty())
+		{
+			std::vector<uint8_t> data;
+			std::string error;
+			if(readFirmwareImage(m_firmwareImagePath, data, error))
+			{
+				std::fprintf(stderr, "[MD] booting firmware image %s\n", m_firmwareImagePath.c_str());
+				m_firmwareFingerprint = md::RomLoader::fingerprint(data);
+				params.romName = m_firmwareImagePath;
+				params.romData = std::move(data);
+			}
+			else
+				std::fprintf(stderr, "[MD] firmware image %s not usable (%s), using the stock image\n",
+					m_firmwareImagePath.c_str(), error.c_str());
+		}
 		auto d = std::make_unique<md::Device>(params, m_initialPatchRam);
 		if(!d->isValid())
 			throw synthLib::DeviceException(synthLib::DeviceError::FirmwareMissing,
@@ -869,6 +1457,13 @@ namespace mdJucePlugin
 		Processor::getRemoteDeviceParams(_params);
 		_params.customData = md::deviceCustomData(m_model);
 
+		std::string error;
+		if(!m_firmwareImagePath.empty() && readFirmwareImage(m_firmwareImagePath, _params.romData, error))
+		{
+			_params.romName = m_firmwareImagePath;
+			return;
+		}
+
 		auto rom = md::RomLoader::findROM(m_model);
 
 		if(rom.isValid())
@@ -876,6 +1471,186 @@ namespace mdJucePlugin
 			_params.romData.assign(rom.data().begin(), rom.data().end());
 			_params.romName = rom.getFilename();
 		}
+	}
+
+	std::string AudioPluginAudioProcessor::initialFirmwareImagePath(juce::PropertiesFile& _config, const md::MachineModel _model)
+	{
+		// test hook: GEARMULATOR_FIRMWARE_IMAGE overrides the configured image without touching the config
+		const auto* const overridePath = std::getenv("GEARMULATOR_FIRMWARE_IMAGE");
+		const auto path = overridePath && *overridePath ? std::string(overridePath)
+			: _config.getValue(g_firmwareImageConfigKey).toStdString();
+		if(path.empty())
+			return {};
+		std::fprintf(stderr, "[MD] configured firmware image: %s\n", path.c_str());
+		std::vector<uint8_t> data;
+		if(!baseLib::filesystem::readFile(data, path) || !md::RomLoader::isRomForModel(data, _model))
+		{
+			std::fprintf(stderr, "[MD] configured firmware image %s is missing or invalid, using the stock image\n", path.c_str());
+			return {};
+		}
+		return path;
+	}
+
+	bool AudioPluginAudioProcessor::readFirmwareImage(const std::string& _path, std::vector<uint8_t>& _data, std::string& _error) const
+	{
+		if(!baseLib::filesystem::readFile(_data, _path))
+		{
+			_error = "the file could not be read";
+			return false;
+		}
+		if(_data.size() != md::g_romSize)
+		{
+			_error = "the file is not an 8 MiB flash image";
+			return false;
+		}
+		if(!md::RomLoader::isRomForModel(_data, m_model))
+		{
+			_error = std::string("the image is not a ") + productName(m_model) + " flash image with the stock boot loader";
+			return false;
+		}
+		return true;
+	}
+
+	std::string AudioPluginAudioProcessor::findFirmwareByFingerprint(const uint64_t _fingerprint, const std::string& _hint) const
+	{
+		if(!_fingerprint)
+			return {};
+		std::vector<std::string> folders;
+		if(!_hint.empty())
+			folders.push_back(baseLib::filesystem::getPath(_hint));
+		folders.push_back(getPublicRomFolder());
+		folders.push_back(getPublicRomFolder() + "alt/");
+		for(const auto& folder : folders)
+		{
+			std::vector<std::string> files;
+			baseLib::filesystem::findFiles(files, folder, ".bin", md::g_romSize, md::g_romSize);
+			for(const auto& file : files)
+			{
+				std::vector<uint8_t> data;
+				if(baseLib::filesystem::readFile(data, file) && md::RomLoader::fingerprint(data) == _fingerprint)
+					return file;
+			}
+		}
+		return {};
+	}
+
+	void AudioPluginAudioProcessor::applyProjectFirmware(const std::string& _path, const uint64_t _fingerprint)
+	{
+		std::string target;
+		uint64_t fingerprint = 0;
+		if(!_path.empty() || _fingerprint)
+		{
+			std::vector<uint8_t> data;
+			std::string error;
+			if(!_path.empty() && readFirmwareImage(_path, data, error)
+				&& (!_fingerprint || md::RomLoader::fingerprint(data) == _fingerprint))
+			{
+				target = _path;
+				fingerprint = _fingerprint ? _fingerprint : md::RomLoader::fingerprint(data);
+			}
+			else
+			{
+				target = findFirmwareByFingerprint(_fingerprint, _path);
+				fingerprint = _fingerprint;
+				if(target.empty())
+				{
+					reportProjectStateRestoreFailure("This project was saved with the firmware image\n"
+						+ _path + "\nwhich was not found. The machine keeps running "
+						+ (m_firmwareImagePath.empty() ? std::string("the stock OS") : m_firmwareImagePath)
+						+ ", so the saved machine state may not load.");
+					return;
+				}
+			}
+		}
+		if(target == m_firmwareImagePath)
+			return;
+		std::fprintf(stderr, "[MD] project firmware: %s\n", target.empty() ? "stock OS" : target.c_str());
+		m_firmwareImagePath = target;
+		m_firmwareFingerprint = fingerprint;
+		(void)rebootDevice();
+	}
+
+	std::string AudioPluginAudioProcessor::getFirmwareDescription() const
+	{
+		if(m_firmwareImagePath.empty())
+		{
+			const auto rom = md::RomLoader::findROM(m_model);
+			return rom.isValid() ? "Stock OS: " + baseLib::filesystem::getFilenameWithoutPath(rom.getFilename()) : std::string("Stock OS (no image found)");
+		}
+		return baseLib::filesystem::getFilenameWithoutPath(m_firmwareImagePath);
+	}
+
+	bool AudioPluginAudioProcessor::setFirmwareImage(const std::string& _path, std::string& _error)
+	{
+		uint64_t fingerprint = 0;
+		if(!_path.empty())
+		{
+			std::vector<uint8_t> data;
+			if(!readFirmwareImage(_path, data, _error))
+				return false;
+			fingerprint = md::RomLoader::fingerprint(data);
+		}
+		m_firmwareImagePath = _path;
+		m_firmwareFingerprint = fingerprint;
+		if(!m_ephemeralConfig)
+		{
+			getConfig().setValue(g_firmwareImageConfigKey, juce::String(_path));
+			getConfig().saveIfNeeded();
+		}
+		if(!rebootDevice())
+		{
+			_error = "the machine could not be restarted with this image";
+			return false;
+		}
+		if(hasController())
+			getController().onStateLoaded();
+		updateHostDisplay(juce::AudioProcessorListener::ChangeDetails()
+			.withNonParameterStateChanged(true));
+		return true;
+	}
+
+	int AudioPluginAudioProcessor::getCurrentTrack()
+	{
+		auto* const controller = dynamic_cast<Controller*>(&getController());
+		return controller ? controller->getCurrentTrack() : -1;
+	}
+
+	bool AudioPluginAudioProcessor::assignMachineToCurrentTrack(const uint16_t _machineId)
+	{
+		auto* const controller = dynamic_cast<Controller*>(&getController());
+		if(!controller)
+			return false;
+		const auto track = controller->getCurrentTrack();
+		if(track < 0 || !md::machines::find(m_model, _machineId))
+			return false;
+		const auto sysex = md::machines::assignMachine(m_model, static_cast<uint8_t>(track), _machineId);
+		synthLib::SMidiEvent event(synthLib::MidiEventSource::Editor);
+		event.sysex.assign(sysex.begin(), sysex.end());
+		getPlugin().addMidiEvent(event);
+		controller->refreshKit();
+		return true;
+	}
+
+	bool AudioPluginAudioProcessor::isExtendedOs() const
+	{
+		return m_model == md::MachineModel::Machinedrum && !m_firmwareImagePath.empty()
+			&& m_firmwareFingerprint != md::g_mdOs163Fingerprint;
+	}
+
+	std::optional<md::sampleDirectory::Directory> AudioPluginAudioProcessor::readSampleDirectory()
+	{
+		if(m_model != md::MachineModel::Machinedrum)
+			return std::nullopt;
+		return getPlugin().withDeviceLocked([](synthLib::Device* const _device) -> std::optional<md::sampleDirectory::Directory>
+		{
+			auto* const device = dynamic_cast<md::Device*>(_device);
+			if(!device || !device->isValid())
+				return std::nullopt;
+			auto dir = md::sampleDirectory::read(device->getHardware());
+			if(!dir.valid)
+				return std::nullopt;
+			return dir;
+		});
 	}
 
 	pluginLib::Controller* AudioPluginAudioProcessor::createController()

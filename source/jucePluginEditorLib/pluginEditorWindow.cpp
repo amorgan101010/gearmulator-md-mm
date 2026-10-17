@@ -2,6 +2,7 @@
 
 #include "pluginEditor.h"
 #include "pluginEditorState.h"
+#include "standaloneWindowIcon.h"
 
 #include "dsp56kBase/logging.h"
 
@@ -102,6 +103,14 @@ int EditorWindow::getControlParameterIndex(Component& _component)
 	}
 
 	return AudioProcessorEditor::getControlParameterIndex(_component);
+}
+
+void EditorWindow::parentHierarchyChanged()
+{
+	AudioProcessorEditor::parentHierarchyChanged();
+
+	// also called when the window this editor sits in is put on the desktop
+	applyStandaloneWindowIcon(*this);
 }
 
 void EditorWindow::setEmbedded(const bool _embedded)

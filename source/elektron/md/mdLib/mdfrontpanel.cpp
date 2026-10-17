@@ -1,6 +1,8 @@
 #include "mdfrontpanel.h"
 
 #include <algorithm>
+#include <cstring>
+#include <thread>
 
 namespace md
 {
@@ -147,6 +149,21 @@ namespace md
 		return m_lcdVram[_half][_page][_col];
 	}
 
+	void FrontPanel::setRaw(const uint8_t* const _vram, const uint8_t* const _ledBanks)
+	{
+		reset();
+		size_t at = 0;
+		for(auto& half : m_lcdVram)
+			for(auto& page : half)
+				for(auto& column : page)
+					column = _vram[at++];
+		for(uint32_t i = 0; i < g_ledBankCount; ++i)
+		{
+			m_ledBank[i] = _ledBanks[i];
+			m_ledBankWritten[i] = true;
+		}
+	}
+
 	uint8_t FrontPanel::getLedBankRaw(LedBank _bank) const
 	{
 		return getLedBankRaw(static_cast<uint8_t>(_bank));
@@ -230,38 +247,88 @@ namespace md
 		return ((raw >> static_cast<uint8_t>(_led)) & 1) == 0;
 	}
 
+	FrontPanelPublisher::FrontPanelPublisher()
+	{
+		publish(FrontPanel{}, 0);
+	}
+
+	void FrontPanelPublisher::publish(const FrontPanel& _panel, const uint64_t _ledSequence)
+	{
+		Published published;
+		published.panel = _panel;
+		published.ledSequence = _ledSequence;
+		std::array<uint64_t, g_words> words{};
+		std::memcpy(words.data(), &published, sizeof(published));
+		const auto sequence = m_sequence.load(std::memory_order_relaxed);
+		m_sequence.store(sequence + 1, std::memory_order_relaxed);
+		std::atomic_thread_fence(std::memory_order_release);
+		for(size_t i = 0; i < g_words; ++i)
+			m_words[i].store(words[i], std::memory_order_relaxed);
+		m_sequence.store(sequence + 2, std::memory_order_release);
+		m_publishedLedSequence.store(_ledSequence, std::memory_order_release);
+	}
+
+	bool FrontPanelPublisher::tryReadPublished(Published& _published, uint64_t* const _sequence) const
+	{
+		const auto before = m_sequence.load(std::memory_order_acquire);
+		if(before & 1)
+			return false;
+		std::array<uint64_t, g_words> words;
+		for(size_t i = 0; i < g_words; ++i)
+			words[i] = m_words[i].load(std::memory_order_relaxed);
+		std::atomic_thread_fence(std::memory_order_acquire);
+		if(m_sequence.load(std::memory_order_relaxed) != before)
+			return false;
+		std::memcpy(&_published, words.data(), sizeof(_published));
+		if(_sequence)
+			*_sequence = before / 2;
+		return true;
+	}
+
+	FrontPanelPublisher::Published FrontPanelPublisher::readPublished() const
+	{
+		Published published;
+		for(uint32_t attempt = 0; !tryReadPublished(published); ++attempt)
+		{
+			if(attempt > 64)
+				std::this_thread::yield();
+		}
+		return published;
+	}
+
 	bool FrontPanelPublisher::tryPublish(const FrontPanel& _panel)
 	{
-		std::unique_lock lock(m_mutex, std::try_to_lock);
-		if(!lock.owns_lock())
-			return false;
-		m_snapshot = _panel;
-		m_publishedLedSequence.store(
-			m_ledTransitionSequence.load(std::memory_order_acquire),
-			std::memory_order_release);
+		publish(_panel, m_ledTransitionSequence.load(std::memory_order_acquire));
 		return true;
 	}
 
 	bool FrontPanelPublisher::tryRead(FrontPanel& _panel) const
 	{
-		std::unique_lock lock(m_mutex, std::try_to_lock);
-		if(!lock.owns_lock())
+		Published published;
+		if(!tryReadPublished(published))
 			return false;
-		_panel = m_snapshot;
+		_panel = published.panel;
 		return true;
 	}
 
 	FrontPanel FrontPanelPublisher::read() const
 	{
-		const std::lock_guard lock(m_mutex);
-		return m_snapshot;
+		return readPublished().panel;
+	}
+
+	bool FrontPanelPublisher::tryReadPublishedState(FrontPanelPublishedState& _state, uint64_t& _generation) const
+	{
+		Published published;
+		if(!tryReadPublished(published, &_generation))
+			return false;
+		_state = {published.panel, published.ledSequence};
+		return true;
 	}
 
 	FrontPanelPublishedState FrontPanelPublisher::readPublishedState() const
 	{
-		const std::lock_guard lock(m_mutex);
-		return {m_snapshot,
-			m_publishedLedSequence.load(std::memory_order_relaxed)};
+		const auto published = readPublished();
+		return {published.panel, published.ledSequence};
 	}
 
 	bool FrontPanelPublisher::tryPushLedTransition(const uint8_t _command,
@@ -288,7 +355,7 @@ namespace md
 	{
 		if(!_output || _capacity == 0)
 			return 0;
-		const std::lock_guard lock(m_mutex);
+		const std::lock_guard lock(m_readerMutex);
 
 		auto read = m_ledTransitionRead.load(std::memory_order_relaxed);
 		const auto write = m_ledTransitionWrite.load(std::memory_order_acquire);
@@ -313,15 +380,12 @@ namespace md
 
 	void FrontPanelPublisher::reset()
 	{
-		const std::lock_guard lock(m_mutex);
-		m_snapshot.reset();
+		const std::lock_guard lock(m_readerMutex);
+		publish(FrontPanel{}, m_ledTransitionSequence.load(std::memory_order_acquire));
 		m_ledTransitionRead.store(
 			m_ledTransitionWrite.load(std::memory_order_acquire),
 			std::memory_order_release);
 		m_ledTransitionDropped.store(0, std::memory_order_release);
-		m_publishedLedSequence.store(
-			m_ledTransitionSequence.load(std::memory_order_acquire),
-			std::memory_order_release);
 		m_ledTransitionEpoch.fetch_add(1, std::memory_order_acq_rel);
 	}
 }

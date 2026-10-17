@@ -20,6 +20,8 @@ namespace jucePluginEditorLib
 
 		void resized() override;
 
+		void parentHierarchyChanged() override;
+
 		int getControlParameterIndex(Component&) override;
 
 		// A combined product may host this editor inside a larger editor. In that

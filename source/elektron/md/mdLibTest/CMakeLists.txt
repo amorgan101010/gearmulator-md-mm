@@ -45,6 +45,15 @@ add_test(NAME mdTurboMidiUnitTest COMMAND mdTurboMidiUnitTest)
 set_tests_properties(mdTurboMidiUnitTest PROPERTIES LABELS "UnitTest;Midi")
 set_property(TARGET mdTurboMidiUnitTest PROPERTY FOLDER "Elektron")
 
+# The remote panel's sound stream over real sockets (Linux: MSG_NOSIGNAL), no firmware needed.
+if(UNIX AND NOT APPLE)
+	add_executable(mdRemotePanelSoundTest remotePanelSoundTest.cpp)
+	target_link_libraries(mdRemotePanelSoundTest PRIVATE mdRemotePanel Threads::Threads)
+	add_test(NAME mdRemotePanelSoundTest COMMAND mdRemotePanelSoundTest)
+	set_tests_properties(mdRemotePanelSoundTest PROPERTIES LABELS "UnitTest;RemotePanel" TIMEOUT 30)
+	set_property(TARGET mdRemotePanelSoundTest PROPERTY FOLDER "Elektron/test")
+endif()
+
 # Manual peer-register check for MD 1.63/MM 1.32b, independent of the sender.
 # Requires locally supplied ROM and cache/patch fixtures; no firmware is bundled.
 add_executable(mdTurboMidiFirmwareTest turboMidiFirmwareTest.cpp)
@@ -109,7 +118,7 @@ if(BUILD_TESTING)
 	# Build its prerequisites and let CTest fixtures include them in that
 	# focused run, so a core/receive regression cannot silently skip the gate.
 	add_dependencies(mdLibTest mc68kColdFireTimingTest mc68kHdi08ReceiveTest
-		mc68kColdFireDivideTest mdHostRxTimingTest mdHostRxFirmwareTest
+		mc68kColdFireDivideTest mc68kRingQueueTest mdHostRxTimingTest mdHostRxFirmwareTest
 		mdIdleSelfBranchTest mdIdleSchedulerFirmwareTest mdPanelReadinessFirmwareTest
 		mdUartRegisterTest mdUartCpuInterruptTest)
 	set_tests_properties(mdHostRxTimingTest PROPERTIES FIXTURES_SETUP MdTimedHostRx)
@@ -126,6 +135,13 @@ else()
 	target_compile_options(mmSysexWorkflowTest PRIVATE -fno-fast-math)
 endif()
 set_property(TARGET mmSysexWorkflowTest PROPERTY FOLDER "Elektron/test")
+
+# Manual, firmware-backed check for machine-originated MM user-data dumps.
+# The ROM and initialized patch RAM are caller supplied and never enter CI.
+add_executable(mmSysexExportFirmwareTest mmSysexExportFirmwareTest.cpp)
+target_link_libraries(mmSysexExportFirmwareTest PRIVATE mdLib)
+set_property(TARGET mmSysexExportFirmwareTest PROPERTY FOLDER "Elektron/test")
+
 add_test(NAME mmDigiProImportAudioOracleTest COMMAND mmSysexWorkflowTest --audio-oracle)
 set_tests_properties(mmDigiProImportAudioOracleTest PROPERTIES LABELS "UnitTest;AudioIo" TIMEOUT 15)
 foreach(profile 32 1024 irregular)
@@ -163,6 +179,12 @@ add_test(NAME mdAutomationMidiTest COMMAND mdAutomationMidiTest)
 set_tests_properties(mdAutomationMidiTest PROPERTIES LABELS "UnitTest")
 set_property(TARGET mdAutomationMidiTest PROPERTY FOLDER "Elektron")
 
+add_executable(mdSceneModelTest mdSceneModelTest.cpp)
+target_link_libraries(mdSceneModelTest PRIVATE mdLib)
+add_test(NAME mdSceneModelTest COMMAND mdSceneModelTest)
+set_tests_properties(mdSceneModelTest PROPERTIES LABELS "UnitTest")
+set_property(TARGET mdSceneModelTest PROPERTY FOLDER "Elektron")
+
 add_executable(mdUwFirmwareTest mdUwFirmwareTest.cpp)
 target_link_libraries(mdUwFirmwareTest PRIVATE mdLib)
 # The audio oracle must detect NaN/Inf even in builds using -Ofast or /fp:fast.
@@ -192,6 +214,23 @@ add_test(NAME mdStateTest COMMAND mdStateTest)
 set_tests_properties(mdStateTest PROPERTIES LABELS "UnitTest")
 set_property(TARGET mdStateTest PROPERTY FOLDER "Elektron")
 
+add_executable(mdGoldenOutputTest goldenOutputTest.cpp goldenOutputs.h)
+target_link_libraries(mdGoldenOutputTest PRIVATE mdLib)
+add_test(NAME mdGoldenOutputTest COMMAND mdGoldenOutputTest)
+set_tests_properties(mdGoldenOutputTest PROPERTIES
+	LABELS "Integration;FirmwareTest;Golden" SKIP_RETURN_CODE 77 TIMEOUT 900)
+add_test(NAME mdGoldenSensitivityTest COMMAND mdGoldenOutputTest --sensitivity)
+set_tests_properties(mdGoldenSensitivityTest PROPERTIES
+	LABELS "Integration;FirmwareTest;Golden" SKIP_RETURN_CODE 77 TIMEOUT 900)
+add_test(NAME mdBlockSizeTest COMMAND mdGoldenOutputTest --buffer-sizes)
+set_tests_properties(mdBlockSizeTest PROPERTIES
+	LABELS "Integration;FirmwareTest;Golden" SKIP_RETURN_CODE 77 TIMEOUT 1200)
+set_property(TARGET mdGoldenOutputTest PROPERTY FOLDER "Elektron/test")
+add_executable(mdHelpOverridesTest mdHelpOverridesTest.cpp ../mdJucePlugin/mdHelpOverrides.cpp)
+target_link_libraries(mdHelpOverridesTest PRIVATE baseLib)
+add_test(NAME mdHelpOverridesTest COMMAND mdHelpOverridesTest)
+set_tests_properties(mdHelpOverridesTest PROPERTIES LABELS "UnitTest")
+set_property(TARGET mdHelpOverridesTest PROPERTY FOLDER "Elektron/test")
 add_executable(mdAudioQueueTest mdAudioQueueTest.cpp)
 target_link_libraries(mdAudioQueueTest PRIVATE mdLib)
 
@@ -251,6 +290,33 @@ set_tests_properties(mdEncoderPressFirmwareTest mmEncoderPressFirmwareTest PROPE
 	LABELS "Integration;FirmwareTest" SKIP_RETURN_CODE 77 TIMEOUT 300)
 set_property(TARGET encoderPressFirmwareTest PROPERTY FOLDER "Elektron/test")
 
+add_executable(panelQuickTapFirmwareTest panelQuickTapFirmwareTest.cpp)
+target_link_libraries(panelQuickTapFirmwareTest PRIVATE mdLib)
+add_test(NAME mdPanelQuickTapFirmwareTest COMMAND panelQuickTapFirmwareTest md)
+add_test(NAME mmPanelQuickTapFirmwareTest COMMAND panelQuickTapFirmwareTest mm)
+set_tests_properties(mdPanelQuickTapFirmwareTest mmPanelQuickTapFirmwareTest PROPERTIES
+	LABELS "Integration;FirmwareTest" SKIP_RETURN_CODE 77 TIMEOUT 300)
+set_property(TARGET panelQuickTapFirmwareTest PROPERTY FOLDER "Elektron/test")
+
+# Local headless render benchmark (not upstream). Same compile flags as mdLib, no test registration.
+add_executable(mdmmBench mdmmBench.cpp)
+target_link_libraries(mdmmBench PRIVATE mdLib)
+add_executable(mmPatternRepro mmPatternRepro.cpp)
+target_link_libraries(mmPatternRepro PRIVATE mdLib)
+
+# Local tool (not a test): captures LCD screens and verifies the tooltip tables against them.
+# Local tool (not a test): records one note so its pitch can be tracked over time.
+add_executable(mmPitchProbe mmPitchProbe.cpp)
+target_link_libraries(mmPitchProbe PRIVATE mdLib)
+# Drives the front panel, then plays noise into the audio inputs: a local tool, and with --check
+# the Monomachine audio-input test.
+add_executable(mmInputProbe mmInputProbe.cpp)
+target_link_libraries(mmInputProbe PRIVATE mdLib)
+add_test(NAME mmAudioInputFirmwareTest COMMAND mmInputProbe --check)
+set_tests_properties(mmAudioInputFirmwareTest PROPERTIES LABELS "Firmware" SKIP_RETURN_CODE 77)
+add_executable(mdmmLcdCapture mdmmLcdCapture.cpp ../mdJucePlugin/mdLcdInteractionModel.cpp)
+target_link_libraries(mdmmLcdCapture PRIVATE mdLib)
+
 # Shared external regressions for the independent MM workaround removals.
 add_executable(mmAudioFirmwareTest mmAudioFirmwareTest.cpp)
 target_link_libraries(mmAudioFirmwareTest PRIVATE mdLib)
@@ -296,3 +362,34 @@ if(BUILD_TESTING)
 	set_tests_properties(mdTurboMidiUnitTest mdSdsTransferTest PROPERTIES FIXTURES_SETUP MdSysexTransport)
 	set_property(TEST mdLibTests mdAudioQueueTest APPEND PROPERTY FIXTURES_REQUIRED MdSysexTransport)
 endif()
+
+# Diagnostic tool, not a test: records the producer->mixer link words while a pattern plays.
+add_executable(mdLinkTapTest mdLinkTapTest.cpp)
+target_link_libraries(mdLinkTapTest PRIVATE mdLib)
+set_property(TARGET mdLinkTapTest PROPERTY FOLDER "Elektron")
+
+# Diagnostic tool, not a test: renders a pattern on a given firmware image for A/B comparisons.
+add_executable(mdAudioCaptureTool mdAudioCaptureTool.cpp)
+target_link_libraries(mdAudioCaptureTool PRIVATE mdLib)
+set_property(TARGET mdAudioCaptureTool PROPERTY FOLDER "Elektron")
+
+add_executable(mdSdsEncodeTest sdsEncodeTest.cpp)
+target_link_libraries(mdSdsEncodeTest PRIVATE mdLib)
+add_test(NAME mdSdsEncodeTest COMMAND mdSdsEncodeTest)
+set_tests_properties(mdSdsEncodeTest PROPERTIES LABELS "UnitTest;Midi" TIMEOUT 15)
+set_property(TARGET mdSdsEncodeTest PROPERTY FOLDER "Elektron/test")
+
+# Diagnostic tool, not a test: checks which SDS sample rates the Machinedrum plays back at true pitch.
+add_executable(mdSampleRateProbe mdSampleRateProbe.cpp)
+target_link_libraries(mdSampleRateProbe PRIVATE mdLib)
+set_property(TARGET mdSampleRateProbe PROPERTY FOLDER "Elektron")
+
+# Diagnostic tool, not a test: locates the UW sample slot directory in flash.
+add_executable(mdSampleDirProbe mdSampleDirProbe.cpp)
+target_link_libraries(mdSampleDirProbe PRIVATE mdLib)
+set_property(TARGET mdSampleDirProbe PROPERTY FOLDER "Elektron")
+
+# Diagnostic tool, not a test: checks current track status and ASSIGN MACHINE against the firmware.
+add_executable(mdMachineAssignProbe mdMachineAssignProbe.cpp)
+target_link_libraries(mdMachineAssignProbe PRIVATE mdLib)
+set_property(TARGET mdMachineAssignProbe PROPERTY FOLDER "Elektron")

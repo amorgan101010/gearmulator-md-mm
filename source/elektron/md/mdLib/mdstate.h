@@ -90,6 +90,10 @@ namespace md
 	bool encodeFactoryFlashCache(std::vector<uint8_t>& _cache,
 		const std::vector<uint8_t>& _flashData,
 		const std::vector<uint8_t>& _romBaseline);
+	// Scheduler-thread-only variant. _flashData is pre-sized to g_romSize; no allocation.
+	bool decodeFactoryFlashCacheRealtime(std::vector<uint8_t>& _flashData,
+		const std::vector<uint8_t>& _cache,
+		const std::vector<uint8_t>& _romBaseline);
 	bool decodeFactoryFlashCache(std::vector<uint8_t>& _flashData,
 		const std::vector<uint8_t>& _cache,
 		const std::vector<uint8_t>& _romBaseline);

@@ -24,7 +24,8 @@ if(MSVC)
 	if(GEARMULATOR_MSVC_EMBED_DEBUG_INFO)
 		set(GEARMULATOR_MSVC_DEBUG_INFO_FLAG "/Z7")
 	else()
-		set(GEARMULATOR_MSVC_DEBUG_INFO_FLAG "/Zi")
+		# /MP can otherwise race multiple compiler processes against one PDB.
+		set(GEARMULATOR_MSVC_DEBUG_INFO_FLAG "/Zi /FS")
 	endif()
 
 	set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} /O2 /GS- /fp:fast /Oy /GT /GL ${GEARMULATOR_MSVC_DEBUG_INFO_FLAG} /Oi /Ot")
@@ -77,8 +78,23 @@ else()
 
 	option(GEARMULATOR_ENABLE_GCC_LTO
 		"Enable GCC link-time optimization for release builds" OFF)
+	set(GEARMULATOR_GCC_PGO "off" CACHE STRING
+		"GCC profile-guided optimization for release builds: off, generate or use")
+	set_property(CACHE GEARMULATOR_GCC_PGO PROPERTY STRINGS off generate use)
+	set(GEARMULATOR_GCC_PGO_DIR "${CMAKE_BINARY_DIR}/pgo-data" CACHE PATH
+		"Where GCC writes and reads the PGO profile. Generate and use builds must share it")
 	option(GEARMULATOR_ENABLE_GCC_NATIVE_TUNING
 		"Optimize GCC release builds for the build host CPU" OFF)
+	option(GEARMULATOR_ENABLE_CLANG_THINLTO
+		"Compatibility alias: enable Linux Clang ThinLTO for release builds" OFF)
+	set(GEARMULATOR_CLANG_LTO "off" CACHE STRING
+		"Clang link-time optimization for release builds: off, thin or full")
+	set_property(CACHE GEARMULATOR_CLANG_LTO PROPERTY STRINGS off thin full)
+	set(GEARMULATOR_CLANG_PGO "off" CACHE STRING
+		"Clang instrumentation PGO for release builds: off, generate or use")
+	set_property(CACHE GEARMULATOR_CLANG_PGO PROPERTY STRINGS off generate use)
+	set(GEARMULATOR_CLANG_PGO_PROFILE "" CACHE FILEPATH
+		"Merged LLVM profile used by Clang PGO")
 
 	# GCC LTO remains opt-in because not every product has completed the same
 	# validation as the Monomachine path. VirusProcessor.cpp carries its own
@@ -90,6 +106,26 @@ else()
 			string(APPEND CMAKE_CXX_FLAGS_RELEASE " -march=native -mtune=native")
 		endif()
 
+		# -Wno-error=coverage-mismatch: a source edited after profiling just loses its profile, instead of
+		# failing the build.
+		# Profile files are named after each object's path. Without a prefix they carry the build
+		set(_gearmulatorPgoPrefix "-fprofile-prefix-path=${CMAKE_BINARY_DIR}")
+		if(GEARMULATOR_GCC_PGO STREQUAL "generate")
+			message(STATUS "GCC PGO: instrumented build, profile goes to ${GEARMULATOR_GCC_PGO_DIR}")
+			# -fprofile-update=single: the scheduler runs on one thread, so non-atomic counters suffice.
+			string(APPEND CMAKE_C_FLAGS_RELEASE " -fprofile-generate=${GEARMULATOR_GCC_PGO_DIR} ${_gearmulatorPgoPrefix} -fprofile-update=single")
+			string(APPEND CMAKE_CXX_FLAGS_RELEASE " -fprofile-generate=${GEARMULATOR_GCC_PGO_DIR} ${_gearmulatorPgoPrefix} -fprofile-update=single")
+			string(APPEND CMAKE_EXE_LINKER_FLAGS " -fprofile-generate=${GEARMULATOR_GCC_PGO_DIR}")
+			string(APPEND CMAKE_SHARED_LINKER_FLAGS " -fprofile-generate=${GEARMULATOR_GCC_PGO_DIR}")
+		elseif(GEARMULATOR_GCC_PGO STREQUAL "use")
+			if(NOT EXISTS "${GEARMULATOR_GCC_PGO_DIR}")
+				message(FATAL_ERROR
+					"GEARMULATOR_GCC_PGO=use needs a profile in ${GEARMULATOR_GCC_PGO_DIR}; run a generate build first")
+			endif()
+			message(STATUS "GCC PGO: using the profile in ${GEARMULATOR_GCC_PGO_DIR}")
+			string(APPEND CMAKE_C_FLAGS_RELEASE " -fprofile-use=${GEARMULATOR_GCC_PGO_DIR} ${_gearmulatorPgoPrefix} -fprofile-correction -Wno-missing-profile -Wno-error=coverage-mismatch")
+			string(APPEND CMAKE_CXX_FLAGS_RELEASE " -fprofile-use=${GEARMULATOR_GCC_PGO_DIR} ${_gearmulatorPgoPrefix} -fprofile-correction -Wno-missing-profile -Wno-error=coverage-mismatch")
+		endif()
 		if(GEARMULATOR_ENABLE_GCC_LTO)
 			message(STATUS "GCC LTO enabled")
 			string(APPEND CMAKE_C_FLAGS_RELEASE " -flto=auto")
@@ -99,15 +135,64 @@ else()
 				"GCC LTO disabled; enable GEARMULATOR_ENABLE_GCC_LTO after product validation")
 		endif()
 	else()
-		cmake_policy(SET CMP0069 NEW)
-		include(CheckIPOSupported)
-
-		check_ipo_supported(RESULT result)
-		if(result)
-			message(STATUS "IPO is supported")
-			set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
+		if(CMAKE_C_COMPILER_ID STREQUAL "Clang"
+			AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+			# Keep the old boolean usable, but make compiler, LTO and PGO
+			# independently selectable for reproducible comparisons.
+			if(GEARMULATOR_ENABLE_CLANG_THINLTO
+				AND GEARMULATOR_CLANG_LTO STREQUAL "off")
+				set(GEARMULATOR_CLANG_LTO "thin")
+			endif()
+			if(NOT GEARMULATOR_CLANG_LTO MATCHES "^(off|thin|full)$")
+				message(FATAL_ERROR "GEARMULATOR_CLANG_LTO must be off, thin, or full")
+			endif()
+			if(NOT GEARMULATOR_CLANG_PGO MATCHES "^(off|generate|use)$")
+				message(FATAL_ERROR "GEARMULATOR_CLANG_PGO must be off, generate, or use")
+			endif()
+			if(NOT GEARMULATOR_CLANG_LTO STREQUAL "off")
+				message(STATUS "Clang ${GEARMULATOR_CLANG_LTO} LTO enabled")
+				if(GEARMULATOR_CLANG_LTO STREQUAL "thin")
+					string(APPEND CMAKE_C_FLAGS_RELEASE " -flto=thin")
+					string(APPEND CMAKE_CXX_FLAGS_RELEASE " -flto=thin")
+					string(APPEND CMAKE_EXE_LINKER_FLAGS " -flto=thin -fuse-ld=lld")
+					string(APPEND CMAKE_SHARED_LINKER_FLAGS " -flto=thin -fuse-ld=lld")
+				else()
+					string(APPEND CMAKE_C_FLAGS_RELEASE " -flto")
+					string(APPEND CMAKE_CXX_FLAGS_RELEASE " -flto")
+					string(APPEND CMAKE_EXE_LINKER_FLAGS " -flto -fuse-ld=lld")
+					string(APPEND CMAKE_SHARED_LINKER_FLAGS " -flto -fuse-ld=lld")
+				endif()
+			endif()
+			if(GEARMULATOR_CLANG_PGO STREQUAL "generate")
+				message(STATUS "Clang PGO: instrumented build")
+				string(APPEND CMAKE_C_FLAGS_RELEASE " -fprofile-instr-generate")
+				string(APPEND CMAKE_CXX_FLAGS_RELEASE " -fprofile-instr-generate")
+				string(APPEND CMAKE_EXE_LINKER_FLAGS " -fprofile-instr-generate")
+				string(APPEND CMAKE_SHARED_LINKER_FLAGS " -fprofile-instr-generate")
+			elseif(GEARMULATOR_CLANG_PGO STREQUAL "use")
+				if(NOT EXISTS "${GEARMULATOR_CLANG_PGO_PROFILE}"
+					OR IS_DIRECTORY "${GEARMULATOR_CLANG_PGO_PROFILE}")
+					message(FATAL_ERROR "GEARMULATOR_CLANG_PGO_PROFILE must name an existing merged LLVM profile")
+				endif()
+				message(STATUS "Clang PGO: using ${GEARMULATOR_CLANG_PGO_PROFILE}")
+				string(APPEND CMAKE_C_FLAGS_RELEASE " -fprofile-instr-use=${GEARMULATOR_CLANG_PGO_PROFILE} -Wno-profile-instr-out-of-date")
+				string(APPEND CMAKE_CXX_FLAGS_RELEASE " -fprofile-instr-use=${GEARMULATOR_CLANG_PGO_PROFILE} -Wno-profile-instr-out-of-date")
+				string(APPEND CMAKE_EXE_LINKER_FLAGS " -fprofile-instr-use=${GEARMULATOR_CLANG_PGO_PROFILE}")
+				string(APPEND CMAKE_SHARED_LINKER_FLAGS " -fprofile-instr-use=${GEARMULATOR_CLANG_PGO_PROFILE}")
+			endif()
+		elseif(GEARMULATOR_ENABLE_CLANG_THINLTO)
+			message(FATAL_ERROR "GEARMULATOR_ENABLE_CLANG_THINLTO requires Clang on Linux")
 		else()
-			message(WARNING "IPO is not supported")
+			cmake_policy(SET CMP0069 NEW)
+			include(CheckIPOSupported)
+
+			check_ipo_supported(RESULT result)
+			if(result)
+				message(STATUS "IPO is supported")
+				set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
+			else()
+				message(WARNING "IPO is not supported")
+			endif()
 		endif()
 	endif()
 

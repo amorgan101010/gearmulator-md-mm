@@ -1,5 +1,6 @@
 #include <array>
 #include <chrono>
+#include <thread>
 #include <cmath>
 
 #include "fakeAudioDevice.h"
@@ -110,6 +111,43 @@ private:
 	JUCE_DECLARE_NON_MOVEABLE(JuceAppLifetimeObjects)
 };
 
+namespace
+{
+	// A host transport for instruments that follow the DAW clock: reports a running
+	// playhead at a fixed tempo, advancing by one block per processBlock call.
+	class FakePlayHead final : public juce::AudioPlayHead
+	{
+	public:
+		// _cycleSeconds > 0 alternates between playing and stopped, restarting from
+		// the song start each time, so instruments see Start/Stop transport edges.
+		FakePlayHead(const double _bpm, const double _samplerate, const int _blockSize, const double _cycleSeconds)
+			: m_bpm(_bpm), m_samplerate(_samplerate), m_blockSize(_blockSize)
+			, m_cycleSamples(_cycleSeconds > 0 ? static_cast<int64_t>(_cycleSeconds * _samplerate) : 0) {}
+
+		juce::Optional<PositionInfo> getPosition() const override
+		{
+			PositionInfo info;
+			const bool playing = m_cycleSamples <= 0 || ((m_samples / m_cycleSamples) & 1) == 0;
+			const auto position = m_cycleSamples > 0 ? m_samples % m_cycleSamples : m_samples;
+			info.setBpm(m_bpm);
+			info.setIsPlaying(playing);
+			info.setTimeInSamples(position);
+			info.setTimeInSeconds(static_cast<double>(position) / m_samplerate);
+			info.setPpqPosition(static_cast<double>(position) / m_samplerate * m_bpm / 60.0);
+			info.setTimeSignature(TimeSignature{4, 4});
+			m_samples += m_blockSize;
+			return info;
+		}
+
+	private:
+		const double m_bpm;
+		const double m_samplerate;
+		const int m_blockSize;
+		const int64_t m_cycleSamples;
+		mutable int64_t m_samples = 0;
+	};
+}
+
 int main(const int _argc, char* _argv[])
 {
 	baseLib::CommandLine cmdLine(_argc, _argv);
@@ -120,7 +158,7 @@ int main(const int _argc, char* _argv[])
 	{
 		Logger::writeToLog("Error: " + _msg);
 		Logger::writeToLog("Usage:\n"
-			"pluginTester -plugin <pathToPlugin> [-seconds n -blocks n -blocksize n -samplerate x -forever -repeat n -automation-smoke -verify-audio-buses -verify-audio-identity]");
+			"pluginTester -plugin <pathToPlugin> [-seconds n -blocks n -blocksize n -samplerate x -bpm x [-playcycle seconds] [-record out.f32] -forever [-messageloop] [-realtime] -repeat n -automation-smoke -verify-audio-buses -verify-audio-identity]");
 		return 1;
 	};
 
@@ -268,12 +306,43 @@ int main(const int _argc, char* _argv[])
 			Logger::writeToLog("Verified exact A/B + E/F sample identity");
 		}
 
+		std::unique_ptr<FakePlayHead> playHead;
+		if (cmdLine.getFloat("bpm", 0.0f) > 0.0f)
+		{
+			playHead = std::make_unique<FakePlayHead>(cmdLine.getFloat("bpm", 120.0f), samplerate, blocksize, cmdLine.getFloat("playcycle", 0.0f));
+			processor->setPlayHead(playHead.get());
+			Logger::writeToLog("Transport running at " + String(cmdLine.getFloat("bpm", 120.0f)) + " BPM");
+		}
+
 		auto res = audioDevice.open(numIns, numOuts, samplerate, blocksize);
 
 		if (res.isNotEmpty())
 			return error("Failed to open audio device: " + res);
 
 		audioDevice.start(&pluginHost);
+
+		// -record <file>: the plugin's stereo output as raw float32 interleaved
+		std::unique_ptr<juce::FileOutputStream> record;
+		if (cmdLine.contains("record"))
+		{
+			record = std::make_unique<juce::FileOutputStream>(juce::File(cmdLine.get("record")));
+			if (!record->openedOk())
+				record.reset();
+			else
+				record->setPosition(0), record->truncate();
+		}
+		const auto recordBlock = [&]
+		{
+			if (!record)
+				return;
+			const auto& buffer = audioDevice.getBuffer();
+			const auto channels = std::min(2, buffer.getNumChannels());
+			std::vector<float> interleaved(static_cast<size_t>(buffer.getNumSamples()) * 2, 0.0f);
+			for (int c = 0; c < channels; ++c)
+				for (int n = 0; n < buffer.getNumSamples(); ++n)
+					interleaved[static_cast<size_t>(n) * 2 + static_cast<size_t>(c)] = buffer.getReadPointer(c)[n];
+			record->write(interleaved.data(), interleaved.size() * sizeof(float));
+		};
 
 		const auto forever = cmdLine.contains("forever");
 
@@ -288,9 +357,48 @@ int main(const int _argc, char* _argv[])
 
 			const auto tBegin = Clock::now();
 
+			// -messageloop: audio runs on its own thread while the main thread serves JUCE
+			// timers and async updates, as a DAW host would.
+			// -realtime: pace the blocks to wall-clock time so timer-driven behaviour matches a DAW.
+			const bool messageLoop = cmdLine.contains("messageloop");
+			const bool realtime = cmdLine.contains("realtime");
+			const auto blockDuration = std::chrono::duration<double>(static_cast<double>(blocksize) / static_cast<double>(samplerate));
+
+			auto audioLoop = [&]
+			{
+				auto nextBlockTime = Clock::now();
+				while (true)
+				{
+					if (realtime)
+					{
+						nextBlockTime += std::chrono::duration_cast<Clock::duration>(blockDuration);
+						std::this_thread::sleep_until(nextBlockTime);
+					}
+					audioDevice.processAudio();
+					recordBlock();
+					++blockCount;
+					if (blockCount % 4096 == 0)
+					{
+						const auto totalSeconds = blockCount * blocksize / sr;
+						char temp[64];
+						(void)snprintf(temp, sizeof(temp), "Processed %llus", static_cast<unsigned long long>(totalSeconds));
+						Logger::writeToLog(temp);
+					}
+				}
+			};
+
+			if (messageLoop)
+			{
+				std::thread audioThread(audioLoop);
+				juce::MessageManager::getInstance()->runDispatchLoop();
+				audioThread.join();
+				return 0;
+			}
+
 			while (true)
 			{
 				audioDevice.processAudio();
+				recordBlock();
 				++blockCount;
 
 				auto formatDuration = [](const uint64_t _seconds) -> std::string
@@ -342,6 +450,7 @@ int main(const int _argc, char* _argv[])
 		for (int i=0; i<blocks; ++i)
 		{
 			audioDevice.processAudio();
+			recordBlock();
 
 			const auto percent = i * 100 / blocks;
 

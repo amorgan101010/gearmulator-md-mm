@@ -10,6 +10,12 @@
 /build_win64_VS2019.bat
 /out/
 /build/
+# Local CMake/PGO/LTO experiment trees; generated binaries, objects, and
+# profile counters do not belong in the source worktree.
+/build-lto/
+/build-pgo*/
+/build-pgouse/
+/build-ucbatch8/
 *atom*.sh
 *debug.sh
 CMakeUserPresets.json

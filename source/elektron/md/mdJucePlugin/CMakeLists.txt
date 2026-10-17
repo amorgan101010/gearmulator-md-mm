@@ -16,17 +16,28 @@ add_compile_definitions(MDMM_DIAGNOSTICS_REVISION="${MDMM_DIAGNOSTICS_REVISION}"
 
 set(SOURCES
 	mdController.cpp mdController.h
+	mdControlInput.cpp mdControlInput.h
 	mdEditor.cpp mdEditor.h
+	mdGamepad.cpp mdGamepad.h
+	mdGamepadAxes.h
 	mdFrontPanelPresentation.h
 	mdLcdGesture.h
 	mdLcdInteractionModel.cpp mdLcdInteractionModel.h
 	mdLcdViewport.h
 	mdPixelPerfectPanel.cpp mdPixelPerfectPanel.h
 	mdPanelAffordances.h
+	mdParameterHelp.h
+	mdMonomachineHelp.h
+	mdMachinedrumHelp.h
+	mdLcdText.h
+	mdHelpOverrides.cpp mdHelpOverrides.h
 	mdPluginEditorState.cpp mdPluginEditorState.h
 	mdProductSkinPolicy.h
 	mdProductSkins.h
 	mdPluginProcessor.cpp mdPluginProcessor.h
+	mdMcpTools.cpp
+	mdMonomachineDump.h
+	mdMonomachineMcpTools.cpp
 	mdStorageImage.cpp mdStorageImage.h
 	mdPluginEntry.cpp
 
@@ -40,6 +51,9 @@ set(SOURCES
 	skins/mmSfx60/mmKnobs.rcss
 	skins/mmSfx60/mmSfx60.rcss
 	mdSettingsPanelFeel.cpp mdSettingsPanelFeel.h
+	mdSampleImport.cpp mdSampleImport.h
+	mdSampleDropTarget.cpp mdSampleDropTarget.h
+	mdMachineRack.cpp mdMachineRack.h
 	mdSettingsAudioInput.cpp mdSettingsAudioInput.h
 )
 
@@ -61,15 +75,17 @@ file(GLOB MM_SKIN_ASSETS CONFIGURE_DEPENDS
 	"skins/mmSfx60/*.png" "skins/mmSfx60/*.rml" "skins/mmSfx60/*.rcss"
 	"skins/mmSfx60/*.ttf" "skins/mmSfx60/*.lua")
 
+file(GLOB REMOTE_PANEL_ASSETS CONFIGURE_DEPENDS "remote/*")
+
 juce_add_binary_data(mdJucePlugin_BinaryData SOURCES
 	${COMMON_ASSETS} "tus_settings_gui_Machinedrum.rml"
-	"tus_settings_dspaudio_Machinedrum.rml" ${MD_SKIN_ASSETS})
+	"tus_settings_dspaudio_Machinedrum.rml" ${MD_SKIN_ASSETS} ${REMOTE_PANEL_ASSETS})
 juce_add_binary_data(mmJucePlugin_BinaryData SOURCES
 	${COMMON_ASSETS} "tus_settings_gui_Monomachine.rml"
-	"tus_settings_dspaudio_Monomachine.rml" ${MM_SKIN_ASSETS})
+	"tus_settings_dspaudio_Monomachine.rml" ${MM_SKIN_ASSETS} ${REMOTE_PANEL_ASSETS})
 
-createJucePlugin(mdJucePlugin "Gearmulator MD" TRUE "Tmdr" mdJucePlugin_BinaryData mdLib)
-createJucePlugin(mmJucePlugin "Gearmulator MM" TRUE "Tmno" mmJucePlugin_BinaryData mdLib)
+createJucePlugin(mdJucePlugin "Gearmulator MD" TRUE "Tmdr" mdJucePlugin_BinaryData mdRemotePanel)
+createJucePlugin(mmJucePlugin "Gearmulator MM" TRUE "Tmno" mmJucePlugin_BinaryData mdRemotePanel)
 
 # MD/MM expose an optional stereo input to plug-in hosts. Starting the
 # standalone with that input active makes CoreAudio combine the built-in input
@@ -81,6 +97,16 @@ foreach(plugin_target mdJucePlugin mmJucePlugin)
 		JUCE_STANDALONE_PLUGIN_AUTO_OPEN_AUDIO_INPUT=0
 		JUCE_VST3_EMULATE_MIDI_PC_WITH_PROGRAMS=1)
 endforeach()
+
+# Optional game controller input for the standalone panel. The editor enables it
+# at runtime only when running as a standalone application.
+find_package(SDL3 CONFIG QUIET COMPONENTS SDL3-shared)
+if(SDL3_FOUND)
+	foreach(plugin_target mdJucePlugin mmJucePlugin)
+		target_link_libraries(${plugin_target} PRIVATE SDL3::SDL3)
+		target_compile_definitions(${plugin_target} PRIVATE MD_GAMEPAD_SDL3=1)
+	endforeach()
+endif()
 
 # JUCE can populate bundle resources after its first ad-hoc signing pass on
 # macOS. Re-sign the completed VST3 and Standalone bundles so hosts and Finder
@@ -106,6 +132,7 @@ target_compile_definitions(mmJucePlugin PRIVATE MD_JUCEPLUGIN_MONOMACHINE=1)
 
 if(BUILD_TESTING)
 	juce_add_plugin(mdProgramChangeProbe
+		PRODUCTS_FOLDER "${CMAKE_BINARY_DIR}/test-products/$<CONFIG>"
 		COMPANY_NAME "Gearmulator" IS_SYNTH TRUE NEEDS_MIDI_INPUT TRUE
 		NEEDS_MIDI_OUTPUT FALSE COPY_PLUGIN_AFTER_BUILD FALSE
 		PLUGIN_MANUFACTURER_CODE GmPv PLUGIN_CODE Tmpc FORMATS VST3
@@ -119,6 +146,7 @@ if(BUILD_TESTING)
 		$<GENEX_EVAL:$<TARGET_PROPERTY:mdProgramChangeProbe_VST3,JUCE_PLUGIN_ARTEFACT_FILE>> --fixture)
 	set_tests_properties(mdVst3ProgramChangeTest PROPERTIES LABELS "PluginTest;MIDI")
 	juce_add_plugin(mdProgramChangeLegacyProbe
+		PRODUCTS_FOLDER "${CMAKE_BINARY_DIR}/test-products/$<CONFIG>"
 		COMPANY_NAME "Gearmulator" IS_SYNTH TRUE NEEDS_MIDI_INPUT TRUE
 		NEEDS_MIDI_OUTPUT FALSE COPY_PLUGIN_AFTER_BUILD FALSE
 		PLUGIN_MANUFACTURER_CODE GmPv PLUGIN_CODE Tmpl FORMATS VST3
@@ -152,6 +180,14 @@ if(BUILD_TESTING)
 	set_tests_properties(mdLcdInteractionModelTest PROPERTIES
 		LABELS "UnitTest;LcdInteraction")
 	set_property(TARGET mdLcdInteractionModelTest PROPERTY FOLDER "Elektron/test")
+	add_executable(mmLcdEditPagesFirmwareTest
+		mmLcdEditPagesFirmwareTest.cpp mdLcdInteractionModel.cpp)
+	target_link_libraries(mmLcdEditPagesFirmwareTest PRIVATE mdLib)
+	add_test(NAME mmLcdEditPagesFirmwareTest COMMAND mmLcdEditPagesFirmwareTest)
+	set_tests_properties(mmLcdEditPagesFirmwareTest PROPERTIES
+		LABELS "Integration;FirmwareTest;Panel;LcdInteraction"
+		SKIP_RETURN_CODE 77 TIMEOUT 180)
+	set_property(TARGET mmLcdEditPagesFirmwareTest PROPERTY FOLDER "Elektron/test")
 	set(MD_LCD_TEST_CORPUS_DIR "" CACHE PATH
 		"Optional private MD/MM LCD screenshot corpus used by the exhaustive classifier replay")
 	if(MD_LCD_TEST_CORPUS_DIR)
@@ -201,6 +237,7 @@ if(BUILD_TESTING)
 	set_property(TARGET mdPanelRenderingTest PROPERTY FOLDER "Elektron/test")
 
 	juce_add_plugin(mdAudioProbePlugin
+		PRODUCTS_FOLDER "${CMAKE_BINARY_DIR}/test-products/$<CONFIG>"
 		COMPANY_NAME "Gearmulator"
 		IS_SYNTH TRUE
 		NEEDS_MIDI_INPUT TRUE
@@ -277,6 +314,9 @@ if(BUILD_TESTING)
 	endfunction()
 
 	add_md_automation_firmware_test(mdSysexLifecycleTest mdSysexLifecycleTest.cpp)
+	add_md_automation_firmware_test(mdMcpToolsTest mdMcpToolsTest.cpp)
+	add_test(NAME mdMcpToolsTest COMMAND mdMcpToolsTest)
+	set_tests_properties(mdMcpToolsTest PROPERTIES LABELS "Integration;MCP" TIMEOUT 60)
 	add_test(NAME mdSysexLifecycleTest COMMAND mdSysexLifecycleTest)
 	set_tests_properties(mdSysexLifecycleTest PROPERTIES
 		LABELS "Integration;FirmwareTest" SKIP_RETURN_CODE 77 TIMEOUT 600)
@@ -320,6 +360,33 @@ if(BUILD_TESTING)
 			LABELS "Integration;FirmwareTest;Soak"
 			SKIP_RETURN_CODE 77 TIMEOUT 900)
 	endif()
+
+	# Diagnostic tool, not a test: renders the real editor with the software renderer to PNG.
+	# macOS only: its render loop is Objective-C++ (Foundation), which breaks Linux builds of "all".
+	if(APPLE)
+		add_executable(mdSkinSnapshotTool mdSkinSnapshotTool.cpp mdSkinSnapshotLoop.mm)
+		target_link_libraries(mdSkinSnapshotTool PRIVATE
+			mdJucePlugin jucePluginEditorLib mdLib juce_plugin_modules
+			juce::juce_opengl)
+		target_include_directories(mdSkinSnapshotTool PRIVATE
+			${CMAKE_CURRENT_SOURCE_DIR}/../../..)
+		target_compile_definitions(mdSkinSnapshotTool PRIVATE
+			JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1)
+		set_property(TARGET mdSkinSnapshotTool PROPERTY FOLDER "Elektron/test")
+	endif()
+
+	add_executable(mdSampleImportTest mdSampleImportTest.cpp)
+	target_link_libraries(mdSampleImportTest PRIVATE
+		mdJucePlugin jucePluginEditorLib mdLib juce_plugin_modules
+		juce::juce_opengl)
+	target_include_directories(mdSampleImportTest PRIVATE
+		${CMAKE_CURRENT_SOURCE_DIR}/../../..)
+	target_compile_definitions(mdSampleImportTest PRIVATE
+		JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1)
+	add_test(NAME mdSampleImportTest COMMAND mdSampleImportTest)
+	set_tests_properties(mdSampleImportTest PROPERTIES
+		LABELS "Integration;FirmwareTest" TIMEOUT 900)
+	set_property(TARGET mdSampleImportTest PROPERTY FOLDER "Elektron/test")
 
 	add_executable(mdProjectStateRestoreTest mdProjectStateRestoreTest.cpp)
 	target_link_libraries(mdProjectStateRestoreTest PRIVATE

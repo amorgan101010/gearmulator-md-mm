@@ -300,6 +300,20 @@ namespace
 				"LED transition reset retained drop telemetry");
 	}
 
+	// The window holds a trig while a tablet taps another in the same row: the tablet's release
+	// snapshot must not let go of the window's trig.
+	bool testPanelSourceRowsMerge()
+	{
+		md::PanelSourceRows rows;
+		using md::PanelSource;
+		return check(rows.set(PanelSource::Editor, 0x20, 0x01) == 0x01, "editor press not sent")
+			&& check(rows.set(PanelSource::Remote, 0x20, 0x02) == 0x03, "remote press dropped the editor's key")
+			&& check(rows.set(PanelSource::Remote, 0x20, 0x00) == 0x01, "remote release let go of the editor's key")
+			&& check(rows.set(PanelSource::Remote, 0x21, 0x04) == 0x04, "rows are not kept apart")
+			&& check(rows.set(PanelSource::Editor, 0x20, 0x00) == 0x00, "editor release not sent")
+			&& check(rows.set(PanelSource::Editor, 0x30, 0x05) == 0x05, "a non-row command was changed");
+	}
+
 	bool testPanelInputReleaseRecovery()
 	{
 		md::PanelInputQueue queue;
@@ -466,6 +480,7 @@ int main()
 	if(!testTransportPolicy() || !testDspMemoryFallback() || !testMk2PortAInvertedLoopback()
 		|| !testFrontPanelStepLeds() || !testMachinedrumPanelLedBanks()
 		|| !testFrontPanelTransitionPublication()
+		|| !testPanelSourceRowsMerge()
 		|| !testPanelInputReleaseRecovery()
 		|| !testPanelInputRecoveryWaitsForClaimedProducer())
 		return 1;

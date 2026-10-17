@@ -186,6 +186,22 @@ namespace jucePluginEditorLib
 			});
 		}
 
+		// Mute: silences the host output only, after the remote panel's tap
+		if (auto* muteContainer = juceRmlUi::helper::findChild(_root, "btMuteOutput", false))
+		{
+			if (auto* muteButton = juceRmlUi::helper::findChildT<juceRmlUi::ElemButton>(muteContainer, "button"))
+			{
+				muteButton->setChecked(m_processor.isOutputMuted());
+
+				juceRmlUi::EventListener::Add(muteContainer, Rml::EventId::Click, [this, muteButton](Rml::Event& _event)
+				{
+					_event.StopPropagation();
+					m_processor.setOutputMuted(!m_processor.isOutputMuted());
+					muteButton->setChecked(m_processor.isOutputMuted());
+				});
+			}
+		}
+
 		// Resampler mode buttons
 		const auto currentResamplerMode = m_processor.getResamplerMode();
 

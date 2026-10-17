@@ -160,6 +160,20 @@ jobs:
           mdStateTest
           mdFlashTest
 
+      # These need the user's firmware (the SysEx tools also caches and SysEx files), so CI cannot
+      # run them. Compiling them at least keeps an API change from breaking them unnoticed; several
+      # had stopped compiling that way.
+      - name: Compile firmware-only tests and tools
+        if: matrix.mode == 'release'
+        run: >-
+          cmake --build build-mdmm-core --parallel 4 --target
+          mdGoldenOutputTest
+          mdTurboMidiFirmwareTest
+          mdUserSysexFirmwareTest
+          mmSysexExportFirmwareTest
+          mdSdsFirmwareTest
+          mmSysexWorkflowTest
+
       - name: Run DSP accumulator regressions
         if: matrix.mode == 'release'
         run: |

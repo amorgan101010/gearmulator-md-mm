@@ -156,6 +156,11 @@ bool PluginEditorState::loadSkin(const Skin& _skin, const uint32_t _fallbackInde
 		getEditor()->getPerInstanceConfig(m_instanceConfig);
 
 		hasSettingsOpened = m_editor->settingsOpened();
+		// RmlUi's OpenGL renderer can still be executing callbacks owned by the
+		// concrete editor. Detach it before the concrete editor's destructor begins,
+		// while leaving its Rml component alive for that destructor's listeners.
+		if (auto* component = m_editor->getRmlComponent())
+			component->detachRenderer();
 		m_editor.reset();
 	}
 

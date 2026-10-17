@@ -1,6 +1,8 @@
 #pragma once
 
 #include "jucePluginEditorLib/pluginProcessor.h"
+#include "mdLib/mdremotepanel.h"
+#include "mdLib/mdsampledirectory.h"
 #include "mdLib/mdtypes.h"
 #include "synthLib/performanceReport.h"
 
@@ -16,6 +18,8 @@ namespace mdJucePlugin
 	class AudioPluginAudioProcessor : public jucePluginEditorLib::Processor,
 		private juce::Timer
 	{
+		std::array<std::atomic<int>, 128> m_externalRequests{};   // by reply id
+		std::array<std::atomic<int64_t>, 128> m_editorAskedMs{};  // by reply id
 	public:
 		struct EphemeralConfig final
 		{
@@ -23,6 +27,8 @@ namespace mdJucePlugin
 			// factory/storage caches. A disengaged value preserves normal discovery;
 			// an engaged empty value disables the device home path entirely.
 			std::optional<std::string> deviceHomePath;
+			// Where a project that fails to load is kept. Ephemeral instances without one keep none.
+			std::optional<std::string> rescueFolder;
 		};
 
 	    AudioPluginAudioProcessor();
@@ -33,6 +39,19 @@ namespace mdJucePlugin
 		AudioPluginAudioProcessor(md::MachineModel _model,
 			std::vector<uint8_t> _initialPatchRam, bool _allowMcpServer = true);
 	    ~AudioPluginAudioProcessor() override;
+
+		// The editor keeps itself in sync by asking the unit for its status
+		// (SysEx 0x70) and global/kit/pattern/song dumps, and the unit's replies
+		// used to go out of MIDI OUT as well -- a status reply every few hundred
+		// ms, a global dump every few seconds. A unit following this one's MIDI
+		// had to swallow them, and an MM behind an MD played audibly different
+		// kicks (0 of 71 with clock alone, 36 of 71 with everything). A reply now
+		// stays internal when the editor asked for it; one asked for on MIDI In,
+		// and a dump nobody asked for (SEND on the machine), still go out.
+		bool sendToPhysicalOut(const synthLib::SMidiEvent& _ev) override;
+		void observeMidiEvent(const synthLib::SMidiEvent& _ev) override;
+		void observeOutput(const synthLib::TAudioOutputs& _outputs, size_t _numSamples, double _sampleRate,
+			bool _nonRealtime) override;
 
 		md::MachineModel getModel() const { return m_model; }
 		static md::MachineModel getCompiledProductModel();
@@ -56,6 +75,41 @@ namespace mdJucePlugin
 		}
 		bool isRamRecordingModeAvailable();
 
+		// Firmware image for this instance. Empty = the stock OS discovered next to the
+		// plugin or in the roms folder. A chosen image is remembered as the default for
+		// new instances (config) and travels with the project (state chunk "FWIM").
+		static constexpr const char* g_firmwareImageConfigKey = "firmwareImagePath";
+		const std::string& getFirmwareImagePath() const { return m_firmwareImagePath; }
+		std::string getFirmwareDescription() const;
+		// Restarts the machine on another OS image, from a fresh factory state.
+		bool setFirmwareImage(const std::string& _path, std::string& _error);
+
+		// Machine selector: assigns a machine (firmware model id, see mdLib/mdmachines.h)
+		// to the machine's current track. Returns false while the current track is unknown.
+		bool assignMachineToCurrentTrack(uint16_t _machineId);
+		int getCurrentTrack();
+		int getObservedTransportState() const { return m_observedTransportState.load(std::memory_order_acquire); }
+		md::FrontPanel getMcpPanelSnapshot();
+		bool sendMcpPanelControl(md::PanelControl _control, bool _down);
+		bool sendMcpPanelEncoder(md::PanelEncoder _encoder, int _steps);
+		bool selectMcpTrack(int _track);
+		std::vector<uint8_t> requestMcpDump(uint8_t _requestId, uint8_t _replyId, int _slot);
+		// Sends a pattern/song dump and returns it once the slot reads back identical.
+		std::vector<uint8_t> writeMcpDump(const std::vector<uint8_t>& _dump);
+		// Monomachine: opens SYSEX RECEIVE from the panel, sends a pattern dump, returns it as read back.
+		std::vector<uint8_t> writeMonomachineMcpDump(const std::vector<uint8_t>& _dump);
+		std::string startMcpAudioCapture(double _seconds);
+		std::string stopMcpAudioCapture();
+		// true when the running OS is not the stock image (community X.xx builds add machines)
+		bool isExtendedOs() const;
+		// Machinedrum UW sample slots as stored in the emulated machine
+		std::optional<md::sampleDirectory::Directory> readSampleDirectory();
+
+		// Browser front panel for tablets on the local network, see mdLib/mdremotepanel.h
+		void startRemotePanel();
+		std::string getRemotePanelUrl() const;
+		bool isRemotePanelRunning() const { return m_remotePanel && m_remotePanel->isRunning(); }
+
 	    jucePluginEditorLib::PluginEditorState* createEditorState() override;
 	    synthLib::Device* createDevice() override;
 		void getRemoteDeviceParams(synthLib::DeviceCreateParams& _params) const override;
@@ -65,27 +119,78 @@ namespace mdJucePlugin
 		void loadChunkData(baseLib::ChunkReader& _reader) override;
 		bool loadCustomData(const std::vector<uint8_t>& _sourceBuffer) override;
 
+		// Saving never overwrites a project that did not load. While no machine is running (no
+		// firmware, for example) the project that was handed in is saved back unchanged, and one that
+		// fails to load is first written to a rescue file, named in the error message.
+		void getStateInformation(juce::MemoryBlock& _destData) override;
+		void setStateInformation(const void* _data, int _sizeInBytes) override;
+		// The rescue file written for the last project that failed to load, or empty.
+		std::string getRescuedProjectPath() const;
+
 	private:
 		static BusesProperties createBusesProperties();
 		bool isBusesLayoutSupported(const BusesLayout& _layout) const override;
 		AudioPluginAudioProcessor(md::MachineModel _model,
 			std::vector<uint8_t> _initialPatchRam, bool _allowMcpServer,
 			bool _ephemeralConfig,
-			std::optional<std::string> _deviceHomePath = std::nullopt);
+			std::optional<std::string> _deviceHomePath = std::nullopt,
+			std::optional<std::string> _rescueFolder = std::nullopt);
+		static std::string initialFirmwareImagePath(juce::PropertiesFile& _config, md::MachineModel _model);
+		bool readFirmwareImage(const std::string& _path, std::vector<uint8_t>& _data, std::string& _error) const;
+		std::string findFirmwareByFingerprint(uint64_t _fingerprint, const std::string& _hint) const;
+		void applyProjectFirmware(const std::string& _path, uint64_t _fingerprint);
 		bool serviceDeferredStateRestore();
 		bool serviceStateRestoreFailure();
 		void recordStandaloneStartupDiagnostics();
 		void reportProjectStateRestoreFailure(const std::string& _error);
+		// Writes the project handed in by setStateInformation to a rescue file, once per failed restore.
+		bool rescueUnloadedState(uint64_t _generation, std::string& _path);
 		void timerCallback() override;
 
 		std::unique_ptr<synthLib::PerformanceReport> m_performanceReport;
+		// Before m_remotePanel: its thread calls sendPanelEvent, which uses these, until it is destroyed.
+		std::mutex m_remotePanelInputMutex;
+		std::shared_ptr<md::PanelInput> m_remotePanelInput;
+		std::mutex m_mcpPanelMutex;
+		md::PanelRowState m_mcpPanelRows;
+		std::atomic<int> m_observedTransportState{-1}; // MIDI start/continue/stop, -1 until observed
+		std::mutex m_mcpDumpRequestMutex;
+		std::atomic<int> m_mcpDumpState{0}; // idle, waiting, writing, ready
+		std::atomic<uint8_t> m_mcpDumpReplyId{0};
+		std::atomic<uint8_t> m_mcpDumpSlot{0};
+		std::array<uint8_t, 8192> m_mcpDumpBuffer{};
+		size_t m_mcpDumpSize = 0;
+		std::unique_ptr<md::RemotePanelServer> m_remotePanel;
+		struct McpAudioCapture
+		{
+			std::vector<int16_t> pcm;
+			size_t framesWritten = 0;
+			size_t droppedBlocks = 0;
+			uint32_t sampleRate = 0;
+			std::string path;
+		};
+		std::mutex m_mcpAudioMutex;
+		std::unique_ptr<McpAudioCapture> m_mcpAudioCapture;
+		void registerMcpTools(mcpServer::McpServer& _server);
+		void registerMonomachineMcpTools(mcpServer::McpServer& _server);
+		std::mutex m_remoteSlotNamesMutex;
+		std::vector<std::string> m_remoteSlotNames;
+		uint32_t m_remoteSlotNamesTime = 0;
 		juce::File m_performanceReportFile;
 		bool m_performanceFolderError = false;
 		const md::MachineModel m_model;
 		const std::vector<uint8_t> m_initialPatchRam;
 		const std::optional<std::string> m_deviceHomePath;
+		const bool m_ephemeralConfig;
+		std::string m_firmwareImagePath;
+		uint64_t m_firmwareFingerprint = 0;
 		std::mutex m_storageLoadMutex;
 		uint64_t m_reportedRestoreFailureGeneration = 0;
+		const std::optional<std::string> m_rescueFolder;
+		mutable std::mutex m_incomingStateMutex;
+		std::vector<uint8_t> m_incomingState;			// the last project handed to setStateInformation
+		std::optional<uint64_t> m_rescuedGeneration;	// restore generation the rescue file belongs to
+		std::string m_rescuedProjectPath;
 		juce::File m_startupDiagnosticsFile;
 		double m_startupDiagnosticsStartMilliseconds = 0.0;
 		bool m_startupDiagnosticsEnabled = false;

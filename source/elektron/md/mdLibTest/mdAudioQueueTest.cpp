@@ -1,9 +1,13 @@
 #include "mdLib/mdhostaudioqueue.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
+#include <deque>
 #include <iostream>
+#include <random>
 #include <stdexcept>
+#include <string>
 
 namespace
 {
@@ -131,6 +135,119 @@ namespace
 		require(queue.size() == 2,
 			"host output queue did not preserve scheduler surplus");
 	}
+
+	// renderHostAudio at any host block size, against a producer that jitters like the mixer DSP
+	// (a few frames short or long per step): every frame the producer makes must come out exactly
+	// once and in order, or be accounted for as dropped (queue overflow, or trimming the surplus
+	// to one block). Output gaps (zeros) are allowed only where the producer ran short.
+	// The frames are numbered; a shadow copy of the queue says which frames must come out.
+	using PropertyQueue = md::HostAudioQueue<6, 64>;
+	// Compares one rendered block with the frames that left the queue, in order. Returns an empty
+	// string, or what went wrong.
+	std::string checkRenderedBlock(const std::array<std::vector<dsp56k::TWord>, 6>& _outputs,
+		const uint32_t _frames, const std::vector<dsp56k::TWord>& _expected)
+	{
+		size_t next = 0;
+		for(uint32_t i = 0; i < _frames; ++i)
+		{
+			const auto value = _outputs[0][i];
+			if(value == 0)
+				continue;	// the producer ran short
+			for(size_t channel = 1; channel < _outputs.size(); ++channel)
+				if(_outputs[channel][i] != value + static_cast<dsp56k::TWord>(channel) * 0x100000)
+					return "channels of frame " + std::to_string(value) + " disagree";
+			if(next >= _expected.size())
+				return "frame " + std::to_string(value) + " was output but did not leave the queue (duplicated)";
+			if(value != _expected[next])
+				return "frame " + std::to_string(value) + " output where " + std::to_string(_expected[next])
+					+ " was next (dropped, duplicated or reordered)";
+			++next;
+		}
+		if(next != _expected.size())
+			return std::to_string(_expected.size() - next) + " frame(s) left the queue but were not output";
+		return {};
+	}
+	void verifyRenderHostAudioSequence()
+	{
+		PropertyQueue queue;
+		std::deque<dsp56k::TWord> shadow;		// frames in the queue, oldest first
+		std::vector<dsp56k::TWord> leftQueue;	// frames popped for output during this block
+		dsp56k::TWord next = 1;
+		std::mt19937 random(20260918);
+		uint64_t produced = 0, output = 0, overflowed = 0, trimmed = 0;
+		// renderHostAudio pops from the front between producer steps; the queue's size says how many.
+		const auto sync = [&]
+		{
+			while(shadow.size() > queue.size())
+			{
+				leftQueue.push_back(shadow.front());
+				shadow.pop_front();
+			}
+		};
+		const auto produce = [&](const uint32_t _count)
+		{
+			sync();
+			for(uint32_t i = 0; i < _count; ++i, ++next, ++produced)
+			{
+				const bool dropped = queue.emplace([&](PropertyQueue::Frame& _frame)
+				{
+					for(size_t channel = 0; channel < _frame.size(); ++channel)
+						_frame[channel] = next + static_cast<dsp56k::TWord>(channel) * 0x100000;
+				});
+				if(dropped)
+				{
+					shadow.pop_front();
+					++overflowed;
+				}
+				shadow.push_back(next);
+			}
+		};
+		std::array<std::vector<dsp56k::TWord>, 6> outputs;
+		for(uint32_t iteration = 0; iteration < 20000; ++iteration)
+		{
+			// Mostly realistic host blocks, sometimes odd sizes and single frames.
+			const uint32_t frames = iteration % 7 == 0 ? 1 + random() % 5 : 1 + random() % 300;
+			for(auto& o : outputs)
+				o.assign(frames, 0);
+			leftQueue.clear();
+			const auto dropped = md::renderHostAudio(queue, outputs, frames, [&](const uint32_t _chunk)
+			{
+				const int jitter = static_cast<int>(random() % 5) - 2;
+				produce(static_cast<uint32_t>(std::max(0, static_cast<int>(_chunk) + jitter)));
+			});
+			// After the last producer step the block's remaining frames were popped for output, and then
+			// the oldest surplus was trimmed: of the frames that left the queue since, the first ones
+			// were output and the last `dropped` ones trimmed.
+			const auto leftSinceLastStep = shadow.size() - queue.size();
+			for(size_t i = 0; i < leftSinceLastStep - dropped; ++i)
+			{
+				leftQueue.push_back(shadow.front());
+				shadow.pop_front();
+			}
+			for(size_t i = 0; i < dropped; ++i)
+				shadow.pop_front();
+			const auto problem = checkRenderedBlock(outputs, frames, leftQueue);
+			require(problem.empty(), ("renderHostAudio at block " + std::to_string(frames) + ": " + problem).c_str());
+			output += leftQueue.size();
+			trimmed += dropped;
+			require(queue.size() == shadow.size(), "host output queue holds frames it should not");
+		}
+		require(produced == output + overflowed + trimmed + shadow.size(), "frames were lost without being counted");
+		require(output > produced * 9 / 10, "the property test barely exercised the output path");
+		// The checker itself must catch a dropped and a duplicated frame.
+		std::array<std::vector<dsp56k::TWord>, 6> fake;
+		const auto setFake = [&](const dsp56k::TWord _a, const dsp56k::TWord _b)
+		{
+			for(size_t channel = 0; channel < fake.size(); ++channel)
+				fake[channel] = {_a + static_cast<dsp56k::TWord>(channel) * 0x100000, _b + static_cast<dsp56k::TWord>(channel) * 0x100000};
+		};
+		setFake(1, 3);
+		require(!checkRenderedBlock(fake, 2, {1, 2, 3}).empty(), "checker missed a dropped frame");
+		setFake(1, 1);
+		require(!checkRenderedBlock(fake, 2, {1, 2}).empty(), "checker missed a duplicated frame");
+		setFake(1, 2);
+		require(checkRenderedBlock(fake, 2, {1, 2}).empty(), "checker rejected a correct block");
+	}
 }
 
 int main()
@@ -140,6 +257,7 @@ int main()
 		verifyHostAudioInputLookAhead();
 		verifyHostAudioInputTimeline();
 		verifyHostAudioOutputRouting();
+		verifyRenderHostAudioSequence();
 		std::cout << "mdAudioQueueTest: PASS\n";
 		return 0;
 	}

@@ -1,3 +1,4 @@
+#include "emulatedBudget.h"
 #include "mdLib/mdhardware.h"
 #include "sysexContentOracle.h"
 
@@ -206,14 +207,13 @@ int main(const int _argc, char** _argv)
 		std::fputs("firmware did not construct a valid machine\n", stderr);
 		return 1;
 	}
-	const auto bootDeadline = std::chrono::steady_clock::now()
-		+ std::chrono::seconds(180);
+	md::test::EmulatedBudget bootBudget(180);
 	while(!hardware.isFirmwareMidiReady() || (monomachine
 		&& (!hardware.isAudioReady()
 			|| hardware.getFrontPanelSnapshot().countLitPixels() <= 2000)))
 	{
 		hardware.advance(64);
-		if(std::chrono::steady_clock::now() >= bootDeadline)
+		if(!bootBudget.spend(64))
 		{
 			std::fprintf(stderr, "firmware MIDI boot timed out: pc=%08x\n",
 				hardware.getUC().getPC());
@@ -259,7 +259,7 @@ int main(const int _argc, char** _argv)
 	}
 
 	const auto transferStart = std::chrono::steady_clock::now();
-	const auto transferDeadline = transferStart + std::chrono::seconds(180);
+	md::test::EmulatedBudget transferBudget(600);
 	uint8_t payloadSpeed = 1;
 	bool cancellationRequested = false;
 	for(;;)
@@ -300,7 +300,7 @@ int main(const int _argc, char** _argv)
 			|| (cancelMidMessage && cancellationRequested
 				&& progress.state == md::MidiSysexTransferState::Cancelled))
 			break;
-		if(std::chrono::steady_clock::now() >= transferDeadline)
+		if(!transferBudget.spend(64))
 		{
 			std::fprintf(stderr, "transfer timed out: sent=%zu/%zu state=%u\n",
 				progress.sent, progress.total,
@@ -311,7 +311,7 @@ int main(const int _argc, char** _argv)
 	if(cancelMidMessage)
 	{
 		while(!hardware.isMidiIngressIdle()
-			&& std::chrono::steady_clock::now() < transferDeadline)
+			&& transferBudget.spend(64))
 			hardware.advance(64);
 		const auto finalProgress = hardware.getMidiSysexTransferProgress();
 		std::printf("[%s SysEx firmware cancellation test] sent=%zu/%zu "
@@ -336,8 +336,7 @@ int main(const int _argc, char** _argv)
 		pulse(hardware, md::PanelControl::Exit);
 		if(digiPro)
 		{
-			const auto storeDeadline = std::chrono::steady_clock::now()
-				+ std::chrono::seconds(60);
+			md::test::EmulatedBudget storeBudget(120);
 			size_t stableObservations = 0;
 			auto observed = flashBefore;
 			do
@@ -352,7 +351,7 @@ int main(const int _argc, char** _argv)
 				else if(observed != flashBefore)
 					++stableObservations;
 			} while(stableObservations < 10
-				&& std::chrono::steady_clock::now() < storeDeadline);
+				&& storeBudget.spend(200 * 64));
 		}
 		else
 			settle(hardware, 1000);
@@ -403,8 +402,8 @@ int main(const int _argc, char** _argv)
 			|| !md::decodeState(decoded, state, {}, model, synthLib::StateTypeGlobal)
 			|| decoded.patchRam != patchAfter) return 1;
 		md::Hardware restored(rom, _argv[2], model, decoded.patchRam);
-		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(180);
-		while(!restored.isFirmwareMidiReady() && std::chrono::steady_clock::now() < deadline) restored.advance(64);
+		md::test::EmulatedBudget restoreBudget(180);
+		while(!restored.isFirmwareMidiReady() && restoreBudget.spend(64)) restored.advance(64);
 		// MIDI-ready precedes the end of the firmware's boot/loading work.
 		settle(restored, md::g_samplerate * 20 / 64);
 		if(!restored.isFirmwareMidiReady() || !md::test::verifyDumpContents(restored, fileBytes)) return 1;

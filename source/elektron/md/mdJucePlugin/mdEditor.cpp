@@ -1,10 +1,17 @@
 #include "mdEditor.h"
 
 #include "mdController.h"
+#include "mdControlInput.h"
 #include "mdPanelAffordances.h"
+#include "mdLcdText.h"
+#include "mdMonomachineHelp.h"
+#include "mdMachinedrumHelp.h"
+#include "mdParameterHelp.h"
 #include "mdPluginProcessor.h"
 #include "mdSettingsAudioInput.h"
 #include "mdSettingsPanelFeel.h"
+#include "mdSampleDropTarget.h"
+#include "mdMachineRack.h"
 #include "mdPixelPerfectPanel.h"
 #include "mdLcdViewport.h"
 
@@ -32,14 +39,26 @@
 #include "juceRmlUi/rmlEventListener.h"
 #include "juceRmlUi/rmlHelper.h"
 #include "juceRmlUi/juceRmlComponent.h"
+#include "juceRmlUi/rmlMenu.h"
 
+#include "RmlUi/Core/ComputedValues.h"
+#include "RmlUi/Core/Context.h"
 #include "RmlUi/Core/Element.h"
 #include "RmlUi/Core/ElementDocument.h"
+#include "RmlUi/Core/StringUtilities.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <functional>
+#include <iterator>
+#include <limits>
+#include <optional>
+#include <sstream>
 #include <string>
+#include <tuple>
 #include <vector>
 
 namespace mdJucePlugin
@@ -147,6 +166,7 @@ namespace mdJucePlugin
 
 	Editor::~Editor()
 	{
+		m_controlInput.reset();	// first: lines still queued for the message thread are dropped
 		juce::Desktop::getInstance().removeFocusChangeListener(this);
 		m_panelSteps.clear();
 		cancelPanelInputGestures();
@@ -171,21 +191,32 @@ namespace mdJucePlugin
 		auto& diagnostics = plugin.getRealtimeInstrumentation();
 		const auto model = static_cast<uint32_t>(getModel());
 		const auto token = diagnostics.beginPanelInput(model, _command, _argument);
-		const auto accepted = plugin.withDeviceLocked(
-			[&](synthLib::Device* const _device)
+		// The device lock is held by the audio thread for its whole block, so taking it for every
+		// press or detent made input wait up to a block, longer near realtime. The device's panel
+		// input outlives neither it nor a device switch unnoticed: fetch it again, under the lock,
+		// only when it has been retired.
+		if(!m_panelInput || m_panelInput->isRetired())
+		{
+			m_panelInput = plugin.withDeviceLocked([](synthLib::Device* const _device)
 			{
 				auto* const device = dynamic_cast<md::Device*>(_device);
-				if(!device)
-					return false;
-				return device->sendPanelEvent(_command, _argument);
+				return device ? device->getPanelInput() : std::shared_ptr<md::PanelInput>();
 			});
+		}
+		const bool accepted = m_panelInput
+			&& m_panelInput->trySend(_command, _argument, md::PanelSource::Editor);
 		diagnostics.endPanelInput(token, model, _command, _argument, accepted);
 		return accepted;
 	}
 
 	bool Editor::refreshFrontPanelState(const double _nowMilliseconds)
 	{
-		auto publisher = getFrontPanelPublisher();
+		// Fetching the publisher takes the device lock, which the audio thread holds for its whole block. Doing
+		// that every frame made the UI, LEDs included, wait out most of a block whenever the machine ran close
+		// to realtime. The publisher lasts as long as its device, so fetch it again only when it is retired.
+		if(!m_frontPanelPublisher || m_frontPanelPublisher->isRetired())
+			m_frontPanelPublisher = getFrontPanelPublisher();
+		const auto& publisher = m_frontPanelPublisher;
 		if(!publisher)
 			return false;
 		const auto presentationBeforeDrain = m_ledPresentation;
@@ -279,13 +310,39 @@ namespace mdJucePlugin
 		}
 
 		createLcd();
+		bindSettingsButton();
+		if(auto* const document = getRmlComponent() ? getRmlComponent()->getDocument() : nullptr)
+			m_sampleDropTarget = std::make_unique<SampleDropTarget>(document, *this);
+		if(auto* const rack = findChild("machineRack", false))
+		{
+			if(auto* const processor = dynamic_cast<AudioPluginAudioProcessor*>(&getProcessor()))
+			{
+				// the rack is an add-on; a failure there must not take the editor down
+				try
+				{
+					m_machineRack = std::make_unique<MachineRack>(*this, *processor, rack);
+				}
+				catch(const std::exception& e)
+				{
+					std::fprintf(stderr, "[MD] machine rack disabled: %s\n", e.what());
+					m_machineRack.reset();
+				}
+			}
+		}
+		else
+			std::fprintf(stderr, "[MD] skin has no machineRack element\n");
 		createButtons();
+		createSceneControls();
 		createEncoders();
 		createMasterVolume();
 		applyPanelSpeeds();
+		applyTooltipSettings();
 		createLeds();
 		createPanelAffordances();
 		applyPixelPerfectPanel();
+		createGamepad();
+		createKeyboardControl();
+		createParameterTooltip();
 
 		// A transfer belongs to the emulated machine, not the lifetime of one
 		// editor window. Reattach progress monitoring after a reopen, or reclaim a
@@ -317,6 +374,204 @@ namespace mdJucePlugin
 					return device && device->retireUserSysexImport(progress->ticket, retiredPayload);
 				});
 		}
+	}
+
+	void Editor::bindSettingsButton()
+	{
+		// gear icon in the skin: opens the settings panel (firmware, panel feel, audio)
+		if(auto* const gear = findChild("btSettings", false))
+			juceRmlUi::EventListener::AddClick(gear, [this] { toggleSettings(); });
+	}
+
+	void Editor::createSceneControls()
+	{
+		m_sceneSideA = findChild("sceneSideA", false);
+		m_sceneSideB = findChild("sceneSideB", false);
+		m_sceneMuteA = findChild("sceneMuteA", false);
+		m_sceneMuteB = findChild("sceneMuteB", false);
+		m_sceneFader = findChild("sceneFader", false);
+		m_sceneStatus = findChild("sceneStatus", false);
+		m_sceneValue = findChild("sceneValue", false);
+		if(!m_sceneSideA || !m_sceneSideB || !m_sceneFader)
+			return;
+
+		const auto selectSide = [this](const int side)
+		{
+			m_controller.setSceneEditSide(sceneEditSide() == side ? -1 : side);
+			updateScenePresentation();
+		};
+		juceRmlUi::EventListener::AddClick(m_sceneSideA,
+			[this, selectSide] { selectSide(0); });
+		juceRmlUi::EventListener::AddClick(m_sceneSideB,
+			[this, selectSide] { selectSide(1); });
+		const auto toggleMute = [this](const bool sideB)
+		{
+			const auto kit = m_controller.getCurrentKitSlot();
+			if(kit >= m_controller.getSceneBankCount())
+				return;
+			const auto bank = m_controller.getSceneBank(kit);
+			m_controller.setSceneMuted(kit, sideB,
+				sideB ? !bank.muteB : !bank.muteA);
+			updateScenePresentation();
+		};
+		if(m_sceneMuteA)
+			juceRmlUi::EventListener::AddClick(m_sceneMuteA,
+				[this, toggleMute] { toggleMute(false); });
+		if(m_sceneMuteB)
+			juceRmlUi::EventListener::AddClick(m_sceneMuteB,
+				[this, toggleMute] { toggleMute(true); });
+		juceRmlUi::EventListener::Add(m_sceneFader, Rml::EventId::Change,
+			[this](Rml::Event& _event)
+			{
+				const auto kit = m_controller.getCurrentKitSlot();
+				if(kit >= m_controller.getSceneBankCount())
+					return;
+				const auto value = juceRmlUi::ElemValue::getValue(m_sceneFader,
+					_event.GetParameter<float>("value", 0.0f));
+				m_controller.setSceneFader(kit, static_cast<uint8_t>(std::clamp(
+					static_cast<int>(std::lround(value)), 0, 127)));
+				updateScenePresentation();
+			});
+		if(auto* const clear = findChild("sceneClearLock", false))
+		{
+			juceRmlUi::EventListener::AddClick(clear, [this]
+			{
+				const auto kit = m_controller.getCurrentKitSlot();
+				if(kit >= m_controller.getSceneBankCount()
+					|| sceneEditSide() < 0 || !m_lastSceneAddress)
+					return;
+				const auto bank = m_controller.getSceneBank(kit);
+				const auto scene = sceneEditSide() == 0 ? bank.sceneA : bank.sceneB;
+				m_controller.clearSceneLock(kit, scene, *m_lastSceneAddress);
+				updateScenePresentation();
+			});
+		}
+		if(auto* const clearScene = findChild("sceneClear", false))
+		{
+			juceRmlUi::EventListener::AddClick(clearScene, [this]
+			{
+				const auto kit = m_controller.getCurrentKitSlot();
+				if(kit >= m_controller.getSceneBankCount() || sceneEditSide() < 0)
+					return;
+				const auto bank = m_controller.getSceneBank(kit);
+				const auto scene = sceneEditSide() == 0 ? bank.sceneA : bank.sceneB;
+				m_controller.clearScene(kit, scene);
+				m_lastSceneAddress.reset();
+				updateScenePresentation();
+			});
+		}
+		updateScenePresentation();
+	}
+
+	int Editor::sceneEditSide() const
+	{
+		return m_controller.getSceneEditSide();
+	}
+
+	bool Editor::assignSceneFromTrigger(const md::PanelControl _control)
+	{
+		// While A or B is being edited, a trig chooses that side's scene instead of reaching the machine,
+		// whether it was clicked, typed, or pressed from a controller.
+		if(!isTrigger(_control) || sceneEditSide() < 0)
+			return false;
+		const auto kit = m_controller.getCurrentKitSlot();
+		const auto scene = static_cast<uint8_t>(static_cast<unsigned>(_control)
+			- static_cast<unsigned>(md::PanelControl::Trigger1));
+		if(kit < m_controller.getSceneBankCount())
+			m_controller.assignScene(kit, sceneEditSide() == 1, scene);
+		m_controller.setSceneEditSide(-1);
+		updateScenePresentation();
+		return true;
+	}
+
+	void Editor::updateScenePresentation()
+	{
+		if(!m_sceneSideA || !m_sceneSideB)
+			return;
+		const auto kit = m_controller.getCurrentKitSlot();
+		if(kit >= m_controller.getSceneBankCount())
+		{
+			m_sceneDisplayedKit = 0xff;
+			m_scenePresentationRevision = m_controller.getSceneRevision();
+			m_sceneSideA->SetInnerRML("A 01");
+			m_sceneSideB->SetInnerRML("B 16");
+			juceRmlUi::ElemValue::setValue(m_sceneFader, 0.0f, false);
+			if(m_sceneStatus)
+				m_sceneStatus->SetInnerRML("Waiting for Kit state");
+			return;
+		}
+		m_sceneDisplayedKit = kit;
+		m_scenePresentationRevision = m_controller.getSceneRevision();
+		const auto bank = m_controller.getSceneBank(kit);
+		const auto sceneName = [&bank](const bool sideB)
+		{
+			const auto number = sideB ? bank.sceneB : bank.sceneA;
+			return std::string(sideB ? "B " : "A ")
+				+ (number < 9 ? "0" : "") + std::to_string(number + 1)
+				+ (bank.sceneHasLocks(number) ? "  *" : "");
+		};
+		m_sceneSideA->SetInnerRML(sceneName(false));
+		m_sceneSideB->SetInnerRML(sceneName(true));
+		m_sceneSideA->SetClass("sceneEditing", sceneEditSide() == 0);
+		m_sceneSideB->SetClass("sceneEditing", sceneEditSide() == 1);
+		if(m_sceneMuteA)
+			m_sceneMuteA->SetClass("sceneMuted", bank.muteA);
+		if(m_sceneMuteB)
+			m_sceneMuteB->SetClass("sceneMuted", bank.muteB);
+		juceRmlUi::ElemValue::setValue(m_sceneFader, bank.fader, false);
+		if(m_sceneStatus)
+		{
+			if(sceneEditSide() < 0)
+				m_sceneStatus->SetInnerRML("Choose A or B; click again to leave edit mode");
+			else
+				m_sceneStatus->SetInnerRML(std::string("Turn an encoder to lock · click a trig to assign to ")
+					+ (sceneEditSide() == 0 ? "A" : "B"));
+		}
+		if(m_sceneValue)
+		{
+			if(sceneEditSide() >= 0 && m_lastSceneAddress)
+			{
+				const auto scene = sceneEditSide() == 0 ? bank.sceneA : bank.sceneB;
+				const auto value = bank.getLock(scene, *m_lastSceneAddress);
+				if(value >= 0)
+					m_sceneValue->SetInnerRML("LOCKED  T" + std::to_string(m_lastSceneAddress->track + 1)
+						+ "  PAGE " + std::to_string(m_lastSceneAddress->page + 1)
+						+ "  KNOB " + static_cast<char>('A' + m_lastSceneAddress->index)
+						+ " = " + std::to_string(value));
+				else
+					m_sceneValue->SetInnerRML("Turn a data knob to add a scene lock · clear lock removes the last edited address");
+			}
+			else
+				m_sceneValue->SetInnerRML("MIDI scene morph · base values return when a lock releases");
+		}
+	}
+
+	bool Editor::editSceneParameter(const md::PanelEncoder _encoder, const int _steps)
+	{
+		if(sceneEditSide() < 0
+			|| _steps == 0 || _encoder < md::PanelEncoder::DataEntryA
+			|| _encoder > md::PanelEncoder::DataEntryH)
+			return false;
+		const auto kit = m_controller.getCurrentKitSlot();
+		const auto track = m_controller.getCurrentTrack();
+		const auto page = getModel() == md::MachineModel::Monomachine
+			? currentMonomachineDataPage() : currentMachinedrumDataPage();
+		const auto trackCount = getModel() == md::MachineModel::Monomachine ? 6 : 16;
+		const auto pageCount = getModel() == md::MachineModel::Monomachine ? 7 : 3;
+		if(kit >= m_controller.getSceneBankCount() || track < 0
+			|| track >= trackCount || !page || *page >= pageCount)
+			return false;
+		const auto index = static_cast<uint8_t>(static_cast<unsigned>(_encoder)
+			- static_cast<unsigned>(md::PanelEncoder::DataEntryA));
+		const md::scene::Address address{static_cast<uint8_t>(track),
+			static_cast<uint8_t>(*page), index};
+		const auto bank = m_controller.getSceneBank(kit);
+		const auto scene = sceneEditSide() == 0 ? bank.sceneA : bank.sceneB;
+		if(!m_controller.editSceneParameter(kit, scene, address, _steps))
+			return false;
+		m_lastSceneAddress = address;
+		updateScenePresentation();
+		return true;
 	}
 
 	void Editor::createLcd()
@@ -431,6 +686,16 @@ namespace mdJucePlugin
 	{
 		if(!m_lcdCanvas || !m_lcdInteractionState)
 			return std::nullopt;
+		const auto point = lcdNativePointAt(_event);
+		if(!point)
+			return std::nullopt;
+		return lcdInteraction::hitTest(*m_lcdInteractionState, point->first, point->second);
+	}
+
+	std::optional<std::pair<int, int>> Editor::lcdNativePointAt(const Rml::Event& _event) const
+	{
+		if(!m_lcdCanvas)
+			return std::nullopt;
 		const auto mouse = juceRmlUi::helper::getMousePos(_event);
 		auto offset = m_lcdCanvas->GetAbsoluteOffset(Rml::BoxArea::Content);
 		auto display = m_lcdCanvas->GetBox().GetSize(Rml::BoxArea::Content);
@@ -454,13 +719,19 @@ namespace mdJucePlugin
 		const auto point = viewport.displayToNative(mouse.x - offset.x, mouse.y - offset.y);
 		if(!point)
 			return std::nullopt;
-		return lcdInteraction::hitTest(*m_lcdInteractionState,
-			static_cast<int>(std::floor(point->x)), static_cast<int>(std::floor(point->y)));
+		return std::pair<int, int>{ static_cast<int>(std::floor(point->x)), static_cast<int>(std::floor(point->y)) };
 	}
 
 	void Editor::updateLcdHover(const Rml::Event& _event)
 	{
-		const auto target = lcdTargetAt(_event);
+		const auto point = lcdNativePointAt(_event);
+		const auto target = point && m_lcdInteractionState
+			? lcdInteraction::hitTest(*m_lcdInteractionState, point->first, point->second) : std::nullopt;
+		// The machine name is a tooltip source too. Allow a pixel of slack above and below the 7 px text.
+		const auto& name = getModel() == md::MachineModel::Machinedrum ? lcdText::g_mdMachineName : lcdText::g_machineName;
+		const lcdInteraction::NativeRect nameArea{ static_cast<int>(name.x), static_cast<int>(name.y) - 1,
+			static_cast<int>(name.width), static_cast<int>(name.height) + 2 };
+		m_tooltipLcdMachineName = point && nameArea.contains(point->first, point->second);
 		if(target == m_lcdHoverEncoder)
 			return;
 		m_lcdHoverEncoder = target;
@@ -477,6 +748,7 @@ namespace mdJucePlugin
 
 	void Editor::clearLcdHover()
 	{
+		m_tooltipLcdMachineName = false;
 		if(!m_lcdHoverEncoder && !m_lcdWheelEncoder)
 			return;
 		m_lcdHoverEncoder.reset();
@@ -566,6 +838,11 @@ namespace mdJucePlugin
 			juceRmlUi::EventListener::Add(b, Rml::EventId::Mousedown,
 				[this, b, packet, control = pb.control](Rml::Event& _event)
 			{
+				if(assignSceneFromTrigger(control))
+				{
+					_event.StopPropagation();
+					return;
+				}
 				pressPanelButton(b, control, *packet,
 					_event.GetParameter<int>("shift_key", 0) != 0);
 			});
@@ -879,6 +1156,7 @@ namespace mdJucePlugin
 			&& (_focusedComponent == panel || panel->isParentOf(_focusedComponent)))
 			return;
 
+		resetKeyboardControl();
 		cancelPanelInputGestures();
 	}
 
@@ -908,7 +1186,9 @@ namespace mdJucePlugin
 		}
 	}
 
-	// One step per timer tick, so the firmware sees distinct press and release edges.
+	// One pulse per timer tick: its press and release go together. The firmware takes a press and
+	// release that reach it at the same instant (panelQuickTapFirmwareTest, MD and MM), so a tick
+	// between them only made a pulse, and each page step of navigation, a tick slower.
 	void Editor::servicePanelQueue()
 	{
 		if(m_panelSteps.empty())
@@ -917,14 +1197,19 @@ namespace mdJucePlugin
 			return;
 		}
 
-		const auto step = m_panelSteps.front();
-
-		const auto combined = step.press ? m_panelRows.press(step.packet) : m_panelRows.release(step.packet);
-		// Navigation pulses are retryable: do not advance to the matching release
-		// until this row state actually entered the bounded FIFO.
-		if(!sendPanelEvent(combined.row, combined.mask))
-			return;
-		m_panelSteps.pop_front();
+		PanelStep step;
+		do
+		{
+			step = m_panelSteps.front();
+			const auto combined = step.press ? m_panelRows.press(step.packet) : m_panelRows.release(step.packet);
+			// Navigation pulses are retryable: do not advance to the matching release
+			// until this row state actually entered the bounded FIFO.
+			if(!sendPanelEvent(combined.row, combined.mask))
+				return;
+			m_panelSteps.pop_front();
+		}
+		while(step.press && !m_panelSteps.empty() && !m_panelSteps.front().press
+			&& m_panelSteps.front().packet == step.packet);
 
 		// Give the firmware a complete timer interval to update its LED readback
 		// before deciding whether the pending direct-selection target needs another
@@ -954,17 +1239,7 @@ namespace mdJucePlugin
 			if(!target)
 				return;
 
-			constexpr md::FrontPanel::StatusLed pages[] =
-			{
-				md::FrontPanel::StatusLed::Synthesis,
-				md::FrontPanel::StatusLed::Effects,
-				md::FrontPanel::StatusLed::Routing,
-			};
-			std::array<bool, panelAffordances::g_machinedrumDataPages.size()> active{};
-			for(size_t page = 0; page < active.size(); ++page)
-				active[page] = frontPanel.getStatusLed(pages[page]);
-
-			const auto current = panelAffordances::singleActiveIndex(active);
+			const auto current = currentMachinedrumDataPage();
 			if(!current || m_machinedrumDataPageTarget.completeIfAt(*current))
 				return;
 
@@ -977,16 +1252,7 @@ namespace mdJucePlugin
 		const auto dataTarget = m_monomachineDataPageTarget.target();
 		if(dataTarget)
 		{
-			constexpr uint8_t banks[] = { 0x25, 0x25, 0x25, 0x25, 0x26, 0x26, 0x26 };
-			constexpr uint8_t bits[] = { 4, 5, 6, 7, 0, 1, 2 };
-			std::array<bool, panelAffordances::g_monomachineDataPages.size()> active{};
-			for(size_t page = 0; page < active.size(); ++page)
-			{
-				const auto raw = frontPanel.getLedBankRaw(banks[page]);
-				active[page] = (raw & static_cast<uint8_t>(1u << bits[page])) == 0;
-			}
-
-			const auto current = panelAffordances::singleActiveIndex(active);
+			const auto current = currentMonomachineDataPage();
 			if(current && !m_monomachineDataPageTarget.completeIfAt(*current))
 			{
 				const auto plan = panelAffordances::monomachineDataPagePlan(*current, *dataTarget);
@@ -1114,6 +1380,14 @@ namespace mdJucePlugin
 		if (_templateName == "tus_settings_dspaudio_Machinedrum" || _templateName == "tus_settings_dspaudio_Monomachine")
 			return std::make_unique<SettingsAudioInput>(getProcessor(), _root);
 		return jucePluginEditorLib::Editor::createDeviceSpecificSettings(_templateName, _root);
+	}
+
+	void Editor::applyTooltipSettings()
+	{
+		auto& config = getProcessor().getConfig();
+		m_tooltipsEnabled = config.getBoolValue(g_tooltipsEnabledKey, true);
+		m_tooltipDelayMs = std::max(0, config.getIntValue(g_tooltipDelayKey, g_defaultTooltipDelayMs));
+		updateParameterTooltip();
 	}
 
 	void Editor::applyPanelSpeeds()
@@ -1347,6 +1621,95 @@ namespace mdJucePlugin
 			"Replace machine storage?", message.toStdString(), completion);
 	}
 
+	void Editor::chooseFirmwareImage()
+	{
+		if(m_firmwareDialogOpen)
+			return;
+		auto* const processor = dynamic_cast<AudioPluginAudioProcessor*>(&getProcessor());
+		if(!processor)
+			return;
+		auto& config = getProcessor().getConfig();
+		juce::File initial;
+		const auto current = processor->getFirmwareImagePath();
+		if(!current.empty())
+			initial = juce::File(current).getParentDirectory();
+		if(!initial.exists())
+		{
+			const auto lastDirectory = config.getValue("firmwareImageLastDirectory");
+			if(lastDirectory.isNotEmpty())
+				initial = juce::File(lastDirectory);
+		}
+		if(!initial.exists())
+			initial = juce::File(getProcessor().getPublicRomFolder());
+		if(!initial.exists())
+			initial = juce::File::getSpecialLocation(juce::File::userDocumentsDirectory);
+
+		m_firmwareDialogOpen = true;
+		m_firmwareFileChooser = std::make_unique<juce::FileChooser>(
+			std::string("Choose an 8 MiB ") + getSettingsTemplateSuffix() + " firmware image",
+			initial, "*.bin", true);
+		const auto safeRoot =
+			juce::Component::SafePointer<juceRmlUi::RmlComponent>(getRmlComponent());
+		m_firmwareFileChooser->launchAsync(
+			juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+			[this, safeRoot](const juce::FileChooser& _chooser)
+			{
+				if(!safeRoot)
+					return;
+				m_firmwareDialogOpen = false;
+				const auto file = _chooser.getResult();
+				if(!file.existsAsFile())
+					return;
+				getProcessor().getConfig().setValue("firmwareImageLastDirectory",
+					file.getParentDirectory().getFullPathName());
+				confirmFirmwareImage(file.getFullPathName().toStdString());
+			});
+	}
+
+	void Editor::useStockFirmware()
+	{
+		auto* const processor = dynamic_cast<AudioPluginAudioProcessor*>(&getProcessor());
+		if(!processor || processor->getFirmwareImagePath().empty())
+			return;
+		confirmFirmwareImage({});
+	}
+
+	void Editor::confirmFirmwareImage(const std::string& _path)
+	{
+		const auto safeRoot =
+			juce::Component::SafePointer<juceRmlUi::RmlComponent>(getRmlComponent());
+		const auto name = _path.empty() ? std::string("the stock OS")
+			: baseLib::filesystem::getFilenameWithoutPath(_path);
+		genericUI::MessageBox::showYesNo(genericUI::MessageBox::Icon::Question,
+			std::string("Switch ") + getSettingsTemplateSuffix() + " firmware",
+			"Restart the machine with " + name + "?\n\n"
+			"The machine boots from a fresh factory state on the new OS. Kits, patterns and "
+			"songs of the running machine are not carried over, save them via SysEx first if "
+			"you need them. The image becomes the default for new instances and is stored with "
+			"the project.",
+			[this, safeRoot, _path](const genericUI::MessageBox::Result _answer)
+			{
+				if(!safeRoot || _answer != genericUI::MessageBox::Result::Yes)
+					return;
+				auto* const processor = dynamic_cast<AudioPluginAudioProcessor*>(&getProcessor());
+				if(!processor)
+					return;
+				std::string error;
+				if(processor->setFirmwareImage(_path, error))
+					genericUI::MessageBox::showOk(genericUI::MessageBox::Icon::Info, "Firmware switched",
+						"The machine is now running " + processor->getFirmwareDescription(), getRmlComponent());
+				else
+					genericUI::MessageBox::showOk(genericUI::MessageBox::Icon::Warning, "Firmware unchanged",
+						"The image was not loaded: " + error, getRmlComponent());
+			});
+	}
+
+	std::string Editor::getFirmwareDescription() const
+	{
+		auto* const processor = dynamic_cast<const AudioPluginAudioProcessor*>(&getProcessor());
+		return processor ? processor->getFirmwareDescription() : std::string{};
+	}
+
 	void Editor::showStorageOperationResult(const bool _success,
 		const juce::String& _message)
 	{
@@ -1469,6 +1832,15 @@ namespace mdJucePlugin
 			return;
 		}
 
+		const auto ticket = beginUserSysexTicket();
+		if(!ticket)
+			return;
+		m_sysexChooserOpen = true;
+		launchUserSysexFileChooser(*ticket);
+	}
+
+	std::optional<md::SysexImportTicket> Editor::beginUserSysexTicket()
+	{
 		const auto ticket = getProcessor().getPlugin().withDeviceLocked(
 			[](synthLib::Device* base) -> std::optional<md::SysexImportTicket>
 			{
@@ -1476,12 +1848,289 @@ namespace mdJucePlugin
 				return device ? device->beginUserSysexImport() : std::nullopt;
 			});
 		if(!ticket)
-		{
 			showUserSysexError("The machine is unavailable, restoring state, or already receiving a file. Try again when it is ready.");
+		return ticket;
+	}
+
+	void Editor::chooseSampleFiles()
+	{
+		if(m_model != md::MachineModel::Machinedrum)
+			return;
+		if(m_sysexChooserOpen)
+		{
+			showSampleError("Finish the open file dialog first.");
 			return;
 		}
+		if(isUserSysexTransferActive())
+		{
+			showSampleError("A transfer is already running. Wait for it to finish or cancel it.");
+			return;
+		}
+		const auto ticket = beginUserSysexTicket();
+		if(!ticket)
+			return;
+
+		auto& config = getProcessor().getConfig();
+		juce::File initial(config.getValue("mdSampleLastDirectory"));
+		if(!initial.isDirectory())
+			initial = juce::File::getSpecialLocation(juce::File::userMusicDirectory);
 		m_sysexChooserOpen = true;
-		launchUserSysexFileChooser(*ticket);
+		m_sampleFileChooser = std::make_unique<juce::FileChooser>(
+			"Load samples into the Machinedrum", initial,
+			"*.wav;*.WAV;*.aif;*.aiff;*.AIF;*.AIFF;*.mp3;*.m4a;*.caf", true);
+		const std::weak_ptr<void> lifetime = m_lifetimeToken;
+		const auto t = *ticket;
+		m_sampleFileChooser->launchAsync(
+			juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles
+				| juce::FileBrowserComponent::canSelectMultipleItems,
+			[lifetime, this, t](const juce::FileChooser& _chooser)
+			{
+				if(lifetime.expired())
+					return;
+				m_sysexChooserOpen = false;
+				std::vector<juce::File> files;
+				for(const auto& file : _chooser.getResults())
+					if(file.existsAsFile())
+						files.push_back(file);
+				if(!files.empty())
+					importSampleFiles(files, t);
+			});
+	}
+
+	void Editor::importDroppedFiles(const std::vector<std::string>& _files)
+	{
+		if(_files.empty())
+			return;
+		if(m_sysexChooserOpen)
+		{
+			showSampleError("Finish the open file dialog first.");
+			return;
+		}
+		if(isUserSysexTransferActive())
+		{
+			showSampleError("A transfer is already running. Wait for it to finish or cancel it.");
+			return;
+		}
+		std::vector<juce::File> files;
+		for(const auto& path : _files)
+			files.emplace_back(juce::String(path));
+
+		if(files.size() == 1 && sampleImport::isSysexFile(files.front()))
+		{
+			const auto ticket = beginUserSysexTicket();
+			if(ticket)
+				sendUserSysexFile(files.front(), *ticket);
+			return;
+		}
+		if(m_model != md::MachineModel::Machinedrum)
+		{
+			showSampleError("Audio samples can only be loaded into the Machinedrum UW. The Monomachine takes DigiPRO waveforms as SysEx files.");
+			return;
+		}
+		const auto ticket = beginUserSysexTicket();
+		if(ticket)
+			importSampleFiles(files, *ticket);
+	}
+
+	void Editor::importSampleFiles(const std::vector<juce::File>& _files, const md::SysexImportTicket& _ticket)
+	{
+		auto samples = std::make_shared<std::vector<sampleImport::DecodedSample>>();
+		juce::String problems;
+		for(const auto& file : _files)
+		{
+			std::string error;
+			auto decoded = sampleImport::decode(file, error);
+			if(!decoded)
+			{
+				problems += file.getFileName() + ": " + juce::String(error) + "\n";
+				continue;
+			}
+			samples->push_back(std::move(*decoded));
+		}
+		if(samples->empty())
+		{
+			showSampleError("No sample could be loaded.\n\n" + problems);
+			return;
+		}
+		if(samples->size() > sampleImport::g_slotCount)
+		{
+			showSampleError("At most 48 samples can be loaded at once.");
+			return;
+		}
+
+		auto& config = getProcessor().getConfig();
+		config.setValue("mdSampleLastDirectory", _files.front().getParentDirectory().getFullPathName());
+		config.saveIfNeeded();
+
+		if(problems.isNotEmpty())
+		{
+			const std::weak_ptr<void> lifetime = m_lifetimeToken;
+			genericUI::MessageBox::showOk(genericUI::MessageBox::Icon::Warning, "Some files were skipped",
+				problems.toStdString(), getRmlComponent(), [lifetime, this, samples, _ticket]
+				{
+					if(!lifetime.expired())
+						openSampleSlotMenu(samples, _ticket);
+				});
+			return;
+		}
+		openSampleSlotMenu(samples, _ticket);
+	}
+
+	namespace
+	{
+		juce::String rateLabel(const uint32_t _rate)
+		{
+			static constexpr uint32_t standard[] = {8000, 11025, 16000, 22050, 32000, 44100, 48000};
+			auto rate = _rate;
+			for(const auto r : standard)
+				if(std::abs(static_cast<int>(_rate) - static_cast<int>(r)) <= static_cast<int>(r / 500))
+					rate = r;
+			return rate % 1000 == 0 ? juce::String(rate / 1000) + "k" : juce::String(rate / 1000.0, 1) + "k";
+		}
+
+		juce::String secondsLabel(const double _seconds)
+		{
+			return _seconds < 10.0 ? juce::String(_seconds, 2) + " s" : juce::String(_seconds, 1) + " s";
+		}
+	}
+
+	void Editor::openSampleSlotMenu(const std::shared_ptr<std::vector<sampleImport::DecodedSample>>& _samples, const md::SysexImportTicket& _ticket)
+	{
+		auto* const component = getRmlComponent();
+		auto* const document = component ? component->getDocument() : nullptr;
+		auto* const processor = dynamic_cast<AudioPluginAudioProcessor*>(&getProcessor());
+		if(!document || !processor)
+			return;
+
+		const auto directory = processor->readSampleDirectory();
+		const auto ledger = sampleImport::loadLedger(getProcessor().getConfig());
+		const auto count = static_cast<uint32_t>(_samples->size());
+		const auto isUsed = [&](const uint32_t _slot)
+		{
+			return directory ? directory->slots[_slot].used : ledger.find(_slot) != ledger.end();
+		};
+
+		// suggest the first run of empty slots that fits all samples, else the first empty slot
+		uint32_t suggested = sampleImport::g_slotCount;
+		for(uint32_t first = 0; first + count <= sampleImport::g_slotCount && suggested == sampleImport::g_slotCount; ++first)
+		{
+			bool free = true;
+			for(uint32_t i = 0; i < count && free; ++i)
+				free = !isUsed(first + i);
+			if(free)
+				suggested = first;
+		}
+		for(uint32_t slot = 0; slot < sampleImport::g_slotCount && suggested == sampleImport::g_slotCount; ++slot)
+			if(!isUsed(slot) && slot + count <= sampleImport::g_slotCount)
+				suggested = slot;
+		if(suggested == sampleImport::g_slotCount)
+			suggested = 0;
+
+		juce::String title = count == 1
+			? juce::String("Load \"") + juce::String((*_samples)[0].name).trimEnd() + "\" into:"
+			: "Load " + juce::String(count) + " samples starting at:";
+		if(directory)
+		{
+			const auto freeSeconds = static_cast<double>(directory->freeSectors) * md::sampleDirectory::g_continuationSectorFrames / 44100.0;
+			title += "   (" + juce::String(freeSeconds, 1) + " s free at 44.1k)";
+		}
+
+		juceRmlUi::Menu menu;
+		menu.addEntry(title.toStdString(), false, false, {});
+		const std::weak_ptr<void> lifetime = m_lifetimeToken;
+		for(uint32_t slot = 0; slot < sampleImport::g_slotCount; ++slot)
+		{
+			juce::String label = sampleImport::slotLabel(slot);
+			if(directory)
+			{
+				const auto& s = directory->slots[slot];
+				if(s.used)
+					label += "  " + juce::String(s.name).trimEnd().paddedRight(' ', 4) + "  " + secondsLabel(s.seconds()) + "  " + rateLabel(s.sampleRate);
+				else
+					label += "  - empty -";
+			}
+			else if(const auto it = ledger.find(slot); it != ledger.end())
+				label += "  " + juce::String(it->second.name);
+			const bool fits = slot + count <= sampleImport::g_slotCount;
+			menu.addEntry(label.toStdString(), fits, slot == suggested, [lifetime, this, _samples, slot, _ticket]
+			{
+				// run after the menu has closed
+				juce::MessageManager::callAsync([lifetime, this, _samples, slot, _ticket]
+				{
+					if(!lifetime.expired())
+						confirmSampleSlots(_samples, slot, _ticket);
+				});
+			});
+		}
+		const auto size = component->getDocumentSize();
+		menu.runModal(document, Rml::Vector2f(static_cast<float>(size.x) * 0.08f, static_cast<float>(size.y) * 0.05f), 13);
+	}
+
+	void Editor::confirmSampleSlots(const std::shared_ptr<std::vector<sampleImport::DecodedSample>>& _samples, const uint32_t _firstSlot, const md::SysexImportTicket& _ticket)
+	{
+		auto* const processor = dynamic_cast<AudioPluginAudioProcessor*>(&getProcessor());
+		const auto directory = processor ? processor->readSampleDirectory() : std::nullopt;
+
+		if(directory)
+		{
+			uint32_t needed = 0;
+			for(const auto& sample : *_samples)
+				needed += md::sampleDirectory::sectorsForFrames(static_cast<uint32_t>(sample.samples.size()));
+			uint32_t available = directory->freeSectors;
+			juce::String replaced;
+			for(size_t i = 0; i < _samples->size(); ++i)
+			{
+				const auto& s = directory->slots[_firstSlot + i];
+				if(!s.used)
+					continue;
+				available += s.sectors;
+				replaced += juce::String(sampleImport::slotLabel(_firstSlot + static_cast<uint32_t>(i))) + "  " + juce::String(s.name).trimEnd() + "\n";
+			}
+			if(needed > available)
+			{
+				const auto toSeconds = [](const uint32_t _sectors) { return juce::String(_sectors * static_cast<double>(md::sampleDirectory::g_continuationSectorFrames) / 44100.0, 1); };
+				showSampleError("Not enough sample memory. The selection needs about " + toSeconds(needed)
+					+ " s at 44.1 kHz, the machine has " + toSeconds(available) + " s available for these slots.");
+				return;
+			}
+			if(replaced.isNotEmpty())
+			{
+				const std::weak_ptr<void> lifetime = m_lifetimeToken;
+				genericUI::MessageBox::showYesNo(genericUI::MessageBox::Icon::Question, "Replace samples?",
+					("These slots already hold samples that will be replaced:\n\n" + replaced + "\nContinue?").toStdString(),
+					[lifetime, this, _samples, _firstSlot, _ticket](const genericUI::MessageBox::Result _result)
+					{
+						if(!lifetime.expired() && _result == genericUI::MessageBox::Result::Yes)
+							sendSamples(_samples, _firstSlot, _ticket);
+					});
+				return;
+			}
+		}
+		sendSamples(_samples, _firstSlot, _ticket);
+	}
+
+	void Editor::sendSamples(const std::shared_ptr<std::vector<sampleImport::DecodedSample>>& _samples, const uint32_t _firstSlot, const md::SysexImportTicket& _ticket)
+	{
+		auto stream = sampleImport::encode(*_samples, _firstSlot);
+		if(stream.empty())
+		{
+			showSampleError("The samples could not be encoded.");
+			return;
+		}
+
+		PendingSampleSlots pending;
+		pending.ticket = _ticket;
+		for(size_t i = 0; i < _samples->size(); ++i)
+			pending.slots[_firstSlot + static_cast<uint32_t>(i)] = sampleImport::SlotInfo{(*_samples)[i].name, (*_samples)[i].samples.size()};
+		m_pendingSampleSlots = std::move(pending);
+
+		sendUserSysexBytes(std::move(stream), juce::File((*_samples)[0].sourcePath), _ticket);
+	}
+
+	void Editor::showSampleError(const juce::String& _message)
+	{
+		genericUI::MessageBox::showOk(genericUI::MessageBox::Icon::Warning,
+			"Samples not loaded", _message.toStdString(), getRmlComponent());
 	}
 
 	void Editor::launchUserSysexFileChooser(const md::SysexImportTicket& ticket)
@@ -1534,6 +2183,11 @@ namespace mdJucePlugin
 
 		const auto* const begin = static_cast<const uint8_t*>(fileData.getData());
 		std::vector<uint8_t> bytes(begin, begin + fileData.getSize());
+		sendUserSysexBytes(std::move(bytes), _file, ticket);
+	}
+
+	void Editor::sendUserSysexBytes(std::vector<uint8_t>&& bytes, const juce::File& _file, const md::SysexImportTicket& ticket)
+	{
 		md::MidiSysexStreamValidation validation{};
 		auto prepared = md::prepareMidiSysexTransfer(std::move(bytes), m_model, &validation);
 		if(!prepared)
@@ -1701,7 +2355,29 @@ namespace mdJucePlugin
 			});
 		// Destruction remains outside the device lock and therefore outside any
 		// interval in which it can block the real-time process callback.
-		if(progress && progress->state == md::MidiSysexTransferState::Complete)
+		auto pendingSamples = std::move(m_pendingSampleSlots);
+		m_pendingSampleSlots.reset();
+		if(pendingSamples && progress && progress->ticket != pendingSamples->ticket)
+			pendingSamples.reset();
+
+		if(progress && progress->state == md::MidiSysexTransferState::Complete && pendingSamples)
+		{
+			auto& config = getProcessor().getConfig();
+			auto ledger = sampleImport::loadLedger(config);
+			juce::String loaded;
+			for(const auto& [slot, info] : pendingSamples->slots)
+			{
+				ledger[slot] = info;
+				loaded += juce::String(sampleImport::slotLabel(slot)) + "  " + juce::String(info.name).trimEnd() + "\n";
+			}
+			sampleImport::saveLedger(config, ledger);
+			const auto firstSlot = pendingSamples->slots.begin()->first;
+			genericUI::MessageBox::showOk(genericUI::MessageBox::Icon::Info, "Samples loaded",
+				(loaded + "\nPlay a slot with the ROM machine of the same number, e.g. ROM-"
+					+ juce::String(firstSlot + 1).paddedLeft('0', 2) + " for " + juce::String(sampleImport::slotLabel(firstSlot))
+					+ ". Wait for any CLEANING/LOADING display to finish first.").toStdString(), getRmlComponent());
+		}
+		else if(progress && progress->state == md::MidiSysexTransferState::Complete)
 		{
 			juce::String message = "Every byte reached the emulated MIDI input. "
 				"Check the machine display for the firmware's import result.";
@@ -1737,26 +2413,57 @@ namespace mdJucePlugin
 		}
 	}
 
+	namespace
+	{
+		// The master knob spans the same range as the gain slider on the settings page, so the
+		// extra headroom is reachable without opening a menu. Fully down is silence; unity sits
+		// where the firmware's own output level lands, and the rest of the travel is boost.
+		constexpr float g_masterVolumeMinDb = -40.0f;
+		constexpr float g_masterVolumeMaxDb = 24.0f;
+		float masterVolumePositionToGain(const float _position)
+		{
+			if(_position <= 0.0f)
+				return 0.0f;
+			const auto db = g_masterVolumeMinDb + _position * (g_masterVolumeMaxDb - g_masterVolumeMinDb);
+			return std::pow(10.0f, db / 20.0f);
+		}
+		float masterVolumeGainToPosition(const float _gain)
+		{
+			if(_gain <= 0.0f)
+				return 0.0f;
+			const auto db = 20.0f * std::log10(_gain);
+			return std::clamp((db - g_masterVolumeMinDb) / (g_masterVolumeMaxDb - g_masterVolumeMinDb), 0.0f, 1.0f);
+		}
+	}
 	void Editor::createMasterVolume()
 	{
 		m_masterVolume = findChild<juceRmlUi::ElemKnob>("encMaster", false);
 		if(!m_masterVolume)
 			return;
-
 		m_masterVolume->setMinValue(0.0f);
 		m_masterVolume->setMaxValue(1.0f);
 		m_masterVolume->setEndless(false);
-		m_masterVolume->setValue(
-			std::clamp(getProcessor().getOutputGain(), 0.0f, 1.0f), false);
-
+		m_masterVolumeGain = getProcessor().getOutputGain();
+		m_masterVolume->setValue(masterVolumeGainToPosition(m_masterVolumeGain), false);
 		juceRmlUi::EventListener::Add(m_masterVolume, Rml::EventId::Change,
 			[this](Rml::Event&)
 			{
-				getProcessor().setOutputGain(std::clamp(
+				m_masterVolumeGain = masterVolumePositionToGain(std::clamp(
 					juceRmlUi::ElemValue::getValue(m_masterVolume), 0.0f, 1.0f));
+				getProcessor().setOutputGain(m_masterVolumeGain);
 			});
 	}
-
+	void Editor::syncMasterVolume()
+	{
+		// The settings page writes the same gain; follow it so both controls agree.
+		if(!m_masterVolume)
+			return;
+		const auto gain = getProcessor().getOutputGain();
+		if(gain == m_masterVolumeGain)
+			return;
+		m_masterVolumeGain = gain;
+		m_masterVolume->setValue(masterVolumeGainToPosition(gain), false);
+	}
 	void Editor::configureEncoder(juceRmlUi::ElemKnob* const _knob,
 		const md::PanelEncoder _encoder, float& _last, float& _accum)
 	{
@@ -1773,6 +2480,12 @@ namespace mdJucePlugin
 			juceRmlUi::EventListener::Add(_knob, Rml::EventId::Mousedown,
 				[this, _knob, packet](Rml::Event& _event)
 				{
+					if(sceneEditSide() >= 0
+						&& juceRmlUi::helper::getKeyModAlt(_event))
+					{
+						_event.StopPropagation();
+						return;
+					}
 					releaseEncoderPress();
 					if(m_encoderPress.begin(packet,
 						juceRmlUi::helper::getMouseButton(_event) == juceRmlUi::MouseButton::Left
@@ -1834,13 +2547,19 @@ namespace mdJucePlugin
 		emitEncoderSteps(_encoder, steps);
 	}
 
-	void Editor::emitEncoderSteps(const md::PanelEncoder _encoder, const int _steps) const
+	void Editor::emitEncoderSteps(const md::PanelEncoder _encoder, const int _steps)
 	{
+		if(sceneEditSide() >= 0)
+		{
+			(void)editSceneParameter(_encoder, _steps);
+			return;
+		}
 		const auto command = md::panelEncoderCommand(getModel(), _encoder);
 		if(!command || _steps == 0)
 			return;
 		const auto argument = static_cast<uint8_t>(_steps > 0 ? 0x01 : 0xff);
 		const auto count = std::min(std::abs(_steps), g_encoderBurstCap);
+		// sendPanelEvent no longer takes the device lock, so a burst no longer waits for audio blocks.
 		for(int step = 0; step < count; ++step)
 			(void)sendPanelEvent(*command, argument);
 	}
@@ -2003,11 +2722,33 @@ namespace mdJucePlugin
 		return true;
 	}
 
+	bool Editor::syncLcdColours()
+	{
+		// A skin may colour the display on its LCD element (#lcdArea): image-color is the backlight
+		// (unlit pixels), color the lit pixels. Only properties the skin sets count, never inherited text colour.
+		auto* area = m_lcdCanvas ? m_lcdCanvas->GetParentNode() : nullptr;
+		const auto read = [area](const char* _name) -> uint32_t
+		{
+			const auto* prop = area ? area->GetLocalProperty(_name) : nullptr;
+			if(!prop)
+				return 0;
+			const auto c = prop->Get<Rml::Colourb>(area->GetCoreInstance());
+			return juce::Colour(c.red, c.green, c.blue, c.alpha).getARGB() | 0xff000000;
+		};
+		const auto off = read("image-color");
+		const auto on = read("color");
+		const bool changed = off != m_skinLcdOff.load(std::memory_order_relaxed) || on != m_skinLcdOn.load(std::memory_order_relaxed);
+		m_skinLcdOff.store(off, std::memory_order_relaxed);
+		m_skinLcdOn.store(on, std::memory_order_relaxed);
+		return changed;
+	}
 	void Editor::paintLcd(const juce::Image& _target, juce::Graphics& _g) const
 	{
 		const auto isMonomachine = getModel() == md::MachineModel::Monomachine;
-		const auto lcdOff = isMonomachine ? g_mmLcdOff : g_mdLcdOff;
-		const auto lcdOn = isMonomachine ? g_mmLcdOn : g_mdLcdOn;
+		const auto skinOff = m_skinLcdOff.load(std::memory_order_relaxed);
+		const auto skinOn = m_skinLcdOn.load(std::memory_order_relaxed);
+		const auto lcdOff = skinOff ? skinOff : isMonomachine ? g_mmLcdOff : g_mdLcdOff;
+		const auto lcdOn = skinOn ? skinOn : isMonomachine ? g_mmLcdOn : g_mdLcdOn;
 
 		// The skin's display surround need not have the framebuffer's 2:1 aspect.
 		// Keep spare space the LCD background colour instead of stretching pixels.
@@ -2056,24 +2797,48 @@ namespace mdJucePlugin
 			return;
 
 		const auto nowMilliseconds = juce::Time::getMillisecondCounterHiRes();
+		serviceGamepad(nowMilliseconds);
+		serviceKeyboardReleases(nowMilliseconds);
 		const auto modifiers = juce::ModifierKeys::getCurrentModifiersRealtime();
 		if(m_encoderPress.active() && (!modifiers.isAltDown() || !modifiers.isLeftButtonDown()))
 			releaseEncoderPress();
 		// Some plugin hosts can lose the modifier key-up when focus changes. Poll
 		// native state as a fail-safe so no panel row remains held indefinitely.
-		if(!m_shiftPanelLatch.empty()
+		// A held gamepad latch button stands in for Shift.
+		if(!m_shiftPanelLatch.empty() && !m_gamepadLatchHeld
 			&& !juce::ModifierKeys::getCurrentModifiersRealtime().isShiftDown())
 			releasePanelButtonGestures();
+		// Same fail-safe for keyboard FUNCTION: never leave it held if the Ctrl key-up was lost.
+		if(m_keyboardFunctionHeld && !modifiers.isCtrlDown())
+		{
+			m_keyboardFunctionHeld = false;
+			releaseHeldControl(md::PanelControl::Function);
+		}
 
 		const auto hadFrontPanelSnapshot = m_frontPanelSnapshotValid;
 		m_frontPanelSnapshotValid = refreshFrontPanelState(nowMilliseconds);
+		if(m_sceneSideA && (m_sceneDisplayedKit != m_controller.getCurrentKitSlot()
+			|| m_scenePresentationRevision != m_controller.getSceneRevision()))
+		{
+			// A new kit has other scenes: stop editing. Any other change (the remote panel or the control
+			// input moved the fader, chose a side, added a lock) only needs showing; the edit side is shared.
+			if(m_sceneDisplayedKit != m_controller.getCurrentKitSlot())
+			{
+				m_controller.setSceneEditSide(-1);
+				m_lastSceneAddress.reset();
+			}
+			updateScenePresentation();
+		}
 		if(hadFrontPanelSnapshot && !m_frontPanelSnapshotValid)
 			m_lcdInteractionInputChanged = true;
 		serviceUserSysexProgress();
 		if(m_lcdInteractionInputChanged)
 			updateLcdInteractionState();
+		// Follows page changes and keyboard/gamepad focus; cached, so unchanged content is cheap.
+		updateParameterTooltip();
+		syncMasterVolume();
 
-		if(m_lcdCanvas && m_lcdChanged)
+		if(m_lcdCanvas && (syncLcdColours() || m_lcdChanged))
 			m_lcdCanvas->repaint();
 
 		// SetClass mutates the Rml DOM but does not wake its renderer. Without this,
@@ -2084,6 +2849,1633 @@ namespace mdJucePlugin
 				// These class changes are resolved in the next RmlUi update. Avoid
 				// asking the software fallback to rasterize three unchanged frames.
 				rml->enqueueUpdateOnce();
+	}
+
+	namespace
+	{
+		constexpr double g_gamepadRepeatDelayMilliseconds = 350.0;
+		constexpr double g_gamepadRepeatIntervalMilliseconds = 110.0;
+		// A knob push shorter than this is stretched to it, so a quick tap still reaches the firmware as a click.
+		constexpr double g_gamepadMinimumPushMilliseconds = 50.0;
+		constexpr double g_gamepadHighlightTimeoutMilliseconds = 120000.0;	// hide focus after 2 minutes idle
+		constexpr double g_keyReleaseGraceMilliseconds = 50.0;	// see Editor::onPanelKey
+		constexpr float g_gamepadTriggerThreshold = 0.5f;
+		constexpr float g_gamepadStickDeadzone = 0.2f;
+		constexpr float g_gamepadCursorSpeed = 0.6f;	// panel widths per second, left stick fully pushed
+		constexpr double g_gamepadCursorLingerMilliseconds = 1000.0;	// cursor stays this long after the stick is let go
+		constexpr float g_gamepadStickDetentsPerSecond = 30.0f;
+		constexpr float g_gamepadTouchDetentsPerWidth = 48.0f;	// knob steps for a finger across the whole touchpad
+		constexpr float g_gamepadTouchpadAspect = 0.5f;	// height / width, so a step is the same distance both ways
+		constexpr float g_gamepadGyroDetentsPerRadian = 40.0f;	// a 45 degree tilt is about 30 knob steps
+		constexpr float g_gamepadGyroDeadzone = 0.03f;	// rad/s: slower rotation is sensor drift, not a tilt
+		constexpr float g_gamepadTiltRangeRadians = 0.785398f;	// absolute tilt: +-45 degrees covers the knob at 100%
+		constexpr int g_gamepadAxisStepsPerPoll = 4;	// absolute axes glide to their target at most this fast
+		constexpr float g_gamepadAxisSmoothing = 0.35f;	// share of a new position taken per poll, against jitter
+
+		struct GamepadDirectButton
+		{
+			Gamepad::Button button;
+			md::PanelControl control;
+		};
+
+		// Pad buttons bound to a fixed panel key, independent of the focus.
+		constexpr GamepadDirectButton g_gamepadDirectButtons[] =
+		{
+			{ Gamepad::Button::RightShoulder, md::PanelControl::Function },
+			{ Gamepad::Button::East, md::PanelControl::Exit },
+			{ Gamepad::Button::North, md::PanelControl::Enter },
+			{ Gamepad::Button::West, md::PanelControl::Record },
+			{ Gamepad::Button::Start, md::PanelControl::Play },
+			{ Gamepad::Button::Back, md::PanelControl::Stop },
+		};
+
+		md::PanelControl arrowControl(const int _direction)
+		{
+			static constexpr md::PanelControl g_arrows[] =
+				{ md::PanelControl::Up, md::PanelControl::Down, md::PanelControl::Left, md::PanelControl::Right };
+			return g_arrows[_direction];
+		}
+
+		Rml::Vector2f elementCentre(Rml::Element* const _element)
+		{
+			return _element->GetAbsoluteOffset(Rml::BoxArea::Border)
+				+ _element->GetBox().GetSize(Rml::BoxArea::Border) * 0.5f;
+		}
+	}
+
+	void Editor::createGamepad()
+	{
+		if(getProcessor().wrapperType != juce::AudioProcessor::wrapperType_Standalone)
+			return;
+
+		m_gamepadTargets.clear();
+		for(const auto& pb : g_panelButtons)
+		{
+			auto* const button = findChild<juceRmlUi::ElemButton>(pb.id, false);
+			if(!button || !md::panelPacket(getModel(), pb.control))
+				continue;
+			GamepadTarget target;
+			target.element = button;
+			target.button = button;
+			target.control = pb.control;
+			m_gamepadTargets.push_back(target);
+		}
+
+		const auto addKnob = [this](juceRmlUi::ElemKnob* const _knob, const md::PanelEncoder _encoder)
+		{
+			if(!_knob || !md::panelEncoderCommand(getModel(), _encoder))
+				return;
+			GamepadTarget target;
+			target.element = _knob;
+			target.knob = _knob;
+			target.encoder = _encoder;
+			m_gamepadTargets.push_back(target);
+		};
+		for(size_t i = 0; i < m_encoders.size(); ++i)
+			addKnob(m_encoders[i], static_cast<md::PanelEncoder>(i));
+		addKnob(m_levelEncoder, md::PanelEncoder::Level);
+		addKnob(m_soundEncoder, md::PanelEncoder::SoundSelection);
+
+		auto* const document = getDocument();
+		if(m_gamepadTargets.empty() || !document)
+			return;
+
+		// The ring is reparented into whichever control has focus, so it follows that
+		// control through panel scaling without any coordinate conversion.
+		auto ring = document->CreateElement("div");
+		ring->SetAttribute("style",
+			"position: absolute; left: -4dp; top: -4dp; right: -4dp; bottom: -4dp;"
+			" border: 3dp #ffc83a; pointer-events: none; z-index: 1000; display: none;");
+		m_gamepadFocusRing = ring.get();
+		m_gamepadTargets.front().element->AppendChild(std::move(ring));
+
+		// The left stick's free cursor. Whatever control it overlaps takes the focus.
+		auto cursor = document->CreateElement("div");
+		cursor->SetAttribute("style",
+			"position: absolute; left: 0px; top: 0px; width: 26dp; height: 26dp; margin-left: -13dp; margin-top: -13dp;"
+			" border: 2dp #ffc83a; border-radius: 13dp; background-color: #ffc83a40;"
+			" pointer-events: none; z-index: 1001; display: none;");
+		m_gamepadCursor = cursor.get();
+		document->AppendChild(std::move(cursor));
+		// The cursor moves once per drawn frame, by the time since the previous frame. Moving it from the
+		// poll timer instead steps unevenly, because that timer and the frame timer drift against each other.
+		if(auto* const rml = getRmlComponent())
+		{
+			m_gamepadCursorFrame.set(rml->evPreUpdate, [this](juceRmlUi::RmlComponent*) { stepGamepadCursor(); });
+			m_gamepadCursorFrameDone.set(rml->evPostUpdate, [this](juceRmlUi::RmlComponent*)
+			{
+				if(m_gamepadCursorLastFrameMilliseconds > 0.0 && m_gamepadCursor)
+					m_gamepadCursor->GetContext()->RequestNextUpdate(0.0f);
+			});
+		}
+
+		applyGamepadSettings();
+		m_gamepad = std::make_unique<Gamepad>();
+		m_gamepadFocus = 0;
+	}
+
+	std::optional<size_t> Editor::findGamepadTarget(const md::PanelControl _control) const
+	{
+		for(size_t i = 0; i < m_gamepadTargets.size(); ++i)
+			if(m_gamepadTargets[i].button && m_gamepadTargets[i].control == _control)
+				return i;
+		return {};
+	}
+
+	std::optional<size_t> Editor::findGamepadTarget(const juceRmlUi::ElemKnob* const _knob) const
+	{
+		for(size_t i = 0; i < m_gamepadTargets.size(); ++i)
+			if(_knob && m_gamepadTargets[i].knob == _knob)
+				return i;
+		return {};
+	}
+
+	void Editor::setGamepadFocus(const size_t _index)
+	{
+		if(_index >= m_gamepadTargets.size())
+			return;
+		m_gamepadFocus = _index;
+
+		auto* const element = m_gamepadTargets[_index].element;
+		auto* const parent = m_gamepadFocusRing ? m_gamepadFocusRing->GetParentNode() : nullptr;
+		if(parent && parent != element)
+		{
+			// Anchor the absolutely positioned ring to the control without moving it.
+			if(element->GetComputedValues().position() == Rml::Style::Position::Static)
+				element->SetProperty(Rml::PropertyId::Position, Rml::Style::Position::Relative);
+			if(auto ring = parent->RemoveChild(m_gamepadFocusRing))
+				element->AppendChild(std::move(ring));
+
+			// Panel keys clip their children, which would hide a ring drawn outside the
+			// key. Draw it just inside those, and outside controls that do not clip.
+			const bool clips = element->GetComputedValues().overflow_x() != Rml::Style::Overflow::Visible;
+			const Rml::Property offset(clips ? 0.0f : -4.0f, Rml::Unit::DP);
+			for(const auto id : { Rml::PropertyId::Left, Rml::PropertyId::Top, Rml::PropertyId::Right, Rml::PropertyId::Bottom })
+				m_gamepadFocusRing->SetProperty(id, offset);
+		}
+
+		if(auto* const rml = getRmlComponent())
+			rml->enqueueUpdateOnce();
+	}
+
+	void Editor::moveGamepadFocus(const GamepadDirection _direction)
+	{
+		if(m_gamepadTargets.empty())
+			return;
+
+		// Nearest control in the pressed direction, preferring ones that line up.
+		const auto from = elementCentre(m_gamepadTargets[m_gamepadFocus].element);
+		std::optional<size_t> best;
+		float bestScore = std::numeric_limits<float>::max();
+		for(size_t i = 0; i < m_gamepadTargets.size(); ++i)
+		{
+			if(i == m_gamepadFocus)
+				continue;
+			const auto delta = elementCentre(m_gamepadTargets[i].element) - from;
+			float along = 0.0f, across = 0.0f;
+			switch(_direction)
+			{
+			case GamepadDirection::Up:    along = -delta.y; across = delta.x; break;
+			case GamepadDirection::Down:  along =  delta.y; across = delta.x; break;
+			case GamepadDirection::Left:  along = -delta.x; across = delta.y; break;
+			case GamepadDirection::Right: along =  delta.x; across = delta.y; break;
+			}
+			if(along <= 1.0f)
+				continue;
+			const auto score = along + 2.0f * std::abs(across);
+			if(score < bestScore)
+			{
+				bestScore = score;
+				best = i;
+			}
+		}
+		if(best)
+		{
+			setGamepadFocus(*best);
+			centreGamepadCursor();
+		}
+	}
+
+	void Editor::placeGamepadCursor(const bool _requestUpdate)
+	{
+		auto* const document = getDocument();
+		if(!m_gamepadCursor || !document)
+			return;
+		const auto size = document->GetBox().GetSize(Rml::BoxArea::Padding);
+		m_gamepadCursor->SetProperty(Rml::PropertyId::Left, Rml::Property(m_gamepadCursorPosition.x * size.x, Rml::Unit::PX));
+		m_gamepadCursor->SetProperty(Rml::PropertyId::Top, Rml::Property(m_gamepadCursorPosition.y * size.y, Rml::Unit::PX));
+		if(_requestUpdate)
+			if(auto* const rml = getRmlComponent())
+				rml->enqueueUpdateOnce();
+	}
+
+	void Editor::stepGamepadCursor()
+	{
+		if(m_gamepadCursorLastFrameMilliseconds <= 0.0)
+			return;
+		const auto now = juce::Time::getMillisecondCounterHiRes();
+		const auto elapsed = std::min(100.0, now - m_gamepadCursorLastFrameMilliseconds);
+		m_gamepadCursorLastFrameMilliseconds = now;
+		moveGamepadCursor(m_gamepadCursorStick.x, m_gamepadCursorStick.y, elapsed);
+	}
+
+	void Editor::centreGamepadCursor()
+	{
+		auto* const document = getDocument();
+		if(!document || m_gamepadFocus >= m_gamepadTargets.size())
+			return;
+		const auto size = document->GetBox().GetSize(Rml::BoxArea::Padding);
+		if(size.x <= 0.0f || size.y <= 0.0f)
+			return;
+		const auto centre = elementCentre(m_gamepadTargets[m_gamepadFocus].element)
+			- document->GetAbsoluteOffset(Rml::BoxArea::Padding);
+		m_gamepadCursorPosition = { centre.x / size.x, centre.y / size.y };
+		placeGamepadCursor();
+	}
+
+	void Editor::moveGamepadCursor(const float _x, const float _y, const double _elapsedMilliseconds)
+	{
+		auto* const document = getDocument();
+		const auto magnitude = std::min(1.0f, std::hypot(_x, _y));
+		if(!m_gamepadCursor || !document || magnitude <= g_gamepadStickDeadzone)
+			return;
+		const auto size = document->GetBox().GetSize(Rml::BoxArea::Padding);
+		if(size.x <= 0.0f || size.y <= 0.0f)
+			return;
+
+		// Squared response: fine placement near the centre of the stick's travel, fast at the edge. The
+		// speed is in panel widths on both axes so a diagonal moves diagonally.
+		const auto push = (magnitude - g_gamepadStickDeadzone) / (1.0f - g_gamepadStickDeadzone);
+		const auto pixels = push * push * g_gamepadCursorSpeed * size.x * static_cast<float>(_elapsedMilliseconds / 1000.0);
+		m_gamepadCursorPosition.x = std::clamp(m_gamepadCursorPosition.x + _x / magnitude * pixels / size.x, 0.0f, 1.0f);
+		m_gamepadCursorPosition.y = std::clamp(m_gamepadCursorPosition.y + _y / magnitude * pixels / size.y, 0.0f, 1.0f);
+		placeGamepadCursor(false);
+
+		// Focus the control the circle overlaps, the one nearest its centre if it overlaps several. Over
+		// empty panel the focus stays where it was.
+		const auto point = document->GetAbsoluteOffset(Rml::BoxArea::Padding)
+			+ Rml::Vector2f(m_gamepadCursorPosition.x * size.x, m_gamepadCursorPosition.y * size.y);
+		const auto radius = m_gamepadCursor->GetBox().GetSize(Rml::BoxArea::Border).x * 0.5f;
+		std::optional<size_t> best;
+		float bestDistance = std::numeric_limits<float>::max();
+		for(size_t i = 0; i < m_gamepadTargets.size(); ++i)
+		{
+			auto* const element = m_gamepadTargets[i].element;
+			const auto origin = element->GetAbsoluteOffset(Rml::BoxArea::Border);
+			const auto extent = element->GetBox().GetSize(Rml::BoxArea::Border);
+			const auto dx = std::max({ origin.x - point.x, 0.0f, point.x - (origin.x + extent.x) });
+			const auto dy = std::max({ origin.y - point.y, 0.0f, point.y - (origin.y + extent.y) });
+			if(std::hypot(dx, dy) > radius)
+				continue;
+			const auto toCentre = elementCentre(element) - point;
+			const auto distance = std::hypot(toCentre.x, toCentre.y);
+			if(distance < bestDistance)
+			{
+				bestDistance = distance;
+				best = i;
+			}
+		}
+		if(best && *best != m_gamepadFocus)
+			setGamepadFocus(*best);
+	}
+
+	void Editor::pressHeldControl(const md::PanelControl _control, const bool _latch, const bool _momentaryBanks)
+	{
+		const auto index = findGamepadTarget(_control);
+		const auto packet = md::panelPacket(getModel(), _control);
+		if(!index || !packet)
+			return;
+		auto* const button = m_gamepadTargets[*index].button;
+		if(button->isChecked())
+			return;
+
+		// Mirror the mouse handler: an MM pattern bank normally toggles its own latch.
+		if(!_momentaryBanks && getModel() == md::MachineModel::Monomachine && panelAffordances::isPatternBank(_control))
+		{
+			if(!_latch && !m_shiftPanelLatch.empty())
+				releasePanelButtonGestures();
+			if(panelAffordances::usesPersistentPatternBankLatch(getModel(), _control, !m_shiftPanelLatch.empty()))
+			{
+				togglePatternBankLatch(button, *packet);
+				return;
+			}
+		}
+
+		pressPanelButton(button, _control, *packet, _latch);
+		m_gamepadHeldControls.push_back(_control);
+
+		if(_control >= md::PanelControl::Track1 && _control <= md::PanelControl::Track6)
+			m_gamepadTrack = static_cast<int>(_control) - static_cast<int>(md::PanelControl::Track1);
+	}
+
+	void Editor::releaseHeldControl(const md::PanelControl _control)
+	{
+		const auto it = std::find(m_gamepadHeldControls.begin(), m_gamepadHeldControls.end(), _control);
+		if(it == m_gamepadHeldControls.end())
+			return;
+		m_gamepadHeldControls.erase(it);
+
+		const auto index = findGamepadTarget(_control);
+		const auto packet = md::panelPacket(getModel(), _control);
+		if(index && packet)
+			releasePanelButton(m_gamepadTargets[*index].button, _control, *packet);
+	}
+
+	void Editor::turnGamepadKnob(juceRmlUi::ElemKnob* const _knob, const float _detents)
+	{
+		if(!_knob || _detents == 0.0f)
+			return;
+		// Moving the on-screen knob reuses onEncoderChanged: the same detent
+		// accumulator as a mouse drag, and the knob visibly turns.
+		auto value = std::fmod(juceRmlUi::ElemValue::getValue(_knob) + _detents, g_encoderRange);
+		if(value < 0.0f)
+			value += g_encoderRange;
+		_knob->setValue(value, true);
+	}
+
+	void Editor::pushGamepadKnob(const GamepadTarget& _target, const double _nowMilliseconds)
+	{
+		releaseGamepadKnob();
+		if(sceneEditSide() >= 0)
+			return;
+		const auto packet = md::panelEncoderPressPacket(getModel(), _target.encoder);
+		if(!packet)
+			return;
+		const auto combined = m_panelRows.press(*packet);
+		(void)sendPanelEvent(combined.row, combined.mask);
+		m_gamepadPushedKnobPacket = packet;
+		m_gamepadPushedKnob = _target.knob;
+		m_gamepadKnobPushMilliseconds = _nowMilliseconds;
+		m_gamepadKnobReleaseMilliseconds = std::numeric_limits<double>::max();
+		_target.knob->SetClass("encoderPressed", true);
+	}
+
+	void Editor::releaseGamepadKnob()
+	{
+		if(!m_gamepadPushedKnobPacket)
+			return;
+		const auto combined = m_panelRows.release(*m_gamepadPushedKnobPacket);
+		(void)sendPanelEvent(combined.row, combined.mask);
+		if(m_gamepadPushedKnob)
+			m_gamepadPushedKnob->SetClass("encoderPressed", false);
+		m_gamepadPushedKnobPacket.reset();
+		m_gamepadPushedKnob = nullptr;
+	}
+
+	void Editor::applyGamepadSettings()
+	{
+		auto& config = getProcessor().getConfig();
+		for(const auto& info : gamepadAxes::g_axes)
+			m_gamepadAxes[static_cast<size_t>(info.axis)] = gamepadAxes::read(config, info, getModel());
+		m_gamepadFaceLayout = config.getIntValue(gamepadAxes::g_faceLayoutKey, 0);
+	}
+
+	juceRmlUi::ElemKnob* Editor::gamepadAxisKnob(const gamepadAxes::Axis _axis) const
+	{
+		const auto& settings = m_gamepadAxes[static_cast<size_t>(_axis)];
+		const auto target = settings.target;
+		if(target >= gamepadAxes::g_targetKnobA && target < gamepadAxes::g_targetKnobA + static_cast<int>(m_encoders.size()))
+			return m_encoders[static_cast<size_t>(target - gamepadAxes::g_targetKnobA)];
+		if(target == gamepadAxes::g_targetLevel)
+			return m_levelEncoder;
+		if(target != gamepadAxes::g_targetFocusedTop && target != gamepadAxes::g_targetFocusedBottom)
+			return nullptr;
+
+		// The focused column: only while focus is on one of the eight data entry knobs.
+		if(m_gamepadFocus >= m_gamepadTargets.size())
+			return nullptr;
+		const auto& focused = m_gamepadTargets[m_gamepadFocus];
+		const auto encoder = static_cast<size_t>(focused.encoder);
+		if(!focused.knob || encoder >= m_encoders.size() || focused.knob != m_encoders[encoder])
+			return nullptr;
+		return m_encoders[encoder % 4 + (target == gamepadAxes::g_targetFocusedBottom ? 4 : 0)];
+	}
+
+	namespace
+	{
+		std::FILE* gamepadDebugLog()
+		{
+			static std::FILE* const file = []() -> std::FILE*
+			{
+				const auto* const path = std::getenv("GEARMULATOR_GAMEPAD_DEBUG");
+				return path && *path ? std::fopen(path, "w") : nullptr;
+			}();
+			return file;
+		}
+	}
+
+	void Editor::driveGamepadAxis(const gamepadAxes::Axis _axis, const bool _engaged, const float _position,
+		const float _detents)
+	{
+		auto& run = m_gamepadAxisRuns[static_cast<size_t>(_axis)];
+		const auto& settings = m_gamepadAxes[static_cast<size_t>(_axis)];
+		auto* const knob = _engaged ? gamepadAxisKnob(_axis) : nullptr;
+		if(!knob)
+		{
+			run = {};
+			return;
+		}
+
+		// Engaging, or the axis now points at another knob: start from that knob's current value, if known.
+		if(knob != run.knob)
+		{
+			run.knob = knob;
+			run.value = settings.absolute && _position >= 0.0f ? currentKnobValue(knob) : -1;
+			run.trackedValue = run.value;
+			run.position = _position;
+			if(auto* const log = gamepadDebugLog())
+				std::fprintf(log, "engage axis=%d encoder=%d absolute=%d position=%.3f startValue=%d\n",
+					static_cast<int>(_axis), static_cast<int>(knobEncoder(knob)), settings.absolute ? 1 : 0,
+					_position, run.value);
+		}
+
+		if(run.value < 0)
+		{
+			// Relative, or the value is unknown (LEVEL, an LFO window): movement nudges the knob.
+			const auto scale = static_cast<float>(settings.speedPercent) / 100.0f * (settings.invert ? -1.0f : 1.0f);
+			turnGamepadKnob(knob, _detents * scale);
+			return;
+		}
+
+		// Absolute: step towards the value for this position. The machine accelerates steps that arrive quickly,
+		// so a step can move the value by more than one: steer by the knob's actual value, as the controller
+		// tracks it, and close about half the gap each poll. Differences of one are sensor noise.
+		run.position += (_position - run.position) * g_gamepadAxisSmoothing;
+		const auto position = settings.invert ? 1.0f - run.position : run.position;
+		const auto target = static_cast<int>(std::lround(std::clamp(position, 0.0f, 1.0f) * 127.0f));
+		// Resync only when the tracked value moves. If it ever stops following the machine, the step count
+		// carries on alone and stops at the target, instead of pushing the knob to the end of its range.
+		const auto tracked = currentKnobValue(knob);
+		if(tracked >= 0 && tracked != run.trackedValue)
+		{
+			run.value = tracked;
+			run.trackedValue = tracked;
+		}
+		const auto error = target - run.value;
+		const auto steps = std::abs(error) <= 1 ? 0
+			: std::clamp(error / 2 + (error > 0 ? 1 : -1), -g_gamepadAxisStepsPerPoll, g_gamepadAxisStepsPerPoll);
+		if(auto* const log = gamepadDebugLog())
+		{
+			std::fprintf(log, "axis=%d position=%.3f target=%d believed=%d mirror=%d steps=%d\n",
+				static_cast<int>(_axis), _position, target, run.value, currentKnobValue(knob), steps);
+			std::fflush(log);
+		}
+		if(steps == 0)
+			return;
+		emitEncoderSteps(knobEncoder(knob), steps);
+		run.value = std::clamp(run.value + steps, 0, 127);
+	}
+
+	md::PanelEncoder Editor::knobEncoder(const juceRmlUi::ElemKnob* const _knob) const
+	{
+		for(size_t i = 0; i < m_encoders.size(); ++i)
+			if(m_encoders[i] == _knob)
+				return static_cast<md::PanelEncoder>(i);
+		return md::PanelEncoder::Level;
+	}
+
+	int Editor::currentKnobValue(const juceRmlUi::ElemKnob* const _knob) const
+	{
+		// Known for the eight data entry knobs on a data page, from the controller's copy of the kit, once that
+		// copy is synchronized with the machine. Until then (right after launch) it can hold stale values.
+		if(!m_controller.isAutomationSynchronized())
+			return -1;
+		const auto encoder = static_cast<size_t>(knobEncoder(_knob));
+		if(encoder >= m_encoders.size() || m_encoders[encoder] != _knob)
+			return -1;
+		std::optional<int> page;
+		if(getModel() == md::MachineModel::Monomachine)
+			page = currentMonomachineDataPage();
+		else if(!m_lcdInteractionState || m_lcdInteractionState->layout == lcdInteraction::LayoutKind::Standard)
+			page = currentMachinedrumDataPage();
+		const auto track = m_controller.getCurrentTrack();
+		if(!page || track < 0)
+			return -1;
+		return m_controller.getTrackParameterValue(static_cast<uint8_t>(track), static_cast<uint8_t>(*page),
+			static_cast<uint8_t>(encoder));
+	}
+
+	void Editor::setGamepadAxisFunction(const bool _held)
+	{
+		if(_held == m_gamepadAxisFunctionHeld)
+			return;
+		if(!_held)
+		{
+			releaseHeldControl(md::PanelControl::Function);
+			m_gamepadAxisFunctionHeld = false;
+			return;
+		}
+		// If R1 already holds FUNCTION, leave it to R1; this is tried again every poll.
+		const auto index = findGamepadTarget(md::PanelControl::Function);
+		if(!index || m_gamepadTargets[*index].button->isChecked())
+			return;
+		pressHeldControl(md::PanelControl::Function, false);
+		m_gamepadAxisFunctionHeld = true;
+	}
+
+	void Editor::releaseGamepadInputs()
+	{
+		const auto held = m_gamepadHeldControls;
+		for(auto it = held.rbegin(); it != held.rend(); ++it)
+			releaseHeldControl(*it);
+		m_gamepadHeldControls.clear();
+		releaseGamepadKnob();
+		m_gamepadActHeld = false;
+		m_gamepadRepeatDirection.reset();
+		m_gamepadAxisFunctionHeld = false;
+		m_gamepadLatchHeld = false;
+	}
+
+	void Editor::serviceGamepad(const double _nowMilliseconds)
+	{
+		if(!m_gamepad)
+			return;
+
+		using Button = Gamepad::Button;
+		auto state = m_gamepad->poll();
+		// Nintendo layout: A (right) acts and B (bottom) exits, so swap the face buttons' roles.
+		const bool nintendo = m_gamepadFaceLayout == 2 || (m_gamepadFaceLayout == 0 && state.nintendoLabels);
+		if(nintendo)
+		{
+			const auto swap = [&](const Button _a, const Button _b)
+			{
+				const bool a = state.pressed(_a);
+				state.buttons.set(static_cast<size_t>(_a), state.pressed(_b));
+				state.buttons.set(static_cast<size_t>(_b), a);
+			};
+			swap(Button::South, Button::East);
+			swap(Button::West, Button::North);
+		}
+		auto previous = m_gamepadPrevious;
+		m_gamepadPrevious = state;
+		// Another controller took over: let go of whatever the previous one held, and start this one fresh.
+		if(state.connected && previous.connected && state.padId != previous.padId)
+		{
+			releaseGamepadInputs();
+			cancelPanelInputGestures();
+			previous = state;
+		}
+		const auto elapsedMilliseconds = m_gamepadLastPollMilliseconds > 0.0
+			? std::min(100.0, _nowMilliseconds - m_gamepadLastPollMilliseconds) : 0.0;
+		m_gamepadLastPollMilliseconds = _nowMilliseconds;
+
+		if(!state.connected)
+		{
+			if(previous.connected)
+			{
+				// An unplug mid-hold must never leave keys down in the emulated machine.
+				releaseGamepadInputs();
+				cancelPanelInputGestures();
+				if(m_gamepadFocusRing)
+					m_gamepadFocusRing->SetProperty(Rml::PropertyId::Display, Rml::Style::Display::None);
+				if(m_gamepadCursor)
+					m_gamepadCursor->SetProperty(Rml::PropertyId::Display, Rml::Style::Display::None);
+				m_gamepadCursorVisible = false;
+				m_gamepadCursorLastMoveMilliseconds = 0.0;
+				m_gamepadCursorLastFrameMilliseconds = 0.0;
+				m_gamepadCursorStick = {};
+				m_gamepadHighlightVisible = false;
+				m_gamepadLastActivityMilliseconds = 0.0;
+				if(auto* const rml = getRmlComponent())
+					rml->enqueueUpdateOnce();
+			}
+			return;
+		}
+
+		// Show the focus highlight only while the controller is in use.
+		const auto active = state.buttons != previous.buttons || state.touching
+			|| std::abs(state.leftX) > g_gamepadStickDeadzone || std::abs(state.leftY) > g_gamepadStickDeadzone
+			|| std::abs(state.rightX) > g_gamepadStickDeadzone || std::abs(state.rightY) > g_gamepadStickDeadzone
+			|| state.leftTrigger > g_gamepadTriggerThreshold || state.rightTrigger > g_gamepadTriggerThreshold;
+		if(active)
+			m_gamepadLastActivityMilliseconds = _nowMilliseconds;
+		const auto highlight = m_gamepadLastActivityMilliseconds > 0.0
+			&& _nowMilliseconds - m_gamepadLastActivityMilliseconds < g_gamepadHighlightTimeoutMilliseconds;
+		if(highlight != m_gamepadHighlightVisible && m_gamepadFocusRing)
+		{
+			m_gamepadHighlightVisible = highlight;
+			m_gamepadFocusRing->SetProperty(Rml::PropertyId::Display,
+				highlight ? Rml::Style::Display::Block : Rml::Style::Display::None);
+			if(highlight)
+			{
+				setGamepadFocus(m_gamepadFocus);
+				centreGamepadCursor();
+			}
+			else if(auto* const rml = getRmlComponent())
+				rml->enqueueUpdateOnce();
+		}
+
+		const auto pressedNow = [&](const Button _b) { return state.pressed(_b) && !previous.pressed(_b); };
+		const auto releasedNow = [&](const Button _b) { return !state.pressed(_b) && previous.pressed(_b); };
+		const auto actKnob = [&]() -> juceRmlUi::ElemKnob*
+		{
+			return m_gamepadActHeld && m_gamepadActTarget < m_gamepadTargets.size()
+				? m_gamepadTargets[m_gamepadActTarget].knob : nullptr;
+		};
+		const auto focusKnob = [&]() -> juceRmlUi::ElemKnob*
+		{
+			return m_gamepadFocus < m_gamepadTargets.size() ? m_gamepadTargets[m_gamepadFocus].knob : nullptr;
+		};
+		const auto startRepeat = [&](const GamepadDirection _direction)
+		{
+			m_gamepadRepeatDirection = _direction;
+			m_gamepadRepeatNextMilliseconds = _nowMilliseconds + g_gamepadRepeatDelayMilliseconds;
+		};
+		// With Cross holding a knob its switch is pushed, so these are press-turns: the firmware picks the step size.
+		const auto turnHeldKnob = [&](const GamepadDirection _direction)
+		{
+			const bool up = _direction == GamepadDirection::Right || _direction == GamepadDirection::Up;
+			turnGamepadKnob(actKnob(), up ? 1.0f : -1.0f);
+		};
+
+		// L1 holds panel keys like Shift-click; letting go releases everything it held.
+		m_gamepadLatchHeld = state.pressed(Button::LeftShoulder);
+		if(releasedNow(Button::LeftShoulder) && !m_shiftPanelLatch.empty())
+			releasePanelButtonGestures();
+
+		for(const auto& direct : g_gamepadDirectButtons)
+		{
+			if(pressedNow(direct.button))
+				pressHeldControl(direct.control, m_gamepadLatchHeld);
+			else if(releasedNow(direct.button))
+				releaseHeldControl(direct.control);
+		}
+
+		const bool arrowLayer = state.rightTrigger > g_gamepadTriggerThreshold;	// R2: machine arrow keys
+		const bool pageLayer = state.leftTrigger > g_gamepadTriggerThreshold;	// L2: data pages / tracks
+
+		static constexpr std::pair<Button, GamepadDirection> g_dpad[] =
+		{
+			{ Button::DpadUp, GamepadDirection::Up }, { Button::DpadDown, GamepadDirection::Down },
+			{ Button::DpadLeft, GamepadDirection::Left }, { Button::DpadRight, GamepadDirection::Right },
+		};
+		for(const auto& [button, direction] : g_dpad)
+		{
+			const auto arrow = arrowControl(static_cast<int>(direction));
+			if(pressedNow(button))
+			{
+				if(arrowLayer)
+					pressHeldControl(arrow, m_gamepadLatchHeld);
+				else if(pageLayer && getModel() == md::MachineModel::Machinedrum)
+				{
+					// The Machinedrum has no page or track keys; use its direct selection helpers.
+					if(direction == GamepadDirection::Left || direction == GamepadDirection::Right)
+					{
+						const auto pages = static_cast<int>(panelAffordances::g_machinedrumDataPages.size());
+						m_gamepadPage = (m_gamepadPage + (direction == GamepadDirection::Right ? 1 : pages - 1)) % pages;
+						selectMachinedrumDataPage(m_gamepadPage);
+					}
+					else
+					{
+						m_gamepadTrack = std::clamp(m_gamepadTrack + (direction == GamepadDirection::Down ? 1 : -1), 0, 15);
+						selectMachinedrumTrack(m_gamepadTrack);
+					}
+				}
+				else if(pageLayer)
+				{
+					if(direction == GamepadDirection::Left)
+						pressHeldControl(md::PanelControl::DataPageBackward, m_gamepadLatchHeld);
+					else if(direction == GamepadDirection::Right)
+						pressHeldControl(md::PanelControl::DataPageForward, m_gamepadLatchHeld);
+					else
+					{
+						m_gamepadTrack = std::clamp(m_gamepadTrack + (direction == GamepadDirection::Down ? 1 : -1), 0, 5);
+						queuePanelPulse(static_cast<md::PanelControl>(
+							static_cast<int>(md::PanelControl::Track1) + m_gamepadTrack));
+					}
+				}
+				else if(actKnob())
+				{
+					turnHeldKnob(direction);
+					startRepeat(direction);
+				}
+				else if(!m_gamepadActHeld)
+				{
+					moveGamepadFocus(direction);
+					startRepeat(direction);
+				}
+			}
+			else if(releasedNow(button))
+			{
+				releaseHeldControl(arrow);
+				if(direction == GamepadDirection::Left)
+					releaseHeldControl(md::PanelControl::DataPageBackward);
+				else if(direction == GamepadDirection::Right)
+					releaseHeldControl(md::PanelControl::DataPageForward);
+				if(m_gamepadRepeatDirection == direction)
+					m_gamepadRepeatDirection.reset();
+			}
+		}
+
+		if(m_gamepadRepeatDirection && _nowMilliseconds >= m_gamepadRepeatNextMilliseconds)
+		{
+			m_gamepadRepeatNextMilliseconds = _nowMilliseconds + g_gamepadRepeatIntervalMilliseconds;
+			if(actKnob())
+				turnHeldKnob(*m_gamepadRepeatDirection);
+			else if(!m_gamepadActHeld && !arrowLayer && !pageLayer)
+				moveGamepadFocus(*m_gamepadRepeatDirection);
+		}
+
+		// The left stick moves the cursor, which focuses what it passes over. It stays put while
+		// Cross holds a control, so the held control keeps the focus.
+		const bool cursorPushed = !m_gamepadActHeld && std::hypot(state.leftX, state.leftY) > g_gamepadStickDeadzone;
+		m_gamepadCursorStick = cursorPushed ? Rml::Vector2f(state.leftX, state.leftY) : Rml::Vector2f(0.0f, 0.0f);
+		if(!cursorPushed)
+		{
+			m_gamepadCursorLastFrameMilliseconds = 0.0;
+		}
+		else
+		{
+			m_gamepadCursorLastMoveMilliseconds = _nowMilliseconds;
+			if(m_gamepadCursorLastFrameMilliseconds <= 0.0)
+			{
+				// Start the frame loop: the first frame measures from now, so the cursor doesn't jump.
+				m_gamepadCursorLastFrameMilliseconds = _nowMilliseconds;
+				if(m_gamepadCursor)
+					m_gamepadCursor->GetContext()->RequestNextUpdate(0.0f);
+			}
+		}
+		// The cursor shows only while the stick is in use, and lingers briefly to show where it stopped.
+		const auto showCursor = m_gamepadCursorLastMoveMilliseconds > 0.0
+			&& _nowMilliseconds - m_gamepadCursorLastMoveMilliseconds < g_gamepadCursorLingerMilliseconds;
+		if(showCursor != m_gamepadCursorVisible && m_gamepadCursor)
+		{
+			m_gamepadCursorVisible = showCursor;
+			m_gamepadCursor->SetProperty(Rml::PropertyId::Display,
+				showCursor ? Rml::Style::Display::Block : Rml::Style::Display::None);
+			if(auto* const rml = getRmlComponent())
+				rml->enqueueUpdateOnce();
+		}
+
+		// Cross acts on the focused control. On a panel key it holds the key. On a knob it pushes the knob, like
+		// pressing the real one: a tap is a click, and turning while Cross is held is a press-turn.
+		if(pressedNow(Button::South) && m_gamepadFocus < m_gamepadTargets.size())
+		{
+			m_gamepadActHeld = true;
+			m_gamepadActTarget = m_gamepadFocus;
+			const auto& target = m_gamepadTargets[m_gamepadFocus];
+			if(target.button)
+				pressHeldControl(target.control, m_gamepadLatchHeld);
+			else if(target.knob)
+				pushGamepadKnob(target, _nowMilliseconds);
+		}
+		else if(releasedNow(Button::South) && m_gamepadActHeld)
+		{
+			m_gamepadActHeld = false;
+			m_gamepadRepeatDirection.reset();
+			const auto& target = m_gamepadTargets[m_gamepadActTarget];
+			if(target.button)
+				releaseHeldControl(target.control);
+			else
+				m_gamepadKnobReleaseMilliseconds = m_gamepadKnobPushMilliseconds + g_gamepadMinimumPushMilliseconds;
+		}
+		if(m_gamepadPushedKnobPacket && !m_gamepadActHeld && _nowMilliseconds >= m_gamepadKnobReleaseMilliseconds)
+			releaseGamepadKnob();
+
+		// Stick clicks jump focus to the trig row and to the data-entry knobs.
+		if(!m_gamepadActHeld)
+		{
+			std::optional<size_t> jump;
+			if(pressedNow(Button::LeftStick))
+				jump = findGamepadTarget(md::PanelControl::Trigger1);
+			if(pressedNow(Button::RightStick))
+				jump = findGamepadTarget(m_encoders[0]);
+			if(jump)
+			{
+				setGamepadFocus(*jump);
+				centreGamepadCursor();
+			}
+		}
+
+		// Touchpad and gyro: each axis turns the knob chosen for it in the settings. By default both act on the
+		// focused data entry knob's column: sideways turns the top knob, up/down (forward/back) the bottom one.
+		// The touchpad works while a finger slides; the gyro while the PS / Guide button is held, and only
+		// rotation moves the knobs, so holding still changes nothing.
+		const bool touchEngaged = state.touching && previous.touching;
+		const bool tiltEngaged = state.pressed(Button::Guide);
+		const auto wantsFunction = [&](const gamepadAxes::Axis _a, const gamepadAxes::Axis _b)
+		{
+			return m_gamepadAxes[static_cast<size_t>(_a)].function || m_gamepadAxes[static_cast<size_t>(_b)].function;
+		};
+		using gamepadAxes::Axis;
+		setGamepadAxisFunction((touchEngaged && wantsFunction(Axis::TouchX, Axis::TouchY))
+			|| (tiltEngaged && wantsFunction(Axis::TiltRoll, Axis::TiltPitch)));
+		// Touchpad: bottom-left is 0 on both axes, top-right the maximum.
+		driveGamepadAxis(Axis::TouchX, state.touching, state.touchX,
+			touchEngaged ? (state.touchX - previous.touchX) * g_gamepadTouchDetentsPerWidth : 0.0f);
+		driveGamepadAxis(Axis::TouchY, state.touching, 1.0f - state.touchY,
+			touchEngaged ? (previous.touchY - state.touchY) * g_gamepadTouchDetentsPerWidth * g_gamepadTouchpadAspect : 0.0f);
+
+		// Tilt: the angle comes from gravity (accelerometer); relative mode uses the rotation rate (gyro). Held
+		// flat is the middle; rolled left or tipped away from you is 0.
+		const auto seconds = static_cast<float>(elapsedMilliseconds / 1000.0);
+		const auto rate = [](const float _radiansPerSecond)
+		{
+			return std::abs(_radiansPerSecond) > g_gamepadGyroDeadzone ? _radiansPerSecond : 0.0f;
+		};
+		const auto tiltPosition = [&](const float _angle, const gamepadAxes::Axis _axis)
+		{
+			const auto range = g_gamepadTiltRangeRadians * 100.0f
+				/ static_cast<float>(std::max(1, m_gamepadAxes[static_cast<size_t>(_axis)].speedPercent));
+			return std::clamp(0.5f + _angle / (2.0f * range), 0.0f, 1.0f);
+		};
+		const bool tiltKnown = tiltEngaged && state.hasAccel;
+		const auto roll = std::atan2(-state.accelX, state.accelY);	// right side down = positive
+		const auto pitch = std::atan2(-state.accelZ, state.accelY);	// far edge up = positive
+		driveGamepadAxis(Axis::TiltRoll, tiltEngaged, tiltKnown ? tiltPosition(roll, Axis::TiltRoll) : -1.0f,
+			-rate(state.gyroZ) * g_gamepadGyroDetentsPerRadian * seconds);
+		driveGamepadAxis(Axis::TiltPitch, tiltEngaged, tiltKnown ? tiltPosition(pitch, Axis::TiltPitch) : -1.0f,
+			rate(state.gyroX) * g_gamepadGyroDetentsPerRadian * seconds);
+
+		// Right stick turns the focused knob, faster the further it is pushed.
+		if(auto* const knob = focusKnob(); knob && std::abs(state.rightX) > g_gamepadStickDeadzone)
+		{
+			const auto magnitude = (std::abs(state.rightX) - g_gamepadStickDeadzone) / (1.0f - g_gamepadStickDeadzone);
+			const auto rate = std::copysign(magnitude * magnitude * g_gamepadStickDetentsPerSecond, state.rightX);
+			turnGamepadKnob(knob, rate * static_cast<float>(elapsedMilliseconds / 1000.0));
+		}
+	}
+
+	namespace
+	{
+		using Key = Rml::Input::KeyIdentifier;
+
+		struct KeyboardButton
+		{
+			Key key;
+			md::PanelControl control;
+		};
+
+		// Panel keys on the computer keyboard. Holding a key holds the panel key; Shift
+		// latches it exactly like Shift-click.
+		constexpr KeyboardButton g_keyboardButtons[] =
+		{
+			{ Key::KI_F1, md::PanelControl::Trigger1 }, { Key::KI_F2, md::PanelControl::Trigger2 },
+			{ Key::KI_F3, md::PanelControl::Trigger3 }, { Key::KI_F4, md::PanelControl::Trigger4 },
+			{ Key::KI_F5, md::PanelControl::Trigger5 }, { Key::KI_F6, md::PanelControl::Trigger6 },
+			{ Key::KI_F7, md::PanelControl::Trigger7 }, { Key::KI_F8, md::PanelControl::Trigger8 },
+			{ Key::KI_1, md::PanelControl::Trigger9 }, { Key::KI_2, md::PanelControl::Trigger10 },
+			{ Key::KI_3, md::PanelControl::Trigger11 }, { Key::KI_4, md::PanelControl::Trigger12 },
+			{ Key::KI_5, md::PanelControl::Trigger13 }, { Key::KI_6, md::PanelControl::Trigger14 },
+			{ Key::KI_7, md::PanelControl::Trigger15 }, { Key::KI_8, md::PanelControl::Trigger16 },
+			{ Key::KI_UP, md::PanelControl::Up }, { Key::KI_DOWN, md::PanelControl::Down },
+			{ Key::KI_LEFT, md::PanelControl::Left }, { Key::KI_RIGHT, md::PanelControl::Right },
+			{ Key::KI_RETURN, md::PanelControl::Enter }, { Key::KI_BACK, md::PanelControl::Exit },
+			{ Key::KI_Q, md::PanelControl::Track1 }, { Key::KI_W, md::PanelControl::Track2 },
+			{ Key::KI_E, md::PanelControl::Track3 }, { Key::KI_R, md::PanelControl::Track4 },
+			{ Key::KI_T, md::PanelControl::Track5 }, { Key::KI_Y, md::PanelControl::Track6 },
+			{ Key::KI_SPACE, md::PanelControl::Play }, { Key::KI_END, md::PanelControl::Stop },
+			{ Key::KI_HOME, md::PanelControl::Record },
+			{ Key::KI_PRIOR, md::PanelControl::DataPageBackward }, { Key::KI_NEXT, md::PanelControl::DataPageForward },
+			{ Key::KI_F9, md::PanelControl::BankA }, { Key::KI_F10, md::PanelControl::BankB },
+			{ Key::KI_F11, md::PanelControl::BankC }, { Key::KI_F12, md::PanelControl::BankD },
+			{ Key::KI_OEM_3, md::PanelControl::BankGroup },
+			{ Key::KI_K, md::PanelControl::Kit }, { Key::KI_P, md::PanelControl::PatternSong },
+			{ Key::KI_U, md::PanelControl::Tempo }, { Key::KI_I, md::PanelControl::Scale },
+			{ Key::KI_O, md::PanelControl::SynthesisEffectsRouting },
+			{ Key::KI_B, md::PanelControl::TrigSelect }, { Key::KI_N, md::PanelControl::ClassicExtended },
+			{ Key::KI_M, md::PanelControl::SongEnable },
+		};
+
+		// Hold one of these, then turn with - / = (one step) or [ / ] (eight steps). Tapping
+		// the key without turning clicks the encoder. A-D / E-H follow the panel's 2x4 grid.
+		constexpr Key g_keyboardEncoders[] =
+		{
+			Key::KI_A, Key::KI_S, Key::KI_D, Key::KI_F,
+			Key::KI_Z, Key::KI_X, Key::KI_C, Key::KI_V,
+			Key::KI_G,	// LEVEL
+			Key::KI_H,	// Machinedrum SOUND wheel
+		};
+	}
+
+	void Editor::createKeyboardControl()
+	{
+		auto* const document = getDocument();
+		if(getProcessor().wrapperType != juce::AudioProcessor::wrapperType_Standalone || !document)
+			return;
+
+		m_keyboardControl = true;
+		juceRmlUi::EventListener::Add(document, Rml::EventId::Keydown,
+			[this](Rml::Event& _event) { onPanelKey(_event, true); });
+		juceRmlUi::EventListener::Add(document, Rml::EventId::Keyup,
+			[this](Rml::Event& _event) { onPanelKey(_event, false); });
+
+		m_controlInput = std::make_unique<ControlInput>(
+			getModel() == md::MachineModel::Monomachine ? "monomachine" : "machinedrum",
+			[this](const std::string& _line) { return handleControlLine(_line); });
+		if(!m_controlInput->start())
+		{
+			DBG("control input unavailable: " << m_controlInput->getError());
+			m_controlInput.reset();
+		}
+	}
+
+	std::string Editor::handleControlLine(const std::string& _line)
+	{
+		// One line from the control input (mdControlInput.h), on the message thread:
+		//   turn <A-H|LEVEL|SOUND> <n>   turn an encoder n detents; while A or B is edited, a scene lock
+		//   track <1-16>                 Machinedrum: select the track, as clicking under its LED does
+		//   scene <A|B>                  edit that side, or stop editing it, as clicking A or B does
+		//   scene fader <0-127>          move the crossfader (0 is A)
+		//   leds                         -> "leds " and the 14 panel LED banks 0x20-0x2d as hex, active low
+		std::istringstream ss(_line);
+		std::string verb;
+		ss >> verb;
+		if(verb == "turn")
+		{
+			std::string label;
+			int steps = 0;
+			ss >> label >> steps;
+			std::optional<md::PanelEncoder> encoder;
+			if(label.size() == 1 && label[0] >= 'A' && label[0] <= 'H')
+				encoder = static_cast<md::PanelEncoder>(static_cast<unsigned>(md::PanelEncoder::DataEntryA) + (label[0] - 'A'));
+			else if(label == "LEVEL" || label == "LEVEL/DATA")
+				encoder = md::PanelEncoder::Level;
+			else if(label == "SOUND")
+				encoder = md::PanelEncoder::SoundSelection;
+			// emitEncoderSteps sends at most a burst's worth at a time.
+			while(encoder && steps != 0)
+			{
+				const auto chunk = std::clamp(steps, -g_encoderBurstCap, g_encoderBurstCap);
+				emitEncoderSteps(*encoder, chunk);
+				steps -= chunk;
+			}
+		}
+		else if(verb == "track")
+		{
+			int track = 0;
+			ss >> track;
+			if(getModel() == md::MachineModel::Machinedrum && track >= 1 && track <= 16)
+				selectMachinedrumTrack(track - 1);
+		}
+		else if(verb == "scene")
+		{
+			std::string what;
+			ss >> what;
+			if(what == "A" || what == "B")
+			{
+				const int side = what == "A" ? 0 : 1;
+				m_controller.setSceneEditSide(sceneEditSide() == side ? -1 : side);
+				updateScenePresentation();
+			}
+			else if(what == "fader")
+			{
+				int value = -1;
+				ss >> value;
+				const auto kit = m_controller.getCurrentKitSlot();
+				if(value >= 0 && value <= 127 && kit < m_controller.getSceneBankCount())
+				{
+					m_controller.setSceneFader(kit, static_cast<uint8_t>(value));
+					updateScenePresentation();
+				}
+			}
+		}
+		else if(verb == "leds")
+		{
+			if(!m_frontPanelSnapshotValid)
+				return "leds none";
+			std::string reply = "leds ";
+			char hex[3];
+			for(uint8_t bank = 0x20; bank <= 0x2d; ++bank)
+			{
+				std::snprintf(hex, sizeof(hex), "%02x", m_frontPanelSnapshot.getLedBankRaw(bank));
+				reply += hex;
+			}
+			return reply;
+		}
+		return {};
+	}
+
+	void Editor::releaseKeyboardEncoderPress()
+	{
+		if(!m_keyboardEncoderPressPacket)
+			return;
+		const auto combined = m_panelRows.release(*m_keyboardEncoderPressPacket);
+		(void)sendPanelEvent(combined.row, combined.mask);
+		if(m_keyboardPressedKnob)
+			m_keyboardPressedKnob->SetClass("encoderPressed", false);
+		m_keyboardEncoderPressPacket.reset();
+		m_keyboardPressedKnob = nullptr;
+	}
+
+	void Editor::resetKeyboardControl()
+	{
+		releaseKeyboardEncoderPress();
+		if(m_keyboardFunctionHeld)
+			releaseHeldControl(md::PanelControl::Function);
+		for(const auto& button : g_keyboardButtons)
+			if(std::find(m_keyboardHeldKeys.begin(), m_keyboardHeldKeys.end(), button.key) != m_keyboardHeldKeys.end())
+				releaseHeldControl(button.control);
+		m_keyboardHeldKeys.clear();
+		m_keyboardPendingReleases.clear();
+		m_keyboardFunctionHeld = false;
+		m_keyboardEncoder.reset();
+		m_keyboardEncoderTurned = false;
+	}
+
+	void Editor::onPanelKey(Rml::Event& _event, const bool _down)
+	{
+		if(!m_keyboardControl)
+			return;
+
+		const auto key = static_cast<Key>(_event.GetParameter<int>("key_identifier", 0));
+		const bool shift = _event.GetParameter<int>("shift_key", 0) != 0;
+		const bool ctrl = _event.GetParameter<int>("ctrl_key", 0) != 0;
+
+		// Ctrl is FUNCTION. Every key event carries the modifier state, including the
+		// synthetic ones the Rml component sends for a modifier-only change.
+		if(ctrl != m_keyboardFunctionHeld)
+		{
+			m_keyboardFunctionHeld = ctrl;
+			if(ctrl)
+				pressHeldControl(md::PanelControl::Function, shift);
+			else
+				releaseHeldControl(md::PanelControl::Function);
+		}
+
+		if(key == Key::KI_UNKNOWN)
+			return;
+
+		// X11 auto-repeat sends a release/press pair while a key is held. JUCE drops the pair only
+		// when the press is already queued, which isn't guaranteed while the emulator keeps the
+		// message thread busy. A leaked pair would tap a held trig (clearing it), so a release only
+		// counts once no press of the same key follows within a short grace period.
+		const auto pending = std::find_if(m_keyboardPendingReleases.begin(), m_keyboardPendingReleases.end(),
+			[&](const auto& _p) { return _p.first == key; });
+		if(!_down)
+		{
+			const bool pressTurn = key == Key::KI_OEM_4 || key == Key::KI_OEM_6;
+			if(pressTurn || std::find(m_keyboardHeldKeys.begin(), m_keyboardHeldKeys.end(), key) != m_keyboardHeldKeys.end())
+			{
+				if(pending == m_keyboardPendingReleases.end())
+					m_keyboardPendingReleases.emplace_back(key, juce::Time::getMillisecondCounterHiRes() + g_keyReleaseGraceMilliseconds);
+				_event.StopPropagation();
+				return;
+			}
+		}
+		else if(pending != m_keyboardPendingReleases.end())
+		{
+			m_keyboardPendingReleases.erase(pending);	// the release was auto-repeat; the key never went up
+		}
+		if(handlePanelKey(key, _down, shift))
+			_event.StopPropagation();
+	}
+	void Editor::serviceKeyboardReleases(const double _nowMilliseconds)
+	{
+		for(auto it = m_keyboardPendingReleases.begin(); it != m_keyboardPendingReleases.end();)
+		{
+			if(it->second > _nowMilliseconds)
+			{
+				++it;
+				continue;
+			}
+			const auto key = it->first;
+			it = m_keyboardPendingReleases.erase(it);
+			handlePanelKey(key, false, false);
+			it = m_keyboardPendingReleases.begin();	// handlePanelKey may reset the list
+		}
+	}
+	bool Editor::handlePanelKey(const int _key, const bool _down, const bool _shift)
+	{
+		using Key = Rml::Input::KeyIdentifier;
+		const auto key = static_cast<Key>(_key);
+		const bool shift = _shift;
+
+		// Delete lets go of every held or latched panel key. (Escape does this too, but only
+		// when something is held; otherwise it opens the standalone's menu.)
+		if(key == Key::KI_DELETE)
+		{
+			if(_down)
+			{
+				resetKeyboardControl();
+				cancelPanelInputGestures();
+				m_gamepadHeldControls.clear();
+			}
+			return true;
+		}
+
+		const auto encoderKnob = [this](const size_t _index) -> std::pair<juceRmlUi::ElemKnob*, md::PanelEncoder>
+		{
+			if(_index < m_encoders.size())
+				return { m_encoders[_index], static_cast<md::PanelEncoder>(_index) };
+			if(_index == m_encoders.size())
+				return { m_levelEncoder, md::PanelEncoder::Level };
+			return { m_soundEncoder, md::PanelEncoder::SoundSelection };
+		};
+
+		// Turning keys repeat on purpose: holding = keeps turning. [ and ] are press-turns: the
+		// encoder switch is held while turning, so the firmware picks a coarse step suited to
+		// the parameter, exactly as on the hardware.
+		const bool pressTurn = key == Key::KI_OEM_4 || key == Key::KI_OEM_6;
+		const float turn = key == Key::KI_OEM_MINUS || key == Key::KI_OEM_4 ? -1.0f
+			: key == Key::KI_OEM_PLUS || key == Key::KI_OEM_6 ? 1.0f : 0.0f;
+		if(turn != 0.0f)
+		{
+			if(_down && m_keyboardEncoder)
+			{
+				const auto [knob, encoder] = encoderKnob(*m_keyboardEncoder);
+				if(pressTurn && !m_keyboardEncoderPressPacket
+					&& sceneEditSide() < 0)
+				{
+					if(const auto packet = md::panelEncoderPressPacket(getModel(), encoder); packet && knob)
+					{
+						const auto combined = m_panelRows.press(*packet);
+						(void)sendPanelEvent(combined.row, combined.mask);
+						m_keyboardEncoderPressPacket = packet;
+						m_keyboardPressedKnob = knob;
+						knob->SetClass("encoderPressed", true);
+					}
+				}
+				turnGamepadKnob(knob, turn);
+				m_keyboardEncoderTurned = true;
+			}
+			else if(!_down && pressTurn)
+			{
+				releaseKeyboardEncoderPress();
+			}
+			return true;
+		}
+
+		const auto held = std::find(m_keyboardHeldKeys.begin(), m_keyboardHeldKeys.end(), key);
+		if(_down)
+		{
+			if(held != m_keyboardHeldKeys.end())
+			{
+				return true;	// operating-system auto-repeat of a held key
+			}
+		}
+		else
+		{
+			if(held == m_keyboardHeldKeys.end())
+				return false;
+			m_keyboardHeldKeys.erase(held);
+		}
+
+		for(size_t i = 0; i < std::size(g_keyboardEncoders); ++i)
+		{
+			if(g_keyboardEncoders[i] != key)
+				continue;
+			if(_down)
+			{
+				m_keyboardHeldKeys.push_back(key);
+				m_keyboardEncoder = i;
+				m_keyboardEncoderTurned = false;
+			}
+			else if(m_keyboardEncoder == i)
+			{
+				if(!m_keyboardEncoderTurned)
+				{
+					if(sceneEditSide() < 0)
+					if(const auto packet = md::panelEncoderPressPacket(getModel(), encoderKnob(i).second))
+					{
+						// Straight to the machine, as a click on the knob is: the firmware takes a
+						// press and release together, and the pulse queue would put the tap behind
+						// any navigation still stepping.
+						const auto down = m_panelRows.press(*packet);
+						(void)sendPanelEvent(down.row, down.mask);
+						const auto up = m_panelRows.release(*packet);
+						(void)sendPanelEvent(up.row, up.mask);
+					}
+				}
+				releaseKeyboardEncoderPress();
+				m_keyboardEncoder.reset();
+			}
+			return true;
+		}
+
+		// The Machinedrum has no page keys; step its data pages directly, as the gamepad does.
+		if(getModel() == md::MachineModel::Machinedrum && (key == Key::KI_PRIOR || key == Key::KI_NEXT))
+		{
+			if(_down)
+			{
+				m_keyboardHeldKeys.push_back(key);
+				const auto pages = static_cast<int>(panelAffordances::g_machinedrumDataPages.size());
+				m_gamepadPage = (m_gamepadPage + (key == Key::KI_NEXT ? 1 : pages - 1)) % pages;
+				selectMachinedrumDataPage(m_gamepadPage);
+			}
+			return true;
+		}
+
+		for(const auto& button : g_keyboardButtons)
+		{
+			if(button.key != key)
+				continue;
+			if(_down)
+			{
+				m_keyboardHeldKeys.push_back(key);
+				if(assignSceneFromTrigger(button.control))
+					return true;		// its release then lets go of nothing
+				// A keyboard can hold a bank key while pressing a step, so no bank latch is needed.
+				pressHeldControl(button.control, shift, true);
+			}
+			else
+			{
+				releaseHeldControl(button.control);
+			}
+			return true;
+		}
+		return false;
+	}
+
+	std::optional<int> Editor::currentMonomachineDataPage() const
+	{
+		if(getModel() != md::MachineModel::Monomachine || !m_frontPanelSnapshotValid)
+			return std::nullopt;
+		// The DATA PAGE LEDs are active-low bits in panel LED banks 0x25 and 0x26.
+		constexpr uint8_t banks[] = { 0x25, 0x25, 0x25, 0x25, 0x26, 0x26, 0x26 };
+		constexpr uint8_t bits[] = { 4, 5, 6, 7, 0, 1, 2 };
+		std::array<bool, panelAffordances::g_monomachineDataPages.size()> active{};
+		for(size_t page = 0; page < active.size(); ++page)
+		{
+			const auto raw = m_frontPanelSnapshot.getLedBankRaw(banks[page]);
+			active[page] = (raw & static_cast<uint8_t>(1u << bits[page])) == 0;
+		}
+		return panelAffordances::singleActiveIndex(active);
+	}
+
+	std::optional<int> Editor::currentMachinedrumDataPage() const
+	{
+		if(getModel() != md::MachineModel::Machinedrum || !m_frontPanelSnapshotValid)
+			return std::nullopt;
+		constexpr md::FrontPanel::StatusLed pages[] =
+		{
+			md::FrontPanel::StatusLed::Synthesis,
+			md::FrontPanel::StatusLed::Effects,
+			md::FrontPanel::StatusLed::Routing,
+		};
+		std::array<bool, panelAffordances::g_machinedrumDataPages.size()> active{};
+		for(size_t page = 0; page < active.size(); ++page)
+			active[page] = m_frontPanelSnapshot.getStatusLed(pages[page]);
+		return panelAffordances::singleActiveIndex(active);
+	}
+
+	void Editor::createParameterTooltip()
+	{
+		auto* const document = getDocument();
+		if(!document)
+			return;
+
+		m_lcdArea = findChild("lcdArea", false);
+
+		// Tooltip wording can be changed without rebuilding: tooltips.txt in the data folder
+		// overrides the built-in text, and tooltips-defaults.txt beside it lists every key.
+		const auto dataFolder = baseLib::filesystem::validatePath(getProcessor().getDataFolder());
+		HelpOverrides::writeDefaults(dataFolder + "tooltips-defaults.txt");
+		m_help.setFile(dataFolder + "tooltips.txt");
+
+		// One tooltip, reparented into whatever it is placed against so it follows panel scaling. It hangs above
+		// the LCD with its bottom edge pinned, so a long description grows up over the faceplate rather than
+		// down over the controls.
+		auto tooltip = document->CreateElement("div");
+		tooltip->SetAttribute("style",
+			"position: absolute; bottom: 100%; left: 0; right: 0; margin-bottom: 6dp;"
+			" padding: 6dp 8dp; background-color: #1b221dee; border: 1dp #56635a; color: #e6ebe2;"
+			" font-size: 11dp; line-height: 14dp; text-align: left; white-space: normal;"
+			" pointer-events: none; z-index: 2000; display: none;");
+		m_parameterTooltip = tooltip.get();
+		if(m_encoders[0])
+			m_encoders[0]->AppendChild(std::move(tooltip));
+		else
+			document->AppendChild(std::move(tooltip));
+
+		for(unsigned i = 0; i < m_encoders.size(); ++i)
+		{
+			if(!m_encoders[i])
+				continue;
+			juceRmlUi::EventListener::Add(m_encoders[i], Rml::EventId::Mouseover, [this, i](Rml::Event&)
+			{
+				m_tooltipHoverKnob = i;
+				updateParameterTooltip();
+			});
+			juceRmlUi::EventListener::Add(m_encoders[i], Rml::EventId::Mouseout, [this, i](Rml::Event&)
+			{
+				if(m_tooltipHoverKnob != i)
+					return;
+				m_tooltipHoverKnob.reset();
+				updateParameterTooltip();
+			});
+		}
+	}
+
+	namespace
+	{
+		// ", knob A" .. ", knob H", the tail of a tooltip footer.
+		std::string knobSuffix(const unsigned _encoder)
+		{
+			return std::string(", knob ") + static_cast<char>('A' + _encoder);
+		}
+	}
+
+	Editor::TooltipText Editor::tooltipFor(const parameterHelp::Entry& _entry, std::string _footer) const
+	{
+		return { _entry.abbreviation, m_help(_entry.name), m_help(_entry.description), std::move(_footer) };
+	}
+
+	std::string Editor::nowText(const parameterHelp::ValueHash& _value) const
+	{
+		return std::string(" Now: ") + _value.text + ". " + m_help(_value.meaning);
+	}
+
+	std::optional<Editor::TooltipText> Editor::describeMachineName() const
+	{
+		if(getModel() == md::MachineModel::Machinedrum)
+		{
+			uint16_t key = 0;
+			const auto* const machine = machinedrumHelp::machineForHash(
+				lcdText::hash(m_frontPanelSnapshot, lcdText::g_mdMachineName), key);
+			if(!machine)
+				return std::nullopt;
+			TooltipText text{ machine->lcdName, m_help(machine->name), m_help(machine->description), "Machine on the active track" };
+			// Numbered machines (e.g. TRX-B2) show their two-digit number on the LCD.
+			if(machine->number)
+			{
+				const auto number = machine->number + (key - machine->first);
+				text.abbreviation += static_cast<char>('0' + number / 10);
+				text.abbreviation += static_cast<char>('0' + number % 10);
+			}
+			return text;
+		}
+
+		const auto* const machine = monomachineHelp::machineForHash(lcdText::hash(m_frontPanelSnapshot, lcdText::g_machineName));
+		if(!machine)
+			return std::nullopt;
+		return TooltipText{ machine->lcdName, m_help(machine->name), m_help(machine->description), "Machine on the active track" };
+	}
+
+	std::optional<Editor::TooltipText> Editor::describeMachinedrumEncoder(const unsigned _encoder) const
+	{
+		if(_encoder >= 8)
+			return std::nullopt;
+		const auto knob = knobSuffix(_encoder);
+
+		// LFO and master FX windows are recognised by the fork's classifier.
+		if(m_lcdInteractionState)
+		{
+			using lcdInteraction::SurfaceKind;
+			const auto surface = m_lcdInteractionState->surface;
+			if(m_lcdInteractionState->layout == lcdInteraction::LayoutKind::Lfo && surface == SurfaceKind::Lfo)
+			{
+				auto text = tooltipFor(machinedrumHelp::g_lfo[_encoder], "LFO window" + knob);
+				// UPDTE and PARAM print their value; say what the LFO is currently doing and aimed at.
+				if(_encoder == 4)
+				{
+					if(const auto* const value = machinedrumHelp::lfoUpdateForHash(
+						lcdText::hash(m_frontPanelSnapshot, lcdText::mdLfoValue(4))))
+						text.description += nowText(*value);
+				}
+				else if(_encoder == 1)
+				{
+					if(const auto* const label = machinedrumHelp::labelForHash(
+						lcdText::inkHash(m_frontPanelSnapshot, lcdText::mdLfoValue(1))))
+					{
+						text.description += std::string(" Now: ") + label + ".";
+						// Describe the target too if it is an EFFECTS or ROUTING parameter.
+						const auto* entry = parameterHelp::entryForLabel(machinedrumHelp::g_effects, label);
+						if(!entry)
+							entry = parameterHelp::entryForLabel(machinedrumHelp::g_routing, label);
+						if(entry)
+							text.description += std::string(" ") + m_help(entry->name) + ": " + m_help(entry->description);
+					}
+				}
+				return text;
+			}
+			if(m_lcdInteractionState->layout == lcdInteraction::LayoutKind::MasterFx)
+			{
+				const auto index = static_cast<size_t>(surface) - static_cast<size_t>(SurfaceKind::MasterFxEcho);
+				if(index >= 4)
+					return std::nullopt;
+				const auto* const entry = machinedrumHelp::parameter(machinedrumHelp::g_masterFxFamilies[index],
+					machinedrumHelp::g_masterFxLabels[index][_encoder]);
+				if(!entry)
+					return std::nullopt;
+				return tooltipFor(*entry, std::string("Master FX, ") + machinedrumHelp::g_masterFxNames[index] + knob);
+			}
+		}
+
+		// Data pages: read the field label and the machine name off the LCD.
+		const auto page = currentMachinedrumDataPage();
+		if(!page)
+			return std::nullopt;
+		uint16_t key = 0;
+		const auto* const machine = machinedrumHelp::machineForHash(
+			lcdText::hash(m_frontPanelSnapshot, lcdText::g_mdMachineName), key);
+		bool allTracks = false;
+		const auto* const entry = machinedrumHelp::entry(*page, machine, machinedrumHelp::labelForHash(
+			lcdText::inkHash(m_frontPanelSnapshot, lcdText::fieldLabel(_encoder))), allTracks);
+		if(!entry)
+			return std::nullopt;
+		constexpr const char* pageNames[] = { "synthesis", "Effects page", "Routing page" };
+		// SYNTHESIS entries only resolve with a known machine, so machine is set on page 0.
+		const auto where = *page == 0 ? std::string(m_help(machine->name)) + " synthesis" : std::string(pageNames[*page]);
+		auto text = tooltipFor(*entry, where + knob);
+		if(allTracks)
+		{
+			text.name += ", all tracks";
+			text.description += " CTR-AL applies it to all 16 tracks.";
+		}
+		return text;
+	}
+
+	std::optional<Editor::TooltipText> Editor::describeMonomachineEncoder(const unsigned _encoder) const
+	{
+		const auto page = currentMonomachineDataPage();
+		if(!page)
+			return std::nullopt;
+		const auto knob = knobSuffix(_encoder);
+
+		if(*page == 0)
+		{
+			// SYNTHESIS depends on the machine: read both the field label and the machine
+			// name off the LCD. Anything unrecognised (a menu, an overlay) shows nothing.
+			const auto* const label = monomachineHelp::labelForHash(
+				lcdText::hash(m_frontPanelSnapshot, lcdText::fieldLabel(_encoder)));
+			const auto* const machine = monomachineHelp::machineForHash(
+				lcdText::hash(m_frontPanelSnapshot, lcdText::g_machineName));
+			const auto* const entry = label && machine ? monomachineHelp::parameter(machine->id, label) : nullptr;
+			if(!entry)
+				return std::nullopt;
+			auto text = tooltipFor(*entry, std::string(m_help(machine->name)) + " synthesis" + knob);
+			// Settings print their value under the knob; say what it is set to.
+			if(const auto* const value = monomachineHelp::machineValueForHash(machine->id, label,
+				lcdText::hash(m_frontPanelSnapshot, lcdText::lfoValue(_encoder))))
+				text.description += nowText(*value);
+			return text;
+		}
+
+		const auto* const entry = parameterHelp::monomachineEntry(*page, _encoder);
+		if(!entry)
+			return std::nullopt;
+		auto text = tooltipFor(*entry, std::string(parameterHelp::g_monomachinePageNames[*page]) + " page" + knob);
+
+		// On an LFO page, say what the knob is currently set to, read off the LCD.
+		const bool lfoPage = *page >= 4;
+		if(lfoPage && _encoder <= 1)
+		{
+			text.description += lfoTargetDescription(_encoder);
+		}
+		else if(lfoPage)
+		{
+			if(const auto* const value = monomachineHelp::lfoValueForHash(_encoder,
+				lcdText::hash(m_frontPanelSnapshot, lcdText::lfoValue(_encoder))))
+				text.description += nowText(*value);
+		}
+		return text;
+	}
+
+	std::string Editor::lfoTargetDescription(const unsigned _encoder) const
+	{
+		const auto* const target = monomachineHelp::lfoPageForHash(lcdText::hash(m_frontPanelSnapshot, lcdText::lfoValue(0)));
+		if(!target)
+			return {};
+		if(_encoder == 0)
+			return std::string(" Now: ") + target->text + " (" + m_help(target->name) + ").";
+
+		// DEST: describe the parameter the LFO is aimed at on the selected page.
+		const auto destinationHash = lcdText::hash(m_frontPanelSnapshot, lcdText::lfoValue(1));
+		const parameterHelp::Entry* destination = monomachineHelp::lfoSpecialDestinationForHash(destinationHash);
+		if(!destination)
+		{
+			if(const auto* const label = monomachineHelp::labelForHash(destinationHash))
+			{
+				if(target->dataPage == 0)
+				{
+					if(const auto* const machine = monomachineHelp::machineForHash(
+						lcdText::hash(m_frontPanelSnapshot, lcdText::g_machineName)))
+						destination = monomachineHelp::parameter(machine->id, label);
+				}
+				else if(target->dataPage > 0)
+				{
+					destination = monomachineHelp::fixedPageEntry(target->dataPage, label);
+				}
+			}
+		}
+		if(!destination)
+			return std::string(" Now on the ") + m_help(target->name) + " page.";
+		return std::string(" Now: ") + destination->abbreviation + " (" + m_help(destination->name) + ") on the "
+			+ m_help(target->name) + " page. " + m_help(destination->description);
+	}
+
+	Editor::TooltipTarget Editor::tooltipTarget() const
+	{
+		// In priority order: mouse over a knob, mouse over the LCD (the machine name or a recognised
+		// field), a held keyboard knob key, then the gamepad's focused knob.
+		// Every tooltip hangs under the LCD, which is always well inside the window. Hanging one under the
+		// control it describes pushed it off the right edge on the right-hand knobs.
+		const auto place = [this](Rml::Element* const _control) { return m_lcdArea ? m_lcdArea : _control; };
+		if(m_tooltipHoverKnob && m_encoders[*m_tooltipHoverKnob])
+			return { place(m_encoders[*m_tooltipHoverKnob]), m_tooltipHoverKnob, false };
+		if(m_lcdArea && m_tooltipLcdMachineName)
+			return { m_lcdArea, std::nullopt, true };
+		if(m_lcdArea && m_lcdHoverEncoder)
+			return { m_lcdArea, m_lcdHoverEncoder, false };
+		if(m_keyboardEncoder && *m_keyboardEncoder < m_encoders.size() && m_encoders[*m_keyboardEncoder])
+		{
+			const auto encoder = static_cast<unsigned>(*m_keyboardEncoder);
+			return { place(m_encoders[encoder]), encoder, false };
+		}
+		if(m_gamepadHighlightVisible && m_gamepadFocus < m_gamepadTargets.size() && m_gamepadTargets[m_gamepadFocus].knob)
+		{
+			const auto encoder = static_cast<unsigned>(m_gamepadTargets[m_gamepadFocus].encoder);
+			if(encoder < m_encoders.size())
+				return { place(m_gamepadTargets[m_gamepadFocus].knob), encoder, false };
+		}
+		return {};
+	}
+
+	std::optional<Editor::TooltipText> Editor::describe(const TooltipTarget& _target) const
+	{
+		if(!m_frontPanelSnapshotValid)
+			return std::nullopt;
+		if(_target.machineName)
+			return describeMachineName();
+		if(!_target.encoder)
+			return std::nullopt;
+		auto text = getModel() == md::MachineModel::Machinedrum
+			? describeMachinedrumEncoder(*_target.encoder)
+			: describeMonomachineEncoder(*_target.encoder);
+		if(text)
+			appendCurrentValue(*text, *_target.encoder);
+		return text;
+	}
+
+	void Editor::appendCurrentValue(TooltipText& _text, const unsigned _encoder) const
+	{
+		// Only on data pages, from the controller's copy of the kit: the Machinedrum LFO and master
+		// FX windows' knobs aren't track parameters.
+		std::optional<int> dataPage;
+		if(getModel() == md::MachineModel::Monomachine)
+			dataPage = currentMonomachineDataPage();
+		else if(!m_lcdInteractionState || m_lcdInteractionState->layout == lcdInteraction::LayoutKind::Standard)
+			dataPage = currentMachinedrumDataPage();
+		const auto track = m_controller.getCurrentTrack();
+		if(!dataPage || track < 0)
+			return;
+		const auto value = m_controller.getTrackParameterValue(static_cast<uint8_t>(track),
+			static_cast<uint8_t>(*dataPage), static_cast<uint8_t>(_encoder));
+		if(value >= 0)
+			_text.footer += ", value " + std::to_string(value);
+	}
+
+	void Editor::updateParameterTooltip()
+	{
+		if(!m_parameterTooltip)
+			return;
+
+		// Wait until the pointer has rested on the same thing for the configured delay. This runs on
+		// every UI tick, so the tooltip appears once the delay has passed.
+		const auto target = tooltipTarget();
+		const auto now = std::chrono::steady_clock::now();
+		if(target != m_tooltipRestTarget)
+		{
+			m_tooltipRestTarget = target;
+			m_tooltipRestSince = now;
+		}
+		const bool rested = now - m_tooltipRestSince >= std::chrono::milliseconds(m_tooltipDelayMs);
+
+		std::optional<TooltipText> text;
+		if(target.anchor && m_tooltipsEnabled && rested)
+		{
+			m_help.refresh();
+			text = describe(target);
+		}
+		if(!text)
+		{
+			hideParameterTooltip();
+			return;
+		}
+
+		using Rml::StringUtilities::EncodeRml;
+		const auto content = "<span style=\"color: #ffc83a;\">" + EncodeRml(text->abbreviation) + "</span>  "
+			+ EncodeRml(text->name) + "<br/><span style=\"color: #b3bdb0;\">" + EncodeRml(text->description) + "</span><br/>"
+			+ "<span style=\"color: #7f8a82; font-size: 9dp;\">" + EncodeRml(text->footer) + "</span>";
+		if(content == m_parameterTooltipContent && m_parameterTooltip->GetParentNode() == target.anchor)
+			return;
+		m_parameterTooltipContent = content;
+
+		// Move the tooltip under its anchor, which must be positioned for top: 100% to work.
+		auto* const anchor = target.anchor;
+		if(m_parameterTooltip->GetParentNode() != anchor)
+		{
+			if(anchor->GetComputedValues().position() == Rml::Style::Position::Static)
+				anchor->SetProperty(Rml::PropertyId::Position, Rml::Style::Position::Relative);
+			if(auto* const parent = m_parameterTooltip->GetParentNode())
+				if(auto owned = parent->RemoveChild(m_parameterTooltip))
+					anchor->AppendChild(std::move(owned));
+		}
+		m_parameterTooltip->SetInnerRML(content);
+		m_parameterTooltip->SetProperty(Rml::PropertyId::Display, Rml::Style::Display::Block);
+		if(auto* const rml = getRmlComponent())
+			rml->enqueueUpdateOnce();
+	}
+
+	void Editor::hideParameterTooltip()
+	{
+		if(m_parameterTooltipContent.empty())
+			return;
+		m_parameterTooltip->SetProperty(Rml::PropertyId::Display, Rml::Style::Display::None);
+		m_parameterTooltipContent.clear();
+		if(auto* const rml = getRmlComponent())
+			rml->enqueueUpdateOnce();
 	}
 
 	std::pair<std::string, std::string> Editor::getDemoRestrictionText() const

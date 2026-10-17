@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <mutex>
 #include <optional>
+#include <type_traits>
 #include <vector>
 
 namespace md
@@ -112,6 +113,9 @@ namespace md
 		// Raw 8-vertical-pixel VRAM byte for a controller half (0/1), page (0-7),
 		// column (0-63). LSB = topmost pixel of the page.
 		uint8_t getLcdVram(uint32_t _half, uint32_t _page, uint32_t _col) const;
+		// A panel as a status frame describes it (gm_device.h, MD/MM status): 1024 bytes of VRAM
+		// [half][page][column], then the g_ledBankCount LED bank bytes. Parser state is reset.
+		void setRaw(const uint8_t* _vram, const uint8_t* _ledBanks);
 
 		// Raw active-low bank byte as last written by the stream (0xff at reset).
 		uint8_t getLedBankRaw(LedBank _bank) const;
@@ -187,29 +191,55 @@ namespace md
 	};
 
 	// Cross-thread publication boundary for the reconstructed display. The
-	// emulation thread owns and mutates its live FrontPanel, then offers a complete
-	// value copy without waiting. Readers may briefly wait while copying the last
-	// published value, but can never observe a torn copy. A separate bounded SPSC
-	// stream preserves complete LED changes that would otherwise begin and end
-	// between whole-panel snapshots.
+	// emulation thread owns and mutates its live FrontPanel, then publishes a complete
+	// value copy through a sequence lock over atomic words: the writer never waits or
+	// takes a lock, and a reader that meets a publish in progress retries, so it can
+	// never observe a torn copy. (Until 2026-10-16 a mutex the writer try-locked on
+	// every render.) A separate bounded SPSC stream preserves complete LED changes that
+	// would otherwise begin and end between whole-panel snapshots. One writer at a time:
+	// the unit's emulation thread, or a control thread while the unit does not run.
 	class FrontPanelPublisher
 	{
 	public:
 		static constexpr size_t g_ledTransitionCapacity = 2048;
 
+		FrontPanelPublisher();
+
 		bool tryPublish(const FrontPanel& _panel);
 		bool tryRead(FrontPanel& _panel) const;
 		FrontPanel read() const;
 		FrontPanelPublishedState readPublishedState() const;
+		// One attempt, never waiting: false if a publish overlapped. _generation counts publishes.
+		bool tryReadPublishedState(FrontPanelPublishedState& _state, uint64_t& _generation) const;
 		bool tryPushLedTransition(uint8_t _command, uint8_t _value,
 			uint64_t _emulationCycles);
 		size_t drainLedTransitions(FrontPanelLedTransition* _output, size_t _capacity);
 		FrontPanelLedTransitionStatus getLedTransitionStatus() const;
 		void reset();
 
+		// Set when the device that owns this publisher goes away. A reader that keeps the publisher, instead
+		// of fetching it under the device lock every time, fetches the new device's one once this is set.
+		void retire() { m_retired.store(true, std::memory_order_release); }
+		bool isRetired() const { return m_retired.load(std::memory_order_acquire); }
+
 	private:
-		mutable std::mutex m_mutex;
-		FrontPanel m_snapshot;
+		struct Published
+		{
+			FrontPanel panel;
+			uint64_t ledSequence = 0;
+		};
+		static_assert(std::is_trivially_copyable_v<Published>, "published through atomic words");
+		static constexpr size_t g_words = (sizeof(Published) + 7) / 8;
+
+		void publish(const FrontPanel& _panel, uint64_t _ledSequence);
+		bool tryReadPublished(Published& _published, uint64_t* _sequence = nullptr) const;
+		Published readPublished() const;
+
+		std::atomic<bool> m_retired{false};
+		std::atomic<uint64_t> m_sequence{0};	// odd while a publish is in progress
+		std::array<std::atomic<uint64_t>, g_words> m_words{};
+		// Readers only (draining the LED stream, reset): the writer never takes it.
+		mutable std::mutex m_readerMutex;
 		std::array<FrontPanelLedTransition, g_ledTransitionCapacity> m_ledTransitions{};
 		std::atomic<size_t> m_ledTransitionWrite{0};
 		std::atomic<size_t> m_ledTransitionRead{0};

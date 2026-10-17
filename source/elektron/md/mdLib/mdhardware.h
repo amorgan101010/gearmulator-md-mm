@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -52,6 +53,11 @@ namespace md
 	{
 	public:
 		using AudioOutputs = std::array<std::vector<dsp56k::TWord>, 6>;
+		// Diagnostics: observe every inter-DSP ESSI0 link frame as it is transmitted.
+		// _dsp is the sender, 0 = mixer (DSP1), 1 = producer (DSP2). Called on the
+		// scheduler thread, must not block.
+		using LinkTap = std::function<void(uint32_t _dsp, const dsp56k::Audio::TxFrame&)>;
+		void setLinkTap(LinkTap _tap) { m_linkTap = std::move(_tap); }
 		Hardware(const std::vector<uint8_t>& _romData = {}, const std::string& _romName = {},
 			MachineModel _model = MachineModel::Machinedrum,
 			const std::vector<uint8_t>& _initialPatchRam = {},
@@ -123,6 +129,24 @@ namespace md
 
 		Microcontroller& getUC() { return m_uc; }
 		std::vector<uint8_t> copyPatchRam() const;
+
+		// The memory a state is encoded from, copied on the emulation thread so another thread can
+		// encode it (Device::encodeStateSnapshot) while the unit keeps running. Sized once by
+		// sizeStateSnapshot; captureStateSnapshot then neither allocates nor locks, and copies patch
+		// RAM (1 MiB) or flash (MD 8 MiB, MM 2 MiB) only when it was written since this snapshot's
+		// last copy.
+		struct StateSnapshot
+		{
+			std::vector<uint8_t> patchRam;
+			std::vector<uint8_t> flash;				// MD: the whole flash; MM: its user window
+			std::vector<uint8_t> factoryBaseline;	// MD, once this machine captured one
+			bool hasFactoryBaseline = false;
+			uint64_t patchRamWrites = ~uint64_t{0};
+			uint64_t flashWrites = ~uint64_t{0};
+		};
+		void sizeStateSnapshot(StateSnapshot& _snapshot) const;
+		// False while a restored state is still being applied: the state is not this machine's yet.
+		bool captureStateSnapshot(StateSnapshot& _snapshot);
 		std::vector<uint8_t> copyFlashData() const { return m_uc.copyFlashData(); }
 		std::vector<uint8_t> copyUserFlash() const { return m_uc.copyUserFlash(); }
 		const std::vector<uint8_t>& flashBaseline() const { return m_rom.data(); }
@@ -171,6 +195,9 @@ namespace md
 		Dsp& getDspMixer()    { return m_dspMixer; }	// DSP1, index 0 (main/output)
 
 		void processUC();
+		// Sizes the output buffers for host blocks of up to _frames ahead of real-time use, so the
+		// first processAudio of that size does not allocate. Output is unaffected.
+		void reserveBlockSize(uint32_t _frames) { ensureBufferSize(_frames); }
 		void processAudio(uint32_t _frames, uint32_t _latency);
 		void processAudio(const synthLib::TAudioOutputs& _outputs, uint32_t _frames, uint32_t _latency);
 		void processAudio(const synthLib::TAudioInputs& _inputs,
@@ -189,13 +216,20 @@ namespace md
 		// before a host (HI08) access. Called from the DSP-side HI08
 		// bridge so that every ColdFire read/write/CVR sees the target DSP at the same machine time,
 		// which is what makes the boot handshake (UC poll <-> DSP reply) converge deterministically.
-		void schedCatchUpDsp(uint32_t _dspIndex);
+		// Threading experiment: a UC read sees the DSP as it was (it may stop short of the UC's time), a UC write
+		// lands in the DSP's future (it may run past). See m_schedLookaheadDspCycles.
+		enum class HostAccess { Read, Write };
+		void schedCatchUpDsp(uint32_t _dspIndex, HostAccess _access = HostAccess::Read);
 		void notifyHostPumpStateChanged();
 		uint64_t hostRxReadyCycle(uint32_t _dspIndex, uint64_t _dspCycle) const;
 		uint64_t hostCurrentCycle() const { return m_schedUcCyclesDone; }
 		// Diagnostic snapshot. The caller must serialize with the machine thread,
 		// as Device does for its other control-plane observations.
 		TransportScorecard getTransportScorecard() noexcept;
+		// Current ESSI1 output-ring depths: index 0 is the mixer/DSP1 and index 1
+		// is the producer/DSP2. The scheduler thread owns these rings; callers
+		// must sample this from the emulation thread.
+		std::array<uint32_t, 2> getEssi1OutputQueueDepths();
 		void recordInlineHdi08Run(uint32_t _dspIndex, uint64_t _startCycle,
 			uint64_t _clampCycle, bool _workComplete) noexcept;
 		void recordMdLinkPurge(size_t _purgedFrames) noexcept;
@@ -259,12 +293,22 @@ namespace md
 		// thread-safe, allocation-free, and never waits; false reports that the FIFO
 		// rejected the packet. Row state is retained for recovery, while pulse commands
 		// are best effort and may be retried. Both outcomes are visible via telemetry.
-		bool trySendPanelEvent(uint8_t _cmd, uint8_t _arg);
-		void sendPanelEvent(uint8_t _cmd, uint8_t _arg)
+		// A row snapshot is merged with what the other sources hold (PanelSourceRows): the one
+		// short wait is on that merge, shared only by the threads that send input, never the
+		// emulation thread.
+		bool trySendPanelEvent(uint8_t _cmd, uint8_t _arg, PanelSource _source = PanelSource::Editor);
+		void sendPanelEvent(uint8_t _cmd, uint8_t _arg, PanelSource _source = PanelSource::Editor)
 		{
-			(void)trySendPanelEvent(_cmd, _arg);
+			(void)trySendPanelEvent(_cmd, _arg, _source);
 		}
 		size_t getPendingPanelInputBytes() const;
+		// The input this machine drains. Device shares one across a state restore's hardware swap.
+		void setPanelInput(std::shared_ptr<PanelInput> _input)
+		{
+			m_panelInput = std::move(_input);
+			m_panelIn = &m_panelInput->queue();
+		}
+		const std::shared_ptr<PanelInput>& getPanelInput() const { return m_panelInput; }
 		size_t getPanelInputOverflowCount() const;
 		PanelInputQueueStatus getPanelInputStatus() const;
 
@@ -291,6 +335,7 @@ namespace md
 		// happens only while Device is exclusively locked, immediately before commit,
 		// so the live SPSC publisher always has exactly one producer.
 		void setFrontPanelPublisher(std::shared_ptr<FrontPanelPublisher> _publisher);
+
 
 		void ensureBufferSize(uint32_t _frames);
 		void setHostAudioInputLatency(uint32_t _latency);
@@ -331,6 +376,7 @@ namespace md
 		bool m_ramRecordingModePending = false;
 
 		AudioOutputs m_audioOutputs;
+		LinkTap m_linkTap;
 		// Per-machine age of the last shallow link ring. This participates in the
 		// MM stall-purge decision, so it must never be shared by concurrently
 		// running Hardware instances (as it was when this lived as a static local).
@@ -388,7 +434,17 @@ namespace md
 		std::atomic<bool> m_mmLinkAwaitFresh{false};	// PDRC edge awaits DSP2's DMA reply
 		std::atomic<uint64_t> m_mmLinkStrobeEpoch{0};	// cancels delivery after nested catch-up
 		uint32_t m_mmLinkStrobeLevel = 2;		// mixer-context edge detector; 2 = no level observed yet
+		// Timed block sync (GEARMULATOR_MM_TIMED_SYNC=1|2): DSP1's Port C bit 1 edges reach DSP2 at the DSP2
+		// cycle matching DSP1's write, not at whatever cycle DSP2 has reached when the scheduler runs the write.
+		int m_mmTimedSync = 0;
+		std::vector<std::pair<uint64_t, dsp56k::TWord>> m_mmSyncEdges;	// (DSP2 cycle, level), oldest first
+		dsp56k::TWord m_mmSyncLevel = 0;
+		uint64_t mmProducerCycleAtMixerNow();
 		bool     m_schedDspOriginLatched[2] = { false, false };	// [0]=mixer/DSP1, [1]=producer/DSP2
+		// Threading experiment (doc/mdmm-threading-plan.md, phase 0): catch a DSP up to this many cycles BEFORE the
+		// UC's time instead of exactly to it, as a thread running behind would be. From GEARMULATOR_MDMM_LOOKAHEAD_US; 0 = off.
+		uint64_t m_schedLookaheadDspCycles = 0;
+		uint64_t m_schedWriteAheadDspCycles = 0;	// GEARMULATOR_MDMM_WRITEAHEAD_US; 0 = off
 		double   m_schedDspOriginFrame [2]  = { 0.0, 0.0 };		// machine-frame at runnable transition
 		uint64_t m_schedDspOriginCycles[2]  = { 0, 0 };			// getCycles() at that transition
 		uint64_t m_schedDspOriginUcCycles[2] = { 0, 0 };		// exact host clock at that transition
@@ -402,8 +458,14 @@ namespace md
 		size_t m_midiInByteCursor = 0;
 		RealtimeMidiByteQueue<64> m_realtimeMidiIn;
 
-		// Panel input events pending delivery to UART2 RX.
-		PanelInputQueue m_panelIn;
+		// Panel input events pending delivery to UART2 RX: the owning Device's (setPanelInput),
+		// so senders can reach it without the device lock. m_panelIn is its queue, kept as a plain
+		// pointer for the per-instruction checks.
+		std::shared_ptr<PanelInput> m_panelInput = std::make_shared<PanelInput>();
+		PanelInputQueue* m_panelIn = &m_panelInput->queue();
+		// The row snapshots the firmware has been sent, 0x20..0x26. Emulation thread only: MIDI pads
+		// press and release against it, so a pad hit leaves the keys a window or page holds down.
+		std::array<uint8_t, 7> m_panelDeliveredRows{};
 
 	};
 }

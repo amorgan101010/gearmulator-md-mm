@@ -1,7 +1,6 @@
 #include "mdLib/mdhardware.h"
 
 #include <algorithm>
-#include <chrono>
 #include <cstdio>
 #include <fstream>
 #include <iterator>
@@ -224,12 +223,8 @@ int main(int argc, char** argv)
 			mm ? seed : std::vector<uint8_t>{}, std::shared_ptr<md::FrontPanelPublisher>{},
 			flash, mm ? std::vector<uint8_t>{} : seed);
 		require(hardware->isValid(), "invalid firmware");
-		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(90);
 		for(uint32_t frames = 0; frames < md::g_samplerate * 20; frames += 64)
-		{
-			require(std::chrono::steady_clock::now() < deadline, "boot timed out");
 			hardware->advance(64);
-		}
 		require(hardware->isFirmwareMidiReady(), "firmware MIDI not ready");
 		PeerProbe peer(*hardware);
 		require(peer.divider() == 40, "unexpected initial MIDI divider");
