@@ -19,6 +19,11 @@ set(SOURCES
 	mdControlInput.cpp mdControlInput.h
 	mdEditor.cpp mdEditor.h
 	mdGamepad.cpp mdGamepad.h
+	mdKeyboardControl.cpp mdKeyboardControl.h
+	mdNativePanelClient.cpp mdNativePanelClient.h
+	mdPanelBackend.h
+	mdPanelControls.h
+	mdFrontPanelLcd.cpp mdFrontPanelLcd.h
 	mdGamepadAxes.h
 	mdFrontPanelPresentation.h
 	mdLcdGesture.h
@@ -83,6 +88,32 @@ juce_add_binary_data(mdJucePlugin_BinaryData SOURCES
 juce_add_binary_data(mmJucePlugin_BinaryData SOURCES
 	${COMMON_ASSETS} "tus_settings_gui_Monomachine.rml"
 	"tus_settings_dspaudio_Monomachine.rml" ${MM_SKIN_ASSETS} ${REMOTE_PANEL_ASSETS})
+
+# The hosted frontend bundles both native faceplates. It does not bundle the
+# browser remote-panel assets or the plugin processor.
+juce_add_binary_data(mdNativePanel_BinaryData SOURCES
+	${COMMON_ASSETS} ${MD_SKIN_ASSETS} ${MM_SKIN_ASSETS})
+
+juce_add_gui_app(mdNativePanelStandalone
+	PRODUCT_NAME "Gearmulator Native Panel"
+	BUNDLE_ID com.gearmulator.md-native-panel
+)
+target_sources(mdNativePanelStandalone PRIVATE
+	mdNativePanelApp.cpp
+	mdNativePanelClient.cpp mdNativePanelClient.h
+	mdKeyboardControl.cpp mdKeyboardControl.h
+	mdFrontPanelLcd.cpp mdFrontPanelLcd.h mdNativePanelPresentation.h
+	mdPanelBackend.h mdPanelControls.h
+)
+target_include_directories(mdNativePanelStandalone PRIVATE
+	"${CMAKE_SOURCE_DIR}/source" "${CMAKE_SOURCE_DIR}/source/elektron/md")
+target_link_libraries(mdNativePanelStandalone PRIVATE
+	juceRmlUi juceUiLib mdLib jucePluginData mdNativePanel_BinaryData
+	juce::juce_core juce::juce_events juce::juce_graphics
+	juce::juce_data_structures juce::juce_gui_basics juce::juce_opengl)
+target_compile_definitions(mdNativePanelStandalone PRIVATE
+	JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1 JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+set_property(TARGET mdNativePanelStandalone PROPERTY FOLDER "Elektron/Standalone")
 
 createJucePlugin(mdJucePlugin "Gearmulator MD" TRUE "Tmdr" mdJucePlugin_BinaryData mdRemotePanel)
 createJucePlugin(mmJucePlugin "Gearmulator MM" TRUE "Tmno" mmJucePlugin_BinaryData mdRemotePanel)
@@ -180,6 +211,36 @@ if(BUILD_TESTING)
 	set_tests_properties(mdLcdInteractionModelTest PROPERTIES
 		LABELS "UnitTest;LcdInteraction")
 	set_property(TARGET mdLcdInteractionModelTest PROPERTY FOLDER "Elektron/test")
+
+	add_executable(mdKeyboardControlTest
+		mdKeyboardControlTest.cpp mdKeyboardControl.cpp)
+	target_include_directories(mdKeyboardControlTest PRIVATE
+			"${CMAKE_SOURCE_DIR}/source" "${CMAKE_SOURCE_DIR}/source/elektron/md")
+	target_link_libraries(mdKeyboardControlTest PRIVATE juceRmlUi mdLib)
+	add_test(NAME mdKeyboardControlTest COMMAND mdKeyboardControlTest)
+	set_tests_properties(mdKeyboardControlTest PROPERTIES LABELS "UnitTest;Panel;Keyboard")
+	set_property(TARGET mdKeyboardControlTest PROPERTY FOLDER "Elektron/test")
+
+	add_executable(mdNativePanelClientTest
+		mdNativePanelClientTest.cpp mdNativePanelClient.cpp)
+	target_include_directories(mdNativePanelClientTest PRIVATE
+			"${CMAKE_SOURCE_DIR}/source" "${CMAKE_SOURCE_DIR}/source/elektron/md")
+	target_link_libraries(mdNativePanelClientTest PRIVATE mdLib)
+	add_test(NAME mdNativePanelClientTest COMMAND mdNativePanelClientTest)
+	set_tests_properties(mdNativePanelClientTest PROPERTIES LABELS "UnitTest;Panel;IPC")
+	set_property(TARGET mdNativePanelClientTest PROPERTY FOLDER "Elektron/test")
+	add_executable(mmNativePanelPresentationTest mmNativePanelPresentationTest.cpp)
+	target_include_directories(mmNativePanelPresentationTest PRIVATE
+			"${CMAKE_SOURCE_DIR}/source" "${CMAKE_SOURCE_DIR}/source/elektron/md")
+	target_link_libraries(mmNativePanelPresentationTest PRIVATE mdLib)
+	add_test(NAME mmNativePanelPresentationTest COMMAND mmNativePanelPresentationTest)
+	set_tests_properties(mmNativePanelPresentationTest PROPERTIES
+		LABELS "UnitTest;Panel;Monomachine;Presentation")
+	set_property(TARGET mmNativePanelPresentationTest PROPERTY FOLDER "Elektron/test")
+	add_test(NAME mdNativePanelOwnershipTest
+		COMMAND ${CMAKE_COMMAND} -DAPP_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/mdNativePanelApp.cpp
+			-P ${CMAKE_CURRENT_SOURCE_DIR}/mdNativePanelOwnershipTest.cmake)
+	set_tests_properties(mdNativePanelOwnershipTest PROPERTIES LABELS "UnitTest;Panel;Ownership")
 	add_executable(mmLcdEditPagesFirmwareTest
 		mmLcdEditPagesFirmwareTest.cpp mdLcdInteractionModel.cpp)
 	target_link_libraries(mmLcdEditPagesFirmwareTest PRIVATE mdLib)

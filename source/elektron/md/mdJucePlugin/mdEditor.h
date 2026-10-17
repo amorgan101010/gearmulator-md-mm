@@ -18,6 +18,9 @@
 #include "mdFrontPanelPresentation.h"
 #include "mdGamepad.h"
 #include "mdGamepadAxes.h"
+#include "mdKeyboardControl.h"
+#include "mdPanelBackend.h"
+#include "mdPanelControls.h"
 #include "mdHelpOverrides.h"
 #include "mdLcdGesture.h"
 #include "mdLcdInteractionModel.h"
@@ -68,7 +71,9 @@ namespace mdJucePlugin
 	class SampleDropTarget;
 	class MachineRack;
 
-	class Editor final : public jucePluginEditorLib::Editor, juce::MultiTimer,
+	class Editor final : public jucePluginEditorLib::Editor, public PanelBackend,
+		juce::MultiTimer,
+		private PanelKeyboardActions,
 		private juce::FocusChangeListener
 	{
 	public:
@@ -98,6 +103,10 @@ namespace mdJucePlugin
 		// Rereads the touchpad and gyro axis settings. Called on create and from the settings page.
 		void applyGamepadSettings();
 		md::MachineModel getModel() const;
+		md::MachineModel model() const override { return m_model; }
+		bool readStatus(PanelStatusSnapshot& _snapshot, std::string& _error) override;
+		bool sendPanel(uint8_t _command, uint8_t _argument, std::string& _error) override;
+		std::string connectionError() const override { return m_panelConnectionError; }
 		void loadInstalledFactoryStorage();
 		void chooseStorageImage();
 		void restorePreviousStorage();
@@ -228,10 +237,21 @@ namespace mdJucePlugin
 		void createKeyboardControl();
 		void onPanelKey(Rml::Event& _event, bool _down);
 		// Acts on a key after auto-repeat filtering; true if the key belongs to panel control.
-		bool handlePanelKey(int _key, bool _down, bool _shift);
 		void serviceKeyboardReleases(double _nowMilliseconds);
 		void resetKeyboardControl();
 		void releaseKeyboardEncoderPress();
+		void keyboardPressControl(md::PanelControl _control, bool _shift,
+			bool _momentaryBanks) override;
+		void keyboardReleaseControl(md::PanelControl _control) override;
+		bool keyboardEncoderAvailable(md::PanelEncoder _encoder) const override;
+		void keyboardSelectEncoder(std::optional<md::PanelEncoder> _encoder) override;
+		void keyboardPressEncoder(md::PanelEncoder _encoder) override;
+		void keyboardReleaseEncoder(md::PanelEncoder _encoder) override;
+		void keyboardTurnEncoder(md::PanelEncoder _encoder, float _direction) override;
+		void keyboardClickEncoder(md::PanelEncoder _encoder) override;
+		bool keyboardHandlesMachinedrumPageKeys() const override;
+		void keyboardMachinedrumPageKey(int _direction, bool _down) override;
+		void keyboardReleaseAllPanelInputs() override;
 
 		// DATA PAGE currently lit on the Monomachine: 0 SYNTHESIS .. 6 LFO 3.
 		std::optional<int> currentMonomachineDataPage() const;
@@ -323,6 +343,8 @@ namespace mdJucePlugin
 		std::unique_ptr<PixelPerfectPanel> m_pixelPerfectPanel;
 		md::FrontPanel m_frontPanelSnapshot;
 		bool m_frontPanelSnapshotValid = false;
+		uint64_t m_frontPanelGeneration = 0;
+		std::string m_panelConnectionError;
 		// Kept between frames: fetching it takes the device lock, which waits for the audio block to finish.
 		std::shared_ptr<md::FrontPanelPublisher> m_frontPanelPublisher;
 		// The device's panel input, kept between sends (see sendPanelEvent). Message thread only.
@@ -483,9 +505,7 @@ namespace mdJucePlugin
 		std::array<GamepadAxisRun, std::size(gamepadAxes::g_axes)> m_gamepadAxisRuns{};
 
 		bool m_keyboardControl = false;
-		std::vector<std::pair<int, double>> m_keyboardPendingReleases;	// key, deadline: releases waiting out auto-repeat
-		std::vector<int> m_keyboardHeldKeys;			// Rml key identifiers currently down, to ignore auto-repeat
-		bool m_keyboardFunctionHeld = false;			// Ctrl
+		PanelKeyboardControl m_panelKeyboard;
 		std::optional<size_t> m_keyboardEncoder;		// index into g_keyboardEncoders while its key is held
 		bool m_keyboardEncoderTurned = false;
 		std::optional<md::PanelPacket> m_keyboardEncoderPressPacket;	// encoder switch held by [ or ]
