@@ -60,6 +60,7 @@ source_group("source" FILES ${SOURCES})
 source_group("source\\patchdb" FILES ${SOURCES_PATCHDB})
 
 target_link_libraries(jucePluginLib PUBLIC juceUiLib synthLib bridgeClient)
+target_link_libraries(jucePluginLib PRIVATE juce_plugin_modules)
 target_include_directories(jucePluginLib PUBLIC ../JUCE/modules)
 target_compile_definitions(jucePluginLib PRIVATE JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1)
 set_property(TARGET jucePluginLib PROPERTY FOLDER "Gearmulator")

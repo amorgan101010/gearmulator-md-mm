@@ -403,6 +403,7 @@ namespace pluginLib
 			return;
 		m_virtualPortsOpened = true;
 
+	#if JUCE_LINUX || JUCE_BSD || JUCE_MAC || JUCE_IOS
 		m_virtualInput = juce::MidiInput::createNewDevice("MIDI In", this);
 		if (m_virtualInput != nullptr)
 			m_virtualInput->start();
@@ -410,6 +411,7 @@ namespace pluginLib
 		m_virtualOutput = juce::MidiOutput::createNewDevice("MIDI Out");
 		if (m_virtualOutput != nullptr && getOutputId().isEmpty())
 			setMidiOutput({});
+	#endif
 	}
 
 	juce::Array<juce::MidiDeviceInfo> MidiPorts::getAvailableInputs() const
