@@ -102,6 +102,7 @@ target_sources(mdNativePanelStandalone PRIVATE
 	mdNativePanelApp.cpp
 	mdNativePanelClient.cpp mdNativePanelClient.h
 	mdKeyboardControl.cpp mdKeyboardControl.h
+	mdNativePanelKeylight.cpp mdNativePanelKeylight.h
 	mdFrontPanelLcd.cpp mdFrontPanelLcd.h mdNativePanelPresentation.h
 	mdPanelBackend.h mdPanelControls.h
 )
@@ -220,6 +221,15 @@ if(BUILD_TESTING)
 	add_test(NAME mdKeyboardControlTest COMMAND mdKeyboardControlTest)
 	set_tests_properties(mdKeyboardControlTest PROPERTIES LABELS "UnitTest;Panel;Keyboard")
 	set_property(TARGET mdKeyboardControlTest PROPERTY FOLDER "Elektron/test")
+
+	add_executable(mdNativePanelKeylightTest
+		mdNativePanelKeylightTest.cpp mdNativePanelKeylight.cpp mdKeyboardControl.cpp)
+	target_include_directories(mdNativePanelKeylightTest PRIVATE
+			"${CMAKE_SOURCE_DIR}/source" "${CMAKE_SOURCE_DIR}/source/elektron/md")
+	target_link_libraries(mdNativePanelKeylightTest PRIVATE juceRmlUi mdLib)
+	add_test(NAME mdNativePanelKeylightTest COMMAND mdNativePanelKeylightTest)
+	set_tests_properties(mdNativePanelKeylightTest PROPERTIES LABELS "UnitTest;Panel;Keyboard")
+	set_property(TARGET mdNativePanelKeylightTest PROPERTY FOLDER "Elektron/test")
 
 	add_executable(mdNativePanelClientTest
 		mdNativePanelClientTest.cpp mdNativePanelClient.cpp)

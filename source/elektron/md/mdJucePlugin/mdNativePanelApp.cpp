@@ -1,6 +1,7 @@
 #include "mdFrontPanelLcd.h"
 #include "mdKeyboardControl.h"
 #include "mdNativePanelClient.h"
+#include "mdNativePanelKeylight.h"
 #include "mdNativePanelPresentation.h"
 #include "mdPanelAffordances.h"
 #include "mdPanelControls.h"
@@ -61,6 +62,7 @@ namespace
 		std::string unit;
 		std::string model;
 		bool trace = false;
+		std::string printKeylightMap;
 	};
 
 	std::optional<Options> parseOptions(juce::StringArray args, std::string& error)
@@ -72,6 +74,17 @@ namespace
 			if(flag == "--trace")
 			{
 				result.trace = true;
+				continue;
+			}
+			if(flag == "--print-keylight-map")
+			{
+				// Print the keys this model lights as the helper's "show" line, then exit.
+				if(i + 1 >= args.size())
+				{
+					error = "missing value for " + flag;
+					return {};
+				}
+				result.printKeylightMap = args[++i].toStdString();
 				continue;
 			}
 			if(flag != "--socket" && flag != "--runtime" && flag != "--unit" && flag != "--model")
@@ -89,6 +102,15 @@ namespace
 			else if(flag == "--runtime") result.runtimeDirectory = value;
 			else if(flag == "--unit") result.unit = value;
 			else result.model = value;
+		}
+		if(!result.printKeylightMap.empty())
+		{
+			if(result.printKeylightMap != "md" && result.printKeylightMap != "mm")
+			{
+				error = "--print-keylight-map takes md or mm";
+				return {};
+			}
+			return result;
 		}
 		if(result.socketPath.empty() || result.runtimeDirectory.empty()
 			|| result.unit.empty() || result.model.empty())
@@ -191,6 +213,7 @@ namespace
 			, m_runtimeDirectory(options.runtimeDirectory)
 			, m_unit(options.unit)
 			, m_interfaces(m_resources)
+			, m_keylight(m_model)
 			, m_trace(options.trace)
 		{
 			std::string error;
@@ -239,6 +262,18 @@ namespace
 				trace("native-panel keyboard-focus="
 					+ std::to_string(m_panel->hasKeyboardFocus(true)));
 			}
+		}
+
+		// The physical keyboard shows this panel's keymap while its window is the active one.
+		void updateKeylight()
+		{
+			bool active = false;
+			if(const auto* const window = dynamic_cast<juce::TopLevelWindow*>(getTopLevelComponent()))
+				active = window->isShowing() && window->isActiveWindow();
+			if(active != m_keylight.focused())
+				trace(std::string("native-panel keylight window-active=") + (active ? "1" : "0")
+					+ " enabled=" + (m_keylight.enabled() ? "1" : "0"));
+			m_keylight.setFocused(active);
 		}
 
 		void globalFocusChanged(juce::Component* focusedComponent) override
@@ -973,6 +1008,7 @@ namespace
 
 		void timerCallback() override
 		{
+			updateKeylight();
 			if(g_shutdownRequested)
 			{
 				g_shutdownRequested = 0;
@@ -1147,6 +1183,7 @@ namespace
 		juceRmlUi::ElemCanvas* m_lcd = nullptr;
 		Rml::Element* m_statusElement = nullptr;
 		mdJucePlugin::PanelKeyboardControl m_keyboard;
+		mdJucePlugin::NativePanelKeylight m_keylight;
 		md::PanelRowState m_rows;
 		mdJucePlugin::panelAffordances::ShiftPanelLatch m_shiftLatch;
 		mdJucePlugin::panelAffordances::PendingTarget<3> m_machinedrumDataPageTarget;
@@ -1226,6 +1263,12 @@ namespace
 		{
 			juce::JUCEApplication::getInstance()->systemRequestedQuit();
 		}
+		void activeWindowStatusChanged() override
+		{
+			juce::DocumentWindow::activeWindowStatusChanged();
+			if(auto* const panel = dynamic_cast<NativePanelView*>(getContentComponent()))
+				panel->updateKeylight();
+		}
 	};
 
 	class NativePanelApplication final : public juce::JUCEApplication
@@ -1239,6 +1282,13 @@ namespace
 			std::signal(SIGINT, requestShutdown);
 			std::string error;
 			const auto options = parseOptions(getCommandLineParameterArray(), error);
+			if(options && !options->printKeylightMap.empty())
+			{
+				std::cout << mdJucePlugin::keylightShowMessage(options->printKeylightMap == "mm"
+					? md::MachineModel::Monomachine : md::MachineModel::Machinedrum);
+				quit();
+				return;
+			}
 			if(!options)
 			{
 				std::cerr << "native-panel startup error: " << error << '\n';
