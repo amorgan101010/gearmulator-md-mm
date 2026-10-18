@@ -103,6 +103,7 @@ target_sources(mdNativePanelStandalone PRIVATE
 	mdNativePanelClient.cpp mdNativePanelClient.h
 	mdKeyboardControl.cpp mdKeyboardControl.h
 	mdNativePanelKeylight.cpp mdNativePanelKeylight.h
+	mdNativePanelActiveWindow.cpp mdNativePanelActiveWindow.h
 	mdFrontPanelLcd.cpp mdFrontPanelLcd.h mdNativePanelPresentation.h
 	mdPanelBackend.h mdPanelControls.h
 )
@@ -112,6 +113,10 @@ target_link_libraries(mdNativePanelStandalone PRIVATE
 	juceRmlUi juceUiLib mdLib jucePluginData mdNativePanel_BinaryData
 	juce::juce_core juce::juce_events juce::juce_graphics
 	juce::juce_data_structures juce::juce_gui_basics juce::juce_opengl)
+if(UNIX AND NOT APPLE)
+	find_package(X11 REQUIRED) # mdNativePanelActiveWindow.cpp asks the window manager who is active
+	target_link_libraries(mdNativePanelStandalone PRIVATE X11::X11)
+endif()
 target_compile_definitions(mdNativePanelStandalone PRIVATE
 	JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1 JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
 set_property(TARGET mdNativePanelStandalone PROPERTY FOLDER "Elektron/Standalone")
