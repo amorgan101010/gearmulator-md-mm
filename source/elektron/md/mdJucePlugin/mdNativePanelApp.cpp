@@ -1,4 +1,5 @@
 #include "mdFrontPanelLcd.h"
+#include "mdLcdViewport.h"
 #include "mdKeyboardControl.h"
 #include "mdNativePanelActiveWindow.h"
 #include "mdNativePanelClient.h"
@@ -44,6 +45,23 @@
 
 namespace
 {
+	constexpr float g_masterVolumeMinDb = -40.0f;
+	constexpr float g_masterVolumeMaxDb = 24.0f;
+	float masterVolumePositionToGain(const float position)
+	{
+		if(position <= 0.0f)
+			return 0.0f;
+		return std::pow(10.0f, (g_masterVolumeMinDb
+			+ position * (g_masterVolumeMaxDb - g_masterVolumeMinDb)) / 20.0f);
+	}
+	float masterVolumeGainToPosition(const float gain)
+	{
+		if(gain <= 0.0f)
+			return 0.0f;
+		return std::clamp((20.0f * std::log10(gain) - g_masterVolumeMinDb)
+			/ (g_masterVolumeMaxDb - g_masterVolumeMinDb), 0.0f, 1.0f);
+	}
+
 	volatile std::sig_atomic_t g_shutdownRequested = 0;
 
 	void requestShutdown(const int)
@@ -227,7 +245,7 @@ namespace
 
 			juceRmlUi::RmlComponentConfig config;
 			config.forceSoftwareRenderer = juceRmlUi::SoftwareRendererMode::ForceOn;
-			m_panel = std::make_unique<juceRmlUi::RmlComponent>(m_interfaces, m_resources,
+				m_panel = std::make_unique<juceRmlUi::RmlComponent>(m_interfaces, m_resources,
 				m_model == md::MachineModel::Monomachine ? "mmSfx60.rml" : "mdDefault.rml", 1.0f,
 				[](juceRmlUi::RmlComponent&, Rml::Context&) {},
 				[](juceRmlUi::RmlComponent&, Rml::Context&) {}, config);
@@ -345,6 +363,15 @@ namespace
 				m_disconnectedInputsReset = false;
 				m_reconnectDelayMs = 250.0;
 				m_nextReconnectMs = 0.0;
+				if(m_masterVolume)
+				{
+					float gain = 1.0f;
+					if(m_backend->outputGain(gain, error))
+					{
+						m_masterVolumeGain = gain;
+						m_masterVolume->setValue(masterVolumeGainToPosition(gain), false);
+					}
+				}
 				return true;
 			}
 			catch(const std::exception& exception)
@@ -439,11 +466,6 @@ namespace
 				scenes->SetProperty(Rml::PropertyId::PointerEvents, Rml::Style::PointerEvents::None);
 				scenes->SetAttribute("title", "Scene editing requires the processor controller");
 			}
-			if(auto* const master = element("encMaster"))
-			{
-				master->SetProperty(Rml::PropertyId::PointerEvents, Rml::Style::PointerEvents::None);
-				master->SetAttribute("title", "Master output gain belongs to the processor");
-			}
 		}
 
 		void wirePanel()
@@ -465,10 +487,37 @@ namespace
 						return;
 					auto image = mdJucePlugin::makeFrontPanelLcdImage(
 						m_snapshot.panel, m_model);
+					const auto viewport = mdJucePlugin::lcdInteraction::Viewport::create(
+						target.getWidth(), target.getHeight(), target.getWidth(), target.getHeight(), true);
+					const auto content = viewport.contentInPaintSpace();
 					graphics.setImageResamplingQuality(juce::Graphics::lowResamplingQuality);
-					graphics.drawImageWithin(image, 0, 0, target.getWidth(), target.getHeight(),
-						juce::RectanglePlacement::centred);
+					graphics.drawImage(image, juce::Rectangle<float>(static_cast<float>(content.x),
+						static_cast<float>(content.y), static_cast<float>(content.width),
+						static_cast<float>(content.height)));
 				});
+			}
+
+			m_masterVolume = dynamic_cast<juceRmlUi::ElemKnob*>(element("encMaster"));
+			if(m_masterVolume)
+			{
+				m_masterVolume->setMinValue(0.0f);
+				m_masterVolume->setMaxValue(1.0f);
+				m_masterVolume->setEndless(false);
+				float gain = 1.0f;
+				std::string error;
+				if(m_backend && m_backend->outputGain(gain, error))
+					m_masterVolumeGain = gain;
+				m_masterVolume->setValue(masterVolumeGainToPosition(m_masterVolumeGain), false);
+				m_masterVolume->SetAttribute("title", "Hosted master output gain");
+				juceRmlUi::EventListener::Add(m_masterVolume, Rml::EventId::Change,
+					[this](Rml::Event&)
+					{
+						m_masterVolumeGain = masterVolumePositionToGain(std::clamp(
+							m_masterVolume->getValue(), 0.0f, 1.0f));
+						std::string error;
+						if(!m_backend || !m_backend->setOutputGain(m_masterVolumeGain, error))
+							handleDisconnect(juce::Time::getMillisecondCounterHiRes(), error);
+					});
 			}
 
 			for(const auto& binding : mdJucePlugin::g_panelButtons)
@@ -1192,6 +1241,8 @@ namespace
 		std::unique_ptr<mdJucePlugin::NativePanelClient> m_backend;
 		std::unique_ptr<juceRmlUi::RmlComponent> m_panel;
 		juceRmlUi::ElemCanvas* m_lcd = nullptr;
+		juceRmlUi::ElemKnob* m_masterVolume = nullptr;
+		float m_masterVolumeGain = 1.0f;
 		Rml::Element* m_statusElement = nullptr;
 		mdJucePlugin::PanelKeyboardControl m_keyboard;
 		mdJucePlugin::NativePanelKeylight m_keylight;

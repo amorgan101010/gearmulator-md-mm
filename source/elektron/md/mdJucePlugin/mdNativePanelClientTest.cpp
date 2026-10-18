@@ -58,6 +58,12 @@ namespace
 			value |= uint32_t(data[i]) << (i * 8);
 		return value;
 	}
+	std::vector<uint8_t> floatPayload(const float value)
+	{
+		std::vector<uint8_t> result(sizeof(value));
+		std::memcpy(result.data(), &value, sizeof(value));
+		return result;
+	}
 
 	std::vector<uint8_t> frame(uint16_t kind, uint32_t id,
 		const std::vector<uint8_t>& payload, uint16_t version = 1)
@@ -213,6 +219,7 @@ namespace
 	{
 		std::atomic<unsigned> statuses{0};
 		std::atomic<unsigned> inputs{0};
+		std::atomic<unsigned> gains{0};
 		FakeEndpoint server([&](const ParsedRequest& request)
 		{
 			require(request.version == 1, "client request version differs from GMNP v1");
@@ -240,6 +247,23 @@ namespace
 					"PANEL_INPUT bytes were modified by the client");
 				return frame(responseBit | 3, request.id, {});
 			}
+			if(request.kind == 4)
+			{
+				++gains;
+				const auto expectedToken = token();
+				require(request.payload.size() == 16 || request.payload.size() == 20,
+					"OUTPUT_GAIN payload must be a token with an optional float");
+				require(std::equal(expectedToken.begin(), expectedToken.end(), request.payload.begin()),
+					"OUTPUT_GAIN did not carry the HELLO instance token");
+				if(request.payload.size() == 20)
+				{
+					float requested = 0.0f;
+					std::memcpy(&requested, request.payload.data() + 16, sizeof(requested));
+					require(requested == 0.25f, "OUTPUT_GAIN float was modified by the client");
+				}
+				return frame(responseBit | 4, request.id, floatPayload(
+					request.payload.size() == 20 ? 0.25f : 1.0f));
+			}
 			throw std::runtime_error("unexpected request kind");
 		});
 		mdJucePlugin::NativePanelClient client(server.socketPath(), server.runtimeDirectory(),
@@ -255,7 +279,12 @@ namespace
 			&& error.find("moved backwards") != std::string::npos,
 			"backwards STATUS generation was not rejected");
 		require(client.sendPanel(0x20, 0x01, error), "PANEL_INPUT request failed: " + error);
-		require(statuses == 2 && inputs == 1, "fake endpoint did not receive expected requests");
+		float gain = 0.0f;
+		require(client.outputGain(gain, error) && gain == 1.0f,
+			"OUTPUT_GAIN query failed: " + error);
+		require(client.setOutputGain(0.25f, error), "OUTPUT_GAIN set failed: " + error);
+		require(statuses == 2 && inputs == 1 && gains == 2,
+			"fake endpoint did not receive expected requests");
 		require(server.threadError().empty(), "endpoint framing check failed: " + server.threadError());
 	}
 
