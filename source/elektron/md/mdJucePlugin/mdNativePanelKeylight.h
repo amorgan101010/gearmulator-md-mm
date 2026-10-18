@@ -4,7 +4,6 @@
 #include "mdLib/mdtypes.h"
 
 #include <string>
-#include <sys/types.h>
 #include <vector>
 
 namespace mdJucePlugin
@@ -68,7 +67,7 @@ namespace mdJucePlugin
 		std::string m_helper;
 		bool m_focused = false;
 		int m_fd = -1;
-		pid_t m_pid = -1;
+		int m_pid = -1; // a pid_t, kept out of this header so it compiles where there is none
 		double m_retryAt = 0.0;
 	};
 }
