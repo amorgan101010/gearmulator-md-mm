@@ -7,6 +7,7 @@
 #include "mdNativePanelPresentation.h"
 #include "mdPanelAffordances.h"
 #include "mdPanelControls.h"
+#include "mdProductSkinPolicy.h"
 
 #include "jucePluginData.h"
 #include "BinaryData.h"
@@ -31,6 +32,7 @@
 #include <cmath>
 #include <csignal>
 #include <cstdio>
+#include <cstdlib>
 #include <cstdint>
 #include <deque>
 #include <filesystem>
@@ -40,6 +42,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -185,6 +188,12 @@ namespace
 		const char* getResourceByFilename(const std::string& name, uint32_t& size) override
 		{
 			const auto basename = std::filesystem::path(name).filename().string();
+			const auto disk = m_diskResources.find(basename);
+			if(disk != m_diskResources.end())
+			{
+				size = static_cast<uint32_t>(disk->second.size());
+				return disk->second.data();
+			}
 			const auto found = m_resources.find(basename);
 			if(found == m_resources.end())
 			{
@@ -198,10 +207,44 @@ namespace
 		std::vector<std::string> getAllFilenames() override
 		{
 			std::vector<std::string> result;
-			result.reserve(m_resources.size());
+			result.reserve(m_resources.size() + m_diskResources.size());
 			for(const auto& [name, _] : m_resources)
 				result.push_back(name);
+			for(const auto& [name, _] : m_diskResources)
+				if(m_resources.find(name) == m_resources.end())
+					result.push_back(name);
 			return result;
+		}
+
+		bool setSkinFolder(const std::filesystem::path& folder, std::string& error)
+		{
+			m_diskResources.clear();
+			if(folder.empty())
+				return true;
+			std::error_code ec;
+			for(const auto& entry : std::filesystem::directory_iterator(folder, ec))
+			{
+				if(ec || !entry.is_regular_file())
+					continue;
+				juce::File file(entry.path().string());
+				juce::MemoryBlock data;
+				if(!file.loadFileAsData(data))
+				{
+					error = "failed to read skin asset " + entry.path().string();
+					m_diskResources.clear();
+					return false;
+				}
+				const auto* begin = static_cast<const char*>(data.getData());
+				m_diskResources[entry.path().filename().string()] =
+					std::vector<char>(begin, begin + data.getSize());
+			}
+			if(ec)
+			{
+				error = "failed to enumerate skin folder " + folder.string() + ": " + ec.message();
+				m_diskResources.clear();
+				return false;
+			}
+			return true;
 		}
 
 	private:
@@ -217,6 +260,7 @@ namespace
 			}
 		}
 		std::map<std::string, std::pair<const char*, uint32_t>> m_resources;
+		std::map<std::string, std::vector<char>> m_diskResources;
 	};
 
 	class NativePanelView final : public juce::Component,
@@ -225,6 +269,13 @@ namespace
 		private mdJucePlugin::PanelKeyboardActions
 	{
 	public:
+		struct SkinEntry
+		{
+			std::string displayName;
+			std::string filename;
+			std::filesystem::path folder;
+		};
+
 		explicit NativePanelView(const Options& options)
 			: m_model(options.model == "mm" ? md::MachineModel::Monomachine
 				: md::MachineModel::Machinedrum)
@@ -235,6 +286,7 @@ namespace
 			, m_keylight(m_model)
 			, m_trace(options.trace)
 		{
+			discoverSkins();
 			std::string error;
 			if(!connectBackend(error))
 			{
@@ -243,16 +295,7 @@ namespace
 				trace("native-panel connection failed: " + m_connectionMessage);
 			}
 
-			juceRmlUi::RmlComponentConfig config;
-			config.forceSoftwareRenderer = juceRmlUi::SoftwareRendererMode::ForceOn;
-				m_panel = std::make_unique<juceRmlUi::RmlComponent>(m_interfaces, m_resources,
-				m_model == md::MachineModel::Monomachine ? "mmSfx60.rml" : "mdDefault.rml", 1.0f,
-				[](juceRmlUi::RmlComponent&, Rml::Context&) {},
-				[](juceRmlUi::RmlComponent&, Rml::Context&) {}, config);
-			m_panel->setLookAndFeel(&m_lookAndFeel);
-			m_panel->setWantsKeyboardFocus(true);
-			addAndMakeVisible(*m_panel);
-			wirePanel();
+			loadInitialSkin();
 			m_panel->grabKeyboardFocus();
 			setSize(1100, 820);
 			juce::Desktop::getInstance().addFocusChangeListener(this);
@@ -336,6 +379,122 @@ namespace
 		{
 			return control >= md::PanelControl::BankA
 				&& control <= md::PanelControl::BankD;
+		}
+
+		std::filesystem::path skinRoot() const
+		{
+			const auto product = m_model == md::MachineModel::Monomachine
+				? "Monomachine" : "Machinedrum";
+			const auto* const xdgDataHome = std::getenv("XDG_DATA_HOME");
+			const auto dataRoot = xdgDataHome && *xdgDataHome
+				? std::filesystem::path(xdgDataHome)
+				: std::filesystem::path(juce::File::getSpecialLocation(
+					juce::File::userHomeDirectory).getFullPathName().toStdString()) / ".local" / "share";
+			return dataRoot
+				/ "Gearmulator Preview" / product / "skins";
+		}
+
+		void discoverSkins()
+		{
+			m_skins.push_back({mdJucePlugin::defaultSkinName(m_model),
+				mdJucePlugin::defaultSkinFile(m_model), {}});
+			std::error_code ec;
+			const auto root = skinRoot();
+			for(const auto& folder : std::filesystem::directory_iterator(root, ec))
+			{
+				if(!folder.is_directory())
+					continue;
+				std::error_code fileError;
+				for(const auto& file : std::filesystem::directory_iterator(folder.path(), fileError))
+				{
+					if(fileError || !file.is_regular_file() || file.path().extension() != ".rml")
+						continue;
+					const auto filename = file.path().filename().string();
+					const auto displayName = file.path().stem().string();
+					if(mdJucePlugin::isSkinCompatible(m_model, displayName, filename))
+						m_skins.push_back({displayName, filename, folder.path()});
+				}
+			}
+			std::sort(m_skins.begin() + 1, m_skins.end(), [](const auto& a, const auto& b)
+			{
+				return std::tie(a.displayName, a.folder) < std::tie(b.displayName, b.folder);
+			});
+		}
+
+		juce::PropertiesFile::Options skinSettingsOptions() const
+		{
+			juce::PropertiesFile::Options options;
+			options.applicationName = "Gearmulator Hosted Panel";
+			options.filenameSuffix = ".settings";
+			options.osxLibrarySubFolder = "Application Support";
+			return options;
+		}
+
+		void loadInitialSkin()
+		{
+			juce::PropertiesFile settings(skinSettingsOptions());
+			const auto prefix = m_unit + ".skin.";
+			const auto filename = settings.getValue(prefix + "file").toStdString();
+			const auto folder = settings.getValue(prefix + "folder").toStdString();
+			const auto found = std::find_if(m_skins.begin(), m_skins.end(), [&](const auto& skin)
+			{
+				return skin.filename == filename && skin.folder.string() == folder;
+			});
+			loadSkin(found == m_skins.end() ? 0 : static_cast<size_t>(found - m_skins.begin()), false);
+		}
+
+		void loadSkin(const size_t index, const bool persist)
+		{
+			if(index >= m_skins.size())
+				return;
+			const auto skin = m_skins[index];
+			std::string error;
+			if(!m_resources.setSkinFolder(skin.folder, error))
+				throw std::runtime_error(error);
+			m_keyboard.reset(*this);
+			m_panel.reset();
+			m_lcd = nullptr;
+			m_masterVolume = nullptr;
+			m_statusElement = nullptr;
+			m_encoderElements.fill(nullptr);
+			juceRmlUi::RmlComponentConfig config;
+			config.forceSoftwareRenderer = juceRmlUi::SoftwareRendererMode::ForceOn;
+			m_panel = std::make_unique<juceRmlUi::RmlComponent>(m_interfaces, m_resources,
+				skin.filename, 1.0f,
+				[](juceRmlUi::RmlComponent&, Rml::Context&) {},
+				[](juceRmlUi::RmlComponent&, Rml::Context&) {}, config);
+			m_panel->setLookAndFeel(&m_lookAndFeel);
+			m_panel->setWantsKeyboardFocus(true);
+			addAndMakeVisible(*m_panel);
+			m_panel->setBounds(getLocalBounds());
+			m_currentSkin = index;
+			wirePanel();
+			m_panel->grabKeyboardFocus();
+			if(persist)
+			{
+				juce::PropertiesFile settings(skinSettingsOptions());
+				const auto prefix = m_unit + ".skin.";
+				settings.setValue(prefix + "file", juce::String(skin.filename));
+				settings.setValue(prefix + "folder", juce::String(skin.folder.string()));
+				settings.saveIfNeeded();
+			}
+		}
+
+		void showSkinMenu()
+		{
+			juce::PopupMenu menu;
+			for(size_t i = 0; i < m_skins.size(); ++i)
+			{
+				const auto label = m_skins[i].folder.empty() ? m_skins[i].displayName + " (Embedded)"
+					: m_skins[i].displayName + " — " + m_skins[i].folder.filename().string();
+				menu.addItem(static_cast<int>(i + 1), label, true, i == m_currentSkin);
+			}
+			menu.showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(m_panel.get()),
+				juce::ModalCallbackFunction::create([safe = juce::Component::SafePointer<NativePanelView>(this)](int choice)
+				{
+					if(safe && choice > 0)
+						safe->loadSkin(static_cast<size_t>(choice - 1), true);
+				}));
 		}
 
 		void trace(const std::string& line) const
@@ -458,8 +617,8 @@ namespace
 			}
 			if(auto* const settings = element("btSettings"))
 			{
-				settings->SetProperty(Rml::PropertyId::PointerEvents, Rml::Style::PointerEvents::None);
-				settings->SetAttribute("title", "Processor settings require the plug-in or standalone editor");
+				settings->SetAttribute("title", "Choose panel skin");
+				juceRmlUi::EventListener::AddClick(settings, [this] { showSkinMenu(); });
 			}
 			if(auto* const scenes = element("sceneStrip"))
 			{
@@ -1235,6 +1394,8 @@ namespace
 		std::string m_socketPath;
 		std::string m_runtimeDirectory;
 		std::string m_unit;
+		std::vector<SkinEntry> m_skins;
+		size_t m_currentSkin = 0;
 		PanelResources m_resources;
 		juceRmlUi::RmlInterfaces m_interfaces;
 		juceRmlUi::LookAndFeel m_lookAndFeel;
