@@ -21,6 +21,8 @@ namespace mdJucePlugin
 		md::MachineModel model() const override { return m_model; }
 		bool readStatus(PanelStatusSnapshot& _snapshot, std::string& _error) override;
 		bool sendPanel(uint8_t _command, uint8_t _argument, std::string& _error) override;
+		bool outputGain(float& _gain, std::string& _error);
+		bool setOutputGain(float _gain, std::string& _error);
 		bool reconnect(std::string& _error);
 		std::string connectionError() const override { return m_error; }
 		const std::array<uint8_t, 16>& instanceToken() const { return m_instance; }

@@ -24,6 +24,7 @@ namespace mdJucePlugin
 		constexpr uint16_t g_hello = 1;
 		constexpr uint16_t g_status = 2;
 		constexpr uint16_t g_panelInput = 3;
+		constexpr uint16_t g_outputGain = 4;
 		constexpr uint16_t g_error = 0xffff;
 		constexpr uint16_t g_responseBit = 0x8000;
 		constexpr size_t g_headerSize = 16;
@@ -290,6 +291,48 @@ namespace mdJucePlugin
 		{
 			(void)exchange(g_panelInput, payload.data(), payload.size(),
 				static_cast<uint16_t>(g_panelInput | g_responseBit));
+			m_error.clear();
+			_error.clear();
+			return true;
+		}
+		catch(const std::exception& e)
+		{
+			setError(e.what(), &_error);
+			return false;
+		}
+	}
+
+	bool NativePanelClient::outputGain(float& _gain, std::string& _error)
+	{
+		try
+		{
+			const auto response = exchange(g_outputGain, m_instance.data(), m_instance.size(),
+				static_cast<uint16_t>(g_outputGain | g_responseBit));
+			if(response.size() != sizeof(float))
+				throw std::runtime_error("native-panel output gain has an incompatible length");
+			std::memcpy(&_gain, response.data(), sizeof(_gain));
+			m_error.clear();
+			_error.clear();
+			return true;
+		}
+		catch(const std::exception& e)
+		{
+			setError(e.what(), &_error);
+			return false;
+		}
+	}
+
+	bool NativePanelClient::setOutputGain(const float _gain, std::string& _error)
+	{
+		std::array<uint8_t, 20> payload{};
+		std::copy(m_instance.begin(), m_instance.end(), payload.begin());
+		std::memcpy(payload.data() + 16, &_gain, sizeof(_gain));
+		try
+		{
+			const auto response = exchange(g_outputGain, payload.data(), payload.size(),
+				static_cast<uint16_t>(g_outputGain | g_responseBit));
+			if(response.size() != sizeof(float))
+				throw std::runtime_error("native-panel output gain has an incompatible length");
 			m_error.clear();
 			_error.clear();
 			return true;
