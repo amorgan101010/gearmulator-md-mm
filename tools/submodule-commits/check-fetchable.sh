@@ -11,6 +11,10 @@
 # URL could not be reached (so nothing can be concluded). Used by the pre-push hook (pre-push).
 set -eu
 top=$(git rev-parse --show-toplevel)
+# git exports GIT_DIR (and friends) to a hook. Left set, every "git -C $repo" below works on the
+# real repository instead of the temporary one: it fetches the submodules' branches, forced tags
+# and promisor remotes into it, and from a linked worktree it never finishes.
+for var in $(git rev-parse --local-env-vars); do unset "$var"; done
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/check-fetchable.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT INT TERM
 [ $# -gt 0 ] || set -- HEAD
