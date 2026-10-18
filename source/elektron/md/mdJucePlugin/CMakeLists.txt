@@ -20,7 +20,6 @@ set(SOURCES
 	mdEditor.cpp mdEditor.h
 	mdGamepad.cpp mdGamepad.h
 	mdKeyboardControl.cpp mdKeyboardControl.h
-	mdNativePanelClient.cpp mdNativePanelClient.h
 	mdPanelBackend.h
 	mdPanelControls.h
 	mdFrontPanelLcd.cpp mdFrontPanelLcd.h
@@ -94,6 +93,7 @@ juce_add_binary_data(mmJucePlugin_BinaryData SOURCES
 juce_add_binary_data(mdNativePanel_BinaryData SOURCES
 	${COMMON_ASSETS} ${MD_SKIN_ASSETS} ${MM_SKIN_ASSETS})
 
+if(UNIX)
 juce_add_gui_app(mdNativePanelStandalone
 	PRODUCT_NAME "Gearmulator Native Panel"
 	BUNDLE_ID com.gearmulator.md-native-panel
@@ -120,6 +120,7 @@ endif()
 target_compile_definitions(mdNativePanelStandalone PRIVATE
 	JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1 JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
 set_property(TARGET mdNativePanelStandalone PROPERTY FOLDER "Elektron/Standalone")
+endif()
 
 createJucePlugin(mdJucePlugin "Gearmulator MD" TRUE "Tmdr" mdJucePlugin_BinaryData mdRemotePanel)
 createJucePlugin(mmJucePlugin "Gearmulator MM" TRUE "Tmno" mmJucePlugin_BinaryData mdRemotePanel)
@@ -238,6 +239,7 @@ if(BUILD_TESTING)
 	set_property(TARGET mdNativePanelKeylightTest PROPERTY FOLDER "Elektron/test")
 	endif()
 
+	if(UNIX)
 	add_executable(mdNativePanelClientTest
 		mdNativePanelClientTest.cpp mdNativePanelClient.cpp)
 	target_include_directories(mdNativePanelClientTest PRIVATE
@@ -246,6 +248,7 @@ if(BUILD_TESTING)
 	add_test(NAME mdNativePanelClientTest COMMAND mdNativePanelClientTest)
 	set_tests_properties(mdNativePanelClientTest PROPERTIES LABELS "UnitTest;Panel;IPC")
 	set_property(TARGET mdNativePanelClientTest PROPERTY FOLDER "Elektron/test")
+	endif()
 	add_executable(mmNativePanelPresentationTest mmNativePanelPresentationTest.cpp)
 	target_include_directories(mmNativePanelPresentationTest PRIVATE
 			"${CMAKE_SOURCE_DIR}/source" "${CMAKE_SOURCE_DIR}/source/elektron/md")

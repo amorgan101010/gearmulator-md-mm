@@ -3,7 +3,7 @@
 #include "mdPanelBackend.h"
 
 #include <array>
-#include <filesystem>
+#include <string>
 #include <vector>
 
 namespace mdJucePlugin
@@ -13,8 +13,8 @@ namespace mdJucePlugin
 	class NativePanelClient final : public PanelBackend
 	{
 	public:
-		NativePanelClient(std::filesystem::path _socketPath,
-			std::filesystem::path _runtimeDirectory, std::string _unit,
+		NativePanelClient(std::string _socketPath,
+			std::string _runtimeDirectory, std::string _unit,
 			md::MachineModel _expectedModel, unsigned _timeoutMilliseconds = 120);
 		~NativePanelClient() override = default;
 
@@ -33,8 +33,8 @@ namespace mdJucePlugin
 		void handshake();
 		void setError(const std::string& _error, std::string* _target);
 
-		std::filesystem::path m_socketPath;
-		std::filesystem::path m_runtimeDirectory;
+		std::string m_socketPath;
+		std::string m_runtimeDirectory;
 		std::string m_unit;
 		md::MachineModel m_model;
 		unsigned m_timeoutMilliseconds;

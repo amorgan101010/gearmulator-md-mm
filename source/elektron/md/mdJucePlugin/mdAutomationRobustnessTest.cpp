@@ -1276,7 +1276,7 @@ namespace
 			&& harness.controller.getSceneBank(0).getBase(address) == cleanBase,
 			"coherent Kit dump did not seed its clean scene base");
 		require(harness.controller.setSceneLock(0, 0, address, 100)
-			&& harness.controller.setSceneLock(0, 1, address, 0),
+			&& harness.controller.setSceneLock(0, 15, address, 0),
 			"scene lock setup failed");
 		require(harness.controller.setSceneFader(0, 0),
 			"scene fader setup failed");
@@ -1311,9 +1311,9 @@ namespace
 		require(harness.controller.setSceneMuted(0, false, false),
 			"scene A unmute failed");
 		require(harness.controller.clearScene(0, 0)
-			&& harness.controller.clearScene(0, 1)
+			&& harness.controller.clearScene(0, 15)
 			&& !harness.controller.getSceneBank(0).sceneHasLocks(0)
-			&& !harness.controller.getSceneBank(0).sceneHasLocks(1)
+			&& !harness.controller.getSceneBank(0).sceneHasLocks(15)
 			&& harness.controller.getSceneBank(0).sceneA == 0
 			&& harness.controller.getSceneBank(0).sceneB == 15,
 			"full scene clear did not remove all locks");

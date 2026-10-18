@@ -35,7 +35,6 @@
 #include <cstdlib>
 #include <cstdint>
 #include <deque>
-#include <filesystem>
 #include <initializer_list>
 #include <iostream>
 #include <map>
@@ -75,6 +74,12 @@ namespace
 	const char* modelName(const md::MachineModel model)
 	{
 		return model == md::MachineModel::Monomachine ? "Monomachine" : "Machinedrum";
+	}
+
+	std::string filenameOf(const std::string& path)
+	{
+		const auto separator = path.find_last_of("/\\");
+		return separator == std::string::npos ? path : path.substr(separator + 1);
 	}
 
 	struct Options
@@ -146,7 +151,7 @@ namespace
 			return {};
 		}
 		const auto expectedSuffix = ".panel." + result.unit + ".sock";
-		const auto socketName = std::filesystem::path(result.socketPath).filename().string();
+		const auto socketName = filenameOf(result.socketPath);
 		if(socketName.size() < expectedSuffix.size()
 			|| socketName.compare(socketName.size() - expectedSuffix.size(),
 				expectedSuffix.size(), expectedSuffix) != 0)
@@ -187,7 +192,7 @@ namespace
 
 		const char* getResourceByFilename(const std::string& name, uint32_t& size) override
 		{
-			const auto basename = std::filesystem::path(name).filename().string();
+			const auto basename = filenameOf(name);
 			const auto disk = m_diskResources.find(basename);
 			if(disk != m_diskResources.end())
 			{
@@ -216,33 +221,30 @@ namespace
 			return result;
 		}
 
-		bool setSkinFolder(const std::filesystem::path& folder, std::string& error)
+		bool setSkinFolder(const juce::File& folder, std::string& error)
 		{
 			m_diskResources.clear();
-			if(folder.empty())
+			if(folder.getFullPathName().isEmpty())
 				return true;
-			std::error_code ec;
-			for(const auto& entry : std::filesystem::directory_iterator(folder, ec))
+			juce::Array<juce::File> files;
+			if(!folder.isDirectory())
 			{
-				if(ec || !entry.is_regular_file())
-					continue;
-				juce::File file(entry.path().string());
+				error = "skin folder is unavailable: " + folder.getFullPathName().toStdString();
+				return false;
+			}
+			folder.findChildFiles(files, juce::File::findFiles, false);
+			for(const auto& file : files)
+			{
 				juce::MemoryBlock data;
 				if(!file.loadFileAsData(data))
 				{
-					error = "failed to read skin asset " + entry.path().string();
+					error = "failed to read skin asset " + file.getFullPathName().toStdString();
 					m_diskResources.clear();
 					return false;
 				}
 				const auto* begin = static_cast<const char*>(data.getData());
-				m_diskResources[entry.path().filename().string()] =
+				m_diskResources[file.getFileName().toStdString()] =
 					std::vector<char>(begin, begin + data.getSize());
-			}
-			if(ec)
-			{
-				error = "failed to enumerate skin folder " + folder.string() + ": " + ec.message();
-				m_diskResources.clear();
-				return false;
 			}
 			return true;
 		}
@@ -273,7 +275,7 @@ namespace
 		{
 			std::string displayName;
 			std::string filename;
-			std::filesystem::path folder;
+			juce::File folder;
 		};
 
 		explicit NativePanelView(const Options& options)
@@ -381,43 +383,42 @@ namespace
 				&& control <= md::PanelControl::BankD;
 		}
 
-		std::filesystem::path skinRoot() const
+		juce::File skinRoot() const
 		{
 			const auto product = m_model == md::MachineModel::Monomachine
 				? "Monomachine" : "Machinedrum";
 			const auto* const xdgDataHome = std::getenv("XDG_DATA_HOME");
 			const auto dataRoot = xdgDataHome && *xdgDataHome
-				? std::filesystem::path(xdgDataHome)
-				: std::filesystem::path(juce::File::getSpecialLocation(
-					juce::File::userHomeDirectory).getFullPathName().toStdString()) / ".local" / "share";
-			return dataRoot
-				/ "Gearmulator Preview" / product / "skins";
+				? juce::File(xdgDataHome)
+				: juce::File::getSpecialLocation(juce::File::userHomeDirectory)
+					.getChildFile(".local").getChildFile("share");
+			return dataRoot.getChildFile("Gearmulator Preview")
+				.getChildFile(product).getChildFile("skins");
 		}
 
 		void discoverSkins()
 		{
 			m_skins.push_back({mdJucePlugin::defaultSkinName(m_model),
 				mdJucePlugin::defaultSkinFile(m_model), {}});
-			std::error_code ec;
 			const auto root = skinRoot();
-			for(const auto& folder : std::filesystem::directory_iterator(root, ec))
+			juce::Array<juce::File> folders;
+			root.findChildFiles(folders, juce::File::findDirectories, false);
+			for(const auto& folder : folders)
 			{
-				if(!folder.is_directory())
-					continue;
-				std::error_code fileError;
-				for(const auto& file : std::filesystem::directory_iterator(folder.path(), fileError))
+				juce::Array<juce::File> files;
+				folder.findChildFiles(files, juce::File::findFiles, false, "*.rml");
+				for(const auto& file : files)
 				{
-					if(fileError || !file.is_regular_file() || file.path().extension() != ".rml")
-						continue;
-					const auto filename = file.path().filename().string();
-					const auto displayName = file.path().stem().string();
+					const auto filename = file.getFileName().toStdString();
+					const auto displayName = file.getFileNameWithoutExtension().toStdString();
 					if(mdJucePlugin::isSkinCompatible(m_model, displayName, filename))
-						m_skins.push_back({displayName, filename, folder.path()});
+						m_skins.push_back({displayName, filename, folder});
 				}
 			}
 			std::sort(m_skins.begin() + 1, m_skins.end(), [](const auto& a, const auto& b)
 			{
-				return std::tie(a.displayName, a.folder) < std::tie(b.displayName, b.folder);
+				return std::make_tuple(a.displayName, a.folder.getFullPathName())
+					< std::make_tuple(b.displayName, b.folder.getFullPathName());
 			});
 		}
 
@@ -438,7 +439,8 @@ namespace
 			const auto folder = settings.getValue(prefix + "folder").toStdString();
 			const auto found = std::find_if(m_skins.begin(), m_skins.end(), [&](const auto& skin)
 			{
-				return skin.filename == filename && skin.folder.string() == folder;
+				return skin.filename == filename
+					&& skin.folder.getFullPathName().toStdString() == folder;
 			});
 			loadSkin(found == m_skins.end() ? 0 : static_cast<size_t>(found - m_skins.begin()), false);
 		}
@@ -475,7 +477,7 @@ namespace
 				juce::PropertiesFile settings(skinSettingsOptions());
 				const auto prefix = m_unit + ".skin.";
 				settings.setValue(prefix + "file", juce::String(skin.filename));
-				settings.setValue(prefix + "folder", juce::String(skin.folder.string()));
+				settings.setValue(prefix + "folder", skin.folder.getFullPathName());
 				settings.saveIfNeeded();
 			}
 		}
@@ -485,8 +487,10 @@ namespace
 			juce::PopupMenu menu;
 			for(size_t i = 0; i < m_skins.size(); ++i)
 			{
-				const auto label = m_skins[i].folder.empty() ? m_skins[i].displayName + " (Embedded)"
-					: m_skins[i].displayName + " — " + m_skins[i].folder.filename().string();
+				const auto label = m_skins[i].folder.getFullPathName().isEmpty()
+					? m_skins[i].displayName + " (Embedded)"
+					: m_skins[i].displayName + " — "
+						+ m_skins[i].folder.getFileName().toStdString();
 				menu.addItem(static_cast<int>(i + 1), label, true, i == m_currentSkin);
 			}
 			menu.showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(m_panel.get()),

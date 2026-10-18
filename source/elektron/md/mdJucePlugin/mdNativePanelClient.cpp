@@ -102,7 +102,7 @@ namespace mdJucePlugin
 		struct BoundSocket
 		{
 			int fd = -1;
-			std::filesystem::path localPath;
+			std::string localPath;
 			~BoundSocket()
 			{
 				if(fd >= 0)
@@ -113,8 +113,8 @@ namespace mdJucePlugin
 		};
 	}
 
-	NativePanelClient::NativePanelClient(std::filesystem::path _socketPath,
-		std::filesystem::path _runtimeDirectory, std::string _unit,
+	NativePanelClient::NativePanelClient(std::string _socketPath,
+		std::string _runtimeDirectory, std::string _unit,
 		const md::MachineModel _expectedModel, const unsigned _timeoutMilliseconds)
 		: m_socketPath(std::move(_socketPath))
 		, m_runtimeDirectory(std::move(_runtimeDirectory))
@@ -128,7 +128,7 @@ namespace mdJucePlugin
 			throw std::invalid_argument("native-panel socket path is required");
 		if(m_runtimeDirectory.empty())
 			m_runtimeDirectory = "/tmp";
-		if(m_socketPath.string().size() >= sizeof(sockaddr_un::sun_path))
+		if(m_socketPath.size() >= sizeof(sockaddr_un::sun_path))
 			throw std::invalid_argument("native-panel socket path exceeds the Unix socket path limit");
 
 		handshake();
@@ -177,8 +177,11 @@ namespace mdJucePlugin
 			throw std::runtime_error(systemError("create native-panel datagram socket"));
 
 		const auto unique = "gmpn-" + std::to_string(::getpid()) + "-" + std::to_string(requestId) + ".sock";
-		local.localPath = m_runtimeDirectory / unique;
-		if(local.localPath.string().size() >= sizeof(sockaddr_un::sun_path))
+		local.localPath = m_runtimeDirectory;
+		if(!local.localPath.empty() && local.localPath.back() != '/')
+			local.localPath += '/';
+		local.localPath += unique;
+		if(local.localPath.size() >= sizeof(sockaddr_un::sun_path))
 			throw std::runtime_error("native-panel runtime path exceeds the Unix socket path limit");
 		sockaddr_un localAddress{};
 		localAddress.sun_family = AF_UNIX;
