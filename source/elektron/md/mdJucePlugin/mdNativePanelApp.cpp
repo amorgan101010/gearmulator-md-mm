@@ -271,8 +271,14 @@ namespace
 			if(const auto* const window = dynamic_cast<juce::TopLevelWindow*>(getTopLevelComponent()))
 				active = window->isShowing() && window->isActiveWindow();
 			if(active != m_keylight.focused())
+			{
 				trace(std::string("native-panel keylight window-active=") + (active ? "1" : "0")
 					+ " enabled=" + (m_keylight.enabled() ? "1" : "0"));
+				// A window the window manager has just activated has the keyboard, so the panel
+				// must have it too: the lights show a keymap that has to work without a click.
+				if(active && m_panel)
+					m_panel->grabKeyboardFocus();
+			}
 			m_keylight.setFocused(active);
 		}
 
