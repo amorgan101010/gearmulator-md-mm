@@ -1,5 +1,6 @@
 #include "mdFrontPanelLcd.h"
 #include "mdKeyboardControl.h"
+#include "mdNativePanelActiveWindow.h"
 #include "mdNativePanelClient.h"
 #include "mdNativePanelKeylight.h"
 #include "mdNativePanelPresentation.h"
@@ -269,7 +270,11 @@ namespace
 		{
 			bool active = false;
 			if(const auto* const window = dynamic_cast<juce::TopLevelWindow*>(getTopLevelComponent()))
+			{
 				active = window->isShowing() && window->isActiveWindow();
+				if(active) // JUCE can miss a focus-out; the window manager is the truth
+					active = m_activeWindow.isTheActiveWindow(window->getWindowHandle());
+			}
 			if(active != m_keylight.focused())
 			{
 				trace(std::string("native-panel keylight window-active=") + (active ? "1" : "0")
@@ -1190,6 +1195,7 @@ namespace
 		Rml::Element* m_statusElement = nullptr;
 		mdJucePlugin::PanelKeyboardControl m_keyboard;
 		mdJucePlugin::NativePanelKeylight m_keylight;
+		mdJucePlugin::ActiveWindowQuery m_activeWindow;
 		md::PanelRowState m_rows;
 		mdJucePlugin::panelAffordances::ShiftPanelLatch m_shiftLatch;
 		mdJucePlugin::panelAffordances::PendingTarget<3> m_machinedrumDataPageTarget;
