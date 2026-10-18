@@ -264,8 +264,10 @@ namespace mdJucePlugin
 		std::signal(SIGPIPE, SIG_IGN); // a helper that died must not take the panel with it
 
 		int fds[2];
-		if(::pipe2(fds, O_CLOEXEC) != 0)
+		if(::pipe(fds) != 0) // not pipe2: macOS has none
 			return false;
+		for(const int fd : fds)
+			::fcntl(fd, F_SETFD, ::fcntl(fd, F_GETFD) | FD_CLOEXEC);
 		posix_spawn_file_actions_t actions;
 		if(::posix_spawn_file_actions_init(&actions) != 0)
 		{
@@ -286,7 +288,7 @@ namespace mdJucePlugin
 		}
 		::fcntl(fds[1], F_SETFL, ::fcntl(fds[1], F_GETFL) | O_NONBLOCK);
 		m_fd = fds[1];
-		m_pid = pid;
+		m_pid = static_cast<int>(pid);
 		return true;
 	}
 

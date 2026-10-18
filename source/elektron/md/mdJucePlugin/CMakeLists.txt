@@ -222,6 +222,7 @@ if(BUILD_TESTING)
 	set_tests_properties(mdKeyboardControlTest PROPERTIES LABELS "UnitTest;Panel;Keyboard")
 	set_property(TARGET mdKeyboardControlTest PROPERTY FOLDER "Elektron/test")
 
+	if(UNIX) # fork/exec of recording helpers, setenv
 	add_executable(mdNativePanelKeylightTest
 		mdNativePanelKeylightTest.cpp mdNativePanelKeylight.cpp mdKeyboardControl.cpp)
 	target_include_directories(mdNativePanelKeylightTest PRIVATE
@@ -230,6 +231,7 @@ if(BUILD_TESTING)
 	add_test(NAME mdNativePanelKeylightTest COMMAND mdNativePanelKeylightTest)
 	set_tests_properties(mdNativePanelKeylightTest PROPERTIES LABELS "UnitTest;Panel;Keyboard")
 	set_property(TARGET mdNativePanelKeylightTest PROPERTY FOLDER "Elektron/test")
+	endif()
 
 	add_executable(mdNativePanelClientTest
 		mdNativePanelClientTest.cpp mdNativePanelClient.cpp)
