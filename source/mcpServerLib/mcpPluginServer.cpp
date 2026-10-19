@@ -421,7 +421,7 @@ namespace mcpServer
 					? parseHex(_params.get("replyPrefix").getString().toStdString()) : std::vector<uint8_t>{};
 				const int maxReplies = _params.hasProperty("maxReplies") ? _params.get("maxReplies").getInt() : 1;
 				const auto replies = m_processor.sendSysexAndCollectReplies(ev, prefix,
-					static_cast<size_t>(std::max(maxReplies, 1)), waitMs);
+					static_cast<size_t>(maxReplies > 1 ? maxReplies : 1), waitMs);
 
 				auto list = JsonValue::array();
 				for (const auto& reply : replies)
